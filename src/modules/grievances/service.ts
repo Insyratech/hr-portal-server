@@ -15,6 +15,9 @@ type RequestMeta = { ipAddress?: string | null; userAgent?: string | null };
 
 const BUCKET = 'grievance-attachments';
 
+const GRIEVANCE_LIST_SELECT =
+  'id, employee_id, category, subject, description, status, resolution, resolved_at, created_at, updated_at, employees!employee_id (full_name)';
+
 function first<T>(value: T | T[] | null | undefined): T | null {
   if (!value) return null;
   return Array.isArray(value) ? (value[0] ?? null) : value;
@@ -65,7 +68,7 @@ export function createGrievanceService(supabase: SupabaseClient) {
       let query = supabase
         .from('grievances')
         .select(
-          'id, employee_id, category, subject, description, status, resolution, resolved_at, created_at, updated_at, employees (full_name)',
+          GRIEVANCE_LIST_SELECT,
         )
         .order('created_at', { ascending: false });
 
@@ -80,7 +83,13 @@ export function createGrievanceService(supabase: SupabaseClient) {
       }
 
       const { data, error } = await query;
-      if (error) throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load grievances.', 500);
+      if (error) {
+        throw new AppError(
+          API_ERROR_CODES.INTERNAL_ERROR,
+          `Failed to load grievances. ${error.message}`,
+          500,
+        );
+      }
       return (data ?? []).map(mapGrievanceSummary);
     },
 
@@ -88,7 +97,7 @@ export function createGrievanceService(supabase: SupabaseClient) {
       const { data, error } = await supabase
         .from('grievances')
         .select(
-          'id, employee_id, category, subject, description, status, resolution, resolved_at, created_at, updated_at, employees (full_name)',
+          GRIEVANCE_LIST_SELECT,
         )
         .eq('id', id)
         .maybeSingle();
@@ -102,7 +111,7 @@ export function createGrievanceService(supabase: SupabaseClient) {
 
       let commentsQuery = supabase
         .from('grievance_comments')
-        .select('id, author_id, body, visibility, created_at, employees (full_name)')
+        .select('id, author_id, body, visibility, created_at, employees!author_id (full_name)')
         .eq('grievance_id', id)
         .order('created_at', { ascending: true });
       if (!manage) {
@@ -171,10 +180,16 @@ export function createGrievanceService(supabase: SupabaseClient) {
           status: 'OPEN',
         })
         .select(
-          'id, employee_id, category, subject, description, status, resolution, resolved_at, created_at, updated_at, employees (full_name)',
+          GRIEVANCE_LIST_SELECT,
         )
         .single();
-      if (error || !data) throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to create grievance.', 500);
+      if (error || !data) {
+        throw new AppError(
+          API_ERROR_CODES.INTERNAL_ERROR,
+          `Failed to create grievance.${error?.message ? ` ${error.message}` : ''}`,
+          500,
+        );
+      }
 
       await writeAuditLog(supabase, {
         actorId: actor.employeeId,
