@@ -70,24 +70,104 @@ async function notifyManagers(
   }
 }
 
+function reviewPathForRoles(roles: string[], grievanceId: string): string {
+  if (roles.includes('SUPER_ADMIN')) {
+    return `/super-admin/grievances?id=${grievanceId}`;
+  }
+  if (roles.includes('ADMIN')) {
+    return `/admin/grievances?id=${grievanceId}`;
+  }
+  return `/grievance?id=${grievanceId}`;
+}
+
+async function roleCodesForEmployee(supabase: SupabaseClient, employeeId: string): Promise<string[]> {
+  const { data } = await supabase.from('employee_roles').select('roles ( code )').eq('employee_id', employeeId);
+  const codes: string[] = [];
+  for (const row of data ?? []) {
+    const role = first((row as { roles?: { code?: string } | { code?: string }[] }).roles);
+    if (role?.code) codes.push(role.code);
+  }
+  return codes;
+}
+
+async function notifyEmployee(
+  supabase: SupabaseClient,
+  employeeId: string,
+  input: { title: string; message: string; referenceId: string; cta: string },
+): Promise<void> {
+  const { data } = await supabase
+    .from('employees')
+    .select('user_id, email, notification_email, full_name')
+    .eq('id', employeeId)
+    .maybeSingle();
+  if (!data?.user_id) return;
+  await notifyUser(supabase, { userId: data.user_id as string, ...input });
+  const roles = await roleCodesForEmployee(supabase, employeeId);
+  await sendPortalMail({
+    to: [(data.notification_email as string | null) || (data.email as string)],
+    subject: input.title,
+    eyebrow: 'Grievance',
+    title: input.title,
+    greeting: `Hi ${(data.full_name as string) ?? 'there'},`,
+    paragraphs: [input.message, input.cta],
+    cta: { label: 'Open grievance', href: portalUrl(reviewPathForRoles(roles, input.referenceId)) },
+  });
+}
+
+async function assignedGrievanceIds(supabase: SupabaseClient, employeeId: string): Promise<string[]> {
+  const { data, error } = await supabase
+    .from('grievance_assignments')
+    .select('grievance_id')
+    .eq('assignee_id', employeeId)
+    .eq('active', true);
+  if (error) {
+    throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, `Failed to load assignments. ${error.message}`, 500);
+  }
+  return [...new Set((data ?? []).map((row) => row.grievance_id as string))];
+}
+
+async function isActiveAssignee(
+  supabase: SupabaseClient,
+  grievanceId: string,
+  employeeId: string,
+): Promise<boolean> {
+  const { data } = await supabase
+    .from('grievance_assignments')
+    .select('id')
+    .eq('grievance_id', grievanceId)
+    .eq('assignee_id', employeeId)
+    .eq('active', true)
+    .maybeSingle();
+  return Boolean(data);
+}
+
+export type GrievanceListScope = 'mine' | 'assigned' | 'queue';
+
+type ListOptions = { status?: string; scope?: GrievanceListScope };
+
 export function createGrievanceService(supabase: SupabaseClient) {
   return {
-    async list(actor: RequestUser, status?: string) {
-      let query = supabase
-        .from('grievances')
-        .select(
-          GRIEVANCE_LIST_SELECT,
-        )
-        .order('created_at', { ascending: false });
+    async list(actor: RequestUser, options: ListOptions = {}) {
+      const manage = canManage(actor);
+      const scope: GrievanceListScope = options.scope ?? (manage ? 'queue' : 'mine');
+      let query = supabase.from('grievances').select(GRIEVANCE_LIST_SELECT).order('created_at', { ascending: false });
 
-      if (!canManage(actor)) {
-        if (!actor.permissions.includes(PERMISSIONS.GRIEVANCE_VIEW_OWN)) {
+      if (scope === 'queue') {
+        if (!manage) {
+          throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot view the grievance queue.', 403);
+        }
+      } else if (scope === 'assigned') {
+        const ids = await assignedGrievanceIds(supabase, actor.employeeId);
+        if (ids.length === 0) return [];
+        query = query.in('id', ids);
+      } else {
+        if (!actor.permissions.includes(PERMISSIONS.GRIEVANCE_VIEW_OWN) && !manage) {
           throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot view grievances.', 403);
         }
         query = query.eq('employee_id', actor.employeeId);
       }
-      if (status) {
-        query = query.eq('status', status);
+      if (options.status) {
+        query = query.eq('status', options.status);
       }
 
       const { data, error } = await query;
@@ -99,6 +179,65 @@ export function createGrievanceService(supabase: SupabaseClient) {
         );
       }
       return (data ?? []).map(mapGrievanceSummary);
+    },
+
+    async counts(actor: RequestUser, scope?: GrievanceListScope) {
+      const rows = await this.list(actor, { scope });
+      const byStatus = {
+        OPEN: 0,
+        UNDER_REVIEW: 0,
+        INVESTIGATING: 0,
+        RESOLVED: 0,
+        CLOSED: 0,
+      };
+      for (const row of rows) {
+        byStatus[row.status] += 1;
+      }
+      return { byStatus, total: rows.length };
+    },
+
+    async handlers() {
+      const { data: roles, error: roleError } = await supabase
+        .from('roles')
+        .select('id, code')
+        .in('code', ['ADMIN', 'SUPER_ADMIN']);
+      if (roleError) {
+        throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, `Failed to load handlers. ${roleError.message}`, 500);
+      }
+      const roleById = new Map((roles ?? []).map((row) => [row.id as string, row.code as string]));
+      if (roleById.size === 0) return [];
+      const { data: links, error: linkError } = await supabase
+        .from('employee_roles')
+        .select('employee_id, role_id')
+        .in('role_id', [...roleById.keys()]);
+      if (linkError) {
+        throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, `Failed to load handlers. ${linkError.message}`, 500);
+      }
+      const items: { employeeId: string; fullName: string; role: string }[] = [];
+      const seen = new Set<string>();
+      const employeeIds = [...new Set((links ?? []).map((row) => row.employee_id as string))];
+      if (employeeIds.length === 0) return [];
+      const { data: people, error: peopleError } = await supabase
+        .from('employees')
+        .select('id, full_name')
+        .in('id', employeeIds);
+      if (peopleError) {
+        throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, `Failed to load handlers. ${peopleError.message}`, 500);
+      }
+      const nameById = new Map((people ?? []).map((row) => [row.id as string, row.full_name as string]));
+      for (const row of links ?? []) {
+        const employeeId = row.employee_id as string;
+        const code = roleById.get(row.role_id as string);
+        if (!code || seen.has(employeeId)) continue;
+        if (code !== 'ADMIN' && code !== 'SUPER_ADMIN') continue;
+        seen.add(employeeId);
+        items.push({
+          employeeId,
+          fullName: nameById.get(employeeId) ?? 'Staff',
+          role: code,
+        });
+      }
+      return items;
     },
 
     async get(actor: RequestUser, id: string) {
@@ -113,16 +252,18 @@ export function createGrievanceService(supabase: SupabaseClient) {
       if (!data) throw new AppError(API_ERROR_CODES.NOT_FOUND, 'Grievance not found.', 404);
 
       const manage = canManage(actor);
-      if (!manage && data.employee_id !== actor.employeeId) {
+      const assigned = await isActiveAssignee(supabase, id, actor.employeeId);
+      if (!manage && data.employee_id !== actor.employeeId && !assigned) {
         throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot view this grievance.', 403);
       }
 
+      const staff = manage || assigned;
       let commentsQuery = supabase
         .from('grievance_comments')
         .select('id, author_id, body, visibility, created_at, employees!author_id (full_name)')
         .eq('grievance_id', id)
         .order('created_at', { ascending: true });
-      if (!manage) {
+      if (!staff) {
         commentsQuery = commentsQuery.eq('visibility', 'EMPLOYEE');
       }
 
@@ -223,11 +364,13 @@ export function createGrievanceService(supabase: SupabaseClient) {
     ) {
       const detail = await this.get(actor, id);
       const manage = canManage(actor);
-      const visibility: CommentVisibility = manage ? (input.visibility ?? 'INTERNAL') : 'EMPLOYEE';
-      if (!manage && visibility === 'INTERNAL') {
+      const assigned = detail.assignments.some((item) => item.assigneeId === actor.employeeId);
+      const staff = manage || assigned;
+      const visibility: CommentVisibility = staff ? (input.visibility ?? 'EMPLOYEE') : 'EMPLOYEE';
+      if (!staff && visibility === 'INTERNAL') {
         throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot post internal notes.', 403);
       }
-      if (!manage && detail.employeeId !== actor.employeeId) {
+      if (!staff && detail.employeeId !== actor.employeeId) {
         throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot comment on this grievance.', 403);
       }
 
@@ -252,38 +395,47 @@ export function createGrievanceService(supabase: SupabaseClient) {
         ...meta,
       });
 
-      if (visibility === 'EMPLOYEE' && manage) {
-        const { data: employee } = await supabase
-          .from('employees')
-          .select('user_id')
-          .eq('id', detail.employeeId)
-          .maybeSingle();
-        if (employee?.user_id) {
-          await notifyUser(supabase, {
-            userId: employee.user_id as string,
-            title: 'Grievance update',
-            message: 'There is a new message on your concern.',
+      if (staff && visibility === 'EMPLOYEE' && detail.employeeId !== actor.employeeId) {
+        await notifyEmployee(supabase, detail.employeeId, {
+          title: 'Grievance update',
+          message: 'There is a new message on your concern.',
+          referenceId: id,
+          cta: 'Open the case to read the reply.',
+        });
+      } else if (staff && visibility === 'INTERNAL') {
+        await notifyManagers(supabase, {
+          title: 'Grievance internal note',
+          message: `${actor.fullName} left an internal note on “${detail.subject}”.`,
+          referenceId: id,
+        });
+      } else if (!staff) {
+        const assigneeId = detail.assignments[0]?.assigneeId;
+        if (assigneeId) {
+          await notifyEmployee(supabase, assigneeId, {
+            title: 'Grievance reply',
+            message: `${actor.fullName} replied on “${detail.subject}”.`,
+            referenceId: id,
+            cta: 'Open the assigned case to respond.',
+          });
+        } else {
+          await notifyManagers(supabase, {
+            title: 'Grievance reply',
+            message: `${actor.fullName} added a message on “${detail.subject}”.`,
             referenceId: id,
           });
         }
-      }
-
-      if (!manage) {
-        await notifyManagers(supabase, {
-          title: 'Grievance reply',
-          message: `${actor.fullName} added a message on “${detail.subject}”.`,
-          referenceId: id,
-        });
       }
 
       return this.get(actor, id);
     },
 
     async assign(actor: RequestUser, id: string, assigneeId: string, meta: RequestMeta) {
-      if (!canManage(actor)) {
+      const existing = await this.get(actor, id);
+      const manage = canManage(actor);
+      const assigned = existing.assignments.some((item) => item.assigneeId === actor.employeeId);
+      if (!manage && !assigned) {
         throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot assign grievances.', 403);
       }
-      const existing = await this.get(actor, id);
 
       await supabase.from('grievance_assignments').update({ active: false }).eq('grievance_id', id).eq('active', true);
 
@@ -312,24 +464,26 @@ export function createGrievanceService(supabase: SupabaseClient) {
         ...meta,
       });
 
-      const { data: assignee } = await supabase.from('employees').select('user_id').eq('id', assigneeId).maybeSingle();
-      if (assignee?.user_id) {
-        await notifyUser(supabase, {
-          userId: assignee.user_id as string,
-          title: 'Grievance assigned',
-          message: 'You were assigned as investigator.',
-          referenceId: id,
-        });
-      }
+      await notifyEmployee(supabase, assigneeId, {
+        title: 'Grievance assigned',
+        message: `You were assigned as investigator for “${existing.subject}”.`,
+        referenceId: id,
+        cta: 'Open the case to investigate, reply to the employee, or escalate to Admin or Super Admin.',
+      });
 
       return this.get(actor, id);
     },
 
     async changeStatus(actor: RequestUser, id: string, to: string, meta: RequestMeta) {
-      if (!canManage(actor)) {
+      const existing = await this.get(actor, id);
+      const manage = canManage(actor);
+      const assigned = existing.assignments.some((item) => item.assigneeId === actor.employeeId);
+      if (!manage && !assigned) {
         throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot change grievance status.', 403);
       }
-      const existing = await this.get(actor, id);
+      if (!manage && (to === 'RESOLVED' || to === 'CLOSED')) {
+        throw new AppError(API_ERROR_CODES.FORBIDDEN, 'Only Admin or Super Admin can resolve or close a grievance.', 403);
+      }
       try {
         assertTransition({ from: existing.status, to, allowSkip: canSkip(actor) });
       } catch (cause) {
@@ -357,17 +511,12 @@ export function createGrievanceService(supabase: SupabaseClient) {
         ...meta,
       });
 
-      const { data: employee } = await supabase
-        .from('employees')
-        .select('user_id')
-        .eq('id', existing.employeeId)
-        .maybeSingle();
-      if (employee?.user_id) {
-        await notifyUser(supabase, {
-          userId: employee.user_id as string,
+      if (existing.employeeId !== actor.employeeId) {
+        await notifyEmployee(supabase, existing.employeeId, {
           title: 'Grievance status updated',
           message: `Your concern is now ${to.replaceAll('_', ' ').toLowerCase()}.`,
           referenceId: id,
+          cta: 'Open your concern to see the latest status.',
         });
       }
 
@@ -412,17 +561,12 @@ export function createGrievanceService(supabase: SupabaseClient) {
         ...meta,
       });
 
-      const { data: employee } = await supabase
-        .from('employees')
-        .select('user_id')
-        .eq('id', existing.employeeId)
-        .maybeSingle();
-      if (employee?.user_id) {
-        await notifyUser(supabase, {
-          userId: employee.user_id as string,
+      if (existing.employeeId !== actor.employeeId) {
+        await notifyEmployee(supabase, existing.employeeId, {
           title: 'Grievance resolved',
           message: 'Your concern has a resolution.',
           referenceId: id,
+          cta: 'Open your concern to read the resolution.',
         });
       }
 
@@ -437,7 +581,8 @@ export function createGrievanceService(supabase: SupabaseClient) {
     ) {
       const detail = await this.get(actor, id);
       const manage = canManage(actor);
-      if (!manage && detail.employeeId !== actor.employeeId) {
+      const assigned = detail.assignments.some((item) => item.assigneeId === actor.employeeId);
+      if (!manage && detail.employeeId !== actor.employeeId && !assigned) {
         throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot attach files to this grievance.', 403);
       }
       if (input.sizeBytes > 10 * 1024 * 1024) {

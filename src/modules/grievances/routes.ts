@@ -30,8 +30,21 @@ export async function registerGrievanceRoutes(app: FastifyInstance): Promise<voi
   app.get('/api/v1/grievances', { preHandler: [requireAuth()] }, async (request) => {
     const supabase = requireSupabase(app.supabase);
     if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
-    const query = request.query as { status?: string };
-    return ok(await createGrievanceService(supabase).list(request.user, query.status));
+    const query = request.query as { status?: string; scope?: 'mine' | 'assigned' | 'queue' };
+    return ok(await createGrievanceService(supabase).list(request.user, query));
+  });
+
+  app.get('/api/v1/grievance-counts', { preHandler: [requireAuth()] }, async (request) => {
+    const supabase = requireSupabase(app.supabase);
+    if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
+    const query = request.query as { scope?: 'mine' | 'assigned' | 'queue' };
+    return ok(await createGrievanceService(supabase).counts(request.user, query.scope));
+  });
+
+  app.get('/api/v1/grievance-handlers', { preHandler: [requireAuth()] }, async (request) => {
+    const supabase = requireSupabase(app.supabase);
+    if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
+    return ok(await createGrievanceService(supabase).handlers());
   });
 
   app.post(
@@ -62,7 +75,7 @@ export async function registerGrievanceRoutes(app: FastifyInstance): Promise<voi
 
   app.post(
     '/api/v1/grievances/:id/assign',
-    { preHandler: [requirePermission(PERMISSIONS.GRIEVANCES_MANAGE)] },
+    { preHandler: [requireAuth()] },
     async (request) => {
       const supabase = requireSupabase(app.supabase);
       if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
@@ -74,7 +87,7 @@ export async function registerGrievanceRoutes(app: FastifyInstance): Promise<voi
 
   app.post(
     '/api/v1/grievances/:id/status',
-    { preHandler: [requirePermission(PERMISSIONS.GRIEVANCES_MANAGE)] },
+    { preHandler: [requireAuth()] },
     async (request) => {
       const supabase = requireSupabase(app.supabase);
       if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
