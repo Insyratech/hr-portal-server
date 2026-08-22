@@ -63,6 +63,17 @@ export async function buildApp(env: Env): Promise<FastifyInstance> {
     }),
   );
 
+  app.route({
+    method: ['GET', 'HEAD'],
+    url: '/',
+    handler: async (request, reply) => {
+      if (request.method === 'HEAD') {
+        return reply.code(200).send();
+      }
+      return reply.code(200).send({ success: true, data: { status: 'ok' }, meta: {} });
+    },
+  });
+
   await registerAuthRoutes(app);
   await registerEmployeeRoutes(app);
   await registerOrganizationRoutes(app);

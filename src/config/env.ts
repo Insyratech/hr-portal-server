@@ -15,6 +15,13 @@ export type Env = {
   BREVO_SENDER_NAME: string;
 };
 
+function readHost(source: NodeJS.ProcessEnv): string {
+  if (source.RENDER) {
+    return '0.0.0.0';
+  }
+  return source.HOST ?? '127.0.0.1';
+}
+
 function readPort(value: string | undefined, fallback: number): number {
   if (!value) {
     return fallback;
@@ -32,7 +39,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
   return {
     NODE_ENV: source.NODE_ENV ?? 'development',
     PORT: readPort(source.PORT, 3001),
-    HOST: source.HOST ?? '127.0.0.1',
+    HOST: readHost(source),
     CORS_ORIGIN: source.CORS_ORIGIN ?? 'http://localhost:3000',
     SUPABASE_URL: source.SUPABASE_URL ?? '',
     SUPABASE_SERVICE_ROLE_KEY: source.SUPABASE_SERVICE_ROLE_KEY ?? '',
