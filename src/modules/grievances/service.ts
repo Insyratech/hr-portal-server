@@ -4,6 +4,8 @@ import { PERMISSIONS } from '../../shared/constants/permissions';
 import { AppError } from '../../shared/errors/app-error';
 import type { RequestUser } from '../../shared/types/request-user';
 import { writeAuditLog } from '../audit/write-audit-log';
+import { loadApproverStaff } from '../leave/support';
+import { portalUrl, sendPortalMail } from '../notifications/mail';
 import {
   assertTransition,
   type CommentVisibility,
@@ -49,16 +51,22 @@ async function notifyManagers(
   supabase: SupabaseClient,
   input: { title: string; message: string; referenceId: string },
 ): Promise<void> {
-  const { data } = await supabase.from('employee_roles').select('employees ( user_id ), roles ( code )');
-  for (const row of data ?? []) {
-    const role = (row as { roles?: { code?: string } | { code?: string }[] }).roles;
-    const code = Array.isArray(role) ? role[0]?.code : role?.code;
-    if (code !== 'ADMIN' && code !== 'SUPER_ADMIN') continue;
-    const employee = (row as { employees?: { user_id?: string } | { user_id?: string }[] }).employees;
-    const userId = Array.isArray(employee) ? employee[0]?.user_id : employee?.user_id;
-    if (userId) {
-      await notifyUser(supabase, { userId, ...input });
-    }
+  const staff = await loadApproverStaff(supabase);
+  for (const person of staff) {
+    await notifyUser(supabase, { userId: person.userId, ...input });
+    const reviewPath =
+      person.role === 'SUPER_ADMIN'
+        ? `/super-admin/grievances?id=${input.referenceId}`
+        : `/admin/grievances?id=${input.referenceId}`;
+    await sendPortalMail({
+      to: [person.email],
+      subject: input.title,
+      eyebrow: 'Grievance',
+      title: input.title,
+      greeting: `Hi ${person.name},`,
+      paragraphs: [input.message, 'Open the case to reply, assign an investigator, or update the status.'],
+      cta: { label: 'Review grievance', href: portalUrl(reviewPath) },
+    });
   }
 }
 
@@ -258,6 +266,14 @@ export function createGrievanceService(supabase: SupabaseClient) {
             referenceId: id,
           });
         }
+      }
+
+      if (!manage) {
+        await notifyManagers(supabase, {
+          title: 'Grievance reply',
+          message: `${actor.fullName} added a message on “${detail.subject}”.`,
+          referenceId: id,
+        });
       }
 
       return this.get(actor, id);
