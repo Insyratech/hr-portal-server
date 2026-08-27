@@ -27,7 +27,7 @@ export const paymentBody = Type.Object({
 export const employeeBody = Type.Object({
   employeeCode: Type.String({ minLength: 1 }),
   fullName: Type.String({ minLength: 1 }),
-  email: Type.String({ minLength: 3 }),
+  email: Type.String({ minLength: 5, maxLength: 254, pattern: '.+@.+\\..+' }),
   phone: Type.Optional(Type.String()),
   dateOfBirth: Type.Optional(Type.String()),
   departmentId: Type.Optional(Type.String({ minLength: 1 })),
@@ -101,10 +101,10 @@ export const workWeekBody = Type.Object({
 });
 
 export const workEmailOtpBody = Type.Object({
-  email: Type.String({ minLength: 3 }),
+  email: Type.String({ minLength: 5, maxLength: 254, pattern: '.+@.+\\..+' }),
 });
 
 export const workEmailOtpVerifyBody = Type.Object({
-  email: Type.String({ minLength: 3 }),
+  email: Type.String({ minLength: 5, maxLength: 254, pattern: '.+@.+\\..+' }),
   code: Type.String({ minLength: 4, maxLength: 4 }),
 });

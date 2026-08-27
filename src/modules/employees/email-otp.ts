@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomInt } from 'node:crypto';
 import { API_ERROR_CODES } from '../../shared/constants/error-codes';
 import { AppError } from '../../shared/errors/app-error';
+import { isValidEmail, normalizeEmail } from '../../shared/email';
 
 const OTP_TTL_MS = 10 * 60 * 1000;
 const TOKEN_TTL_MS = 30 * 60 * 1000;
@@ -14,7 +15,7 @@ const pending = new Map<string, Pending>();
 const confirmed = new Map<string, Confirmed>();
 
 export function normalizeWorkEmail(email: string): string {
-  return email.trim().toLowerCase();
+  return normalizeEmail(email);
 }
 
 function pendingKey(actorId: string, email: string): string {
@@ -41,7 +42,7 @@ export function createWorkEmailOtp(): string {
 export function issueWorkEmailOtp(actorId: string, email: string, now = Date.now()): string {
   sweep(now);
   const normalized = normalizeWorkEmail(email);
-  if (!normalized.includes('@')) {
+  if (!isValidEmail(normalized)) {
     throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Enter a valid work email.', 400);
   }
   const existing = pending.get(pendingKey(actorId, normalized));
