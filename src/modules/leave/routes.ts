@@ -20,6 +20,7 @@ const applicationBody = Type.Object({
   handover: Type.Optional(Type.String()),
   handoverEmployeeId: Type.Optional(Type.String()),
   attachmentUrl: Type.Optional(Type.String()),
+  projectId: Type.Optional(Type.String()),
 });
 
 function metaOf(request: { ip: string; headers: { 'user-agent'?: string } }) {
@@ -55,6 +56,7 @@ export async function registerLeaveRoutes(app: FastifyInstance): Promise<void> {
         handover?: string;
         handoverEmployeeId?: string;
         attachmentUrl?: string;
+        projectId?: string;
       };
       return ok(await createLeaveApplicationService(supabase).apply(request.user, body, metaOf(request)));
     },
@@ -76,6 +78,7 @@ export async function registerLeaveRoutes(app: FastifyInstance): Promise<void> {
         handover?: string;
         handoverEmployeeId?: string;
         attachmentUrl?: string;
+        projectId?: string;
       };
       return ok(await createLeaveApplicationService(supabase).update(request.user, id, body, metaOf(request)));
     },
@@ -138,6 +141,19 @@ export async function registerLeaveRoutes(app: FastifyInstance): Promise<void> {
     if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
     const { id } = request.params as { id: string };
     return ok(await createLeaveApplicationService(supabase).acceptHandover(request.user, id, metaOf(request)));
+  });
+
+  app.post('/api/v1/leaves/:id/project-lead-accept', { preHandler: [requireAuth()] }, async (request) => {
+    const supabase = requireSupabase(app.supabase);
+    if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
+    const { id } = request.params as { id: string };
+    return ok(await createLeaveApplicationService(supabase).acceptProjectLead(request.user, id, metaOf(request)));
+  });
+
+  app.get('/api/v1/leave-projects', { preHandler: [requireAuth()] }, async (request) => {
+    const supabase = requireSupabase(app.supabase);
+    if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
+    return ok(await createLeaveApplicationService(supabase).listLeaveProjects(request.user));
   });
 
   app.get('/api/v1/leave-colleagues', { preHandler: [requireAuth()] }, async (request) => {

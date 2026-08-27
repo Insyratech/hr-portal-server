@@ -12,6 +12,8 @@ import { loadWorkingDays } from '../leave/support';
 import { weekBounds, nextWeekStart } from './week-bounds';
 import { ensureWeeklyPlan } from './plans';
 import { canViewOthersWork } from './access';
+import { notifyProjectLeadAssigned } from './lead-desk';
+import { notifyNewLeadOfPendingLeave } from '../leave/project-lead-approval';
 import {
   canEditPriorityContent,
   canEditPriorityExecution,
@@ -261,10 +263,22 @@ export function createWorkService(supabase: SupabaseClient) {
     );
   }
 
-  async function listAllProjects() {
-    const { data, error } = await supabase.from('projects').select('id, name, code, status').eq('status', 'active').order('name');
+  async function listAllProjects(includeInactive = false) {
+    let query = supabase
+      .from('projects')
+      .select('id, name, code, status, lead_employee_id')
+      .order('name');
+    if (!includeInactive) query = query.eq('status', 'active');
+    const { data, error } = await query;
     if (error) throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load projects.', 500);
     return data ?? [];
+  }
+
+  async function loadEmployeeNames(employeeIds: string[]) {
+    const unique = [...new Set(employeeIds.filter(Boolean))];
+    if (unique.length === 0) return new Map<string, string>();
+    const { data } = await supabase.from('employees').select('id, full_name').in('id', unique);
+    return new Map((data ?? []).map((row) => [row.id as string, row.full_name as string]));
   }
 
   async function loadProjectMemberMap(projectIds: string[]) {
@@ -276,10 +290,7 @@ export function createWorkService(supabase: SupabaseClient) {
       .in('project_id', projectIds);
     if (error) throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load project members.', 500);
     const employeeIds = [...new Set((memberRows ?? []).map((row) => row.employee_id as string))];
-    const { data: employees } = employeeIds.length
-      ? await supabase.from('employees').select('id, full_name').in('id', employeeIds)
-      : { data: [] };
-    const nameById = new Map((employees ?? []).map((row) => [row.id as string, row.full_name as string]));
+    const nameById = await loadEmployeeNames(employeeIds);
     for (const row of memberRows ?? []) {
       const projectId = row.project_id as string;
       const employeeId = row.employee_id as string;
@@ -294,15 +305,23 @@ export function createWorkService(supabase: SupabaseClient) {
   }
 
   async function listAllProjectsWithMembers() {
-    const projects = await listAllProjects();
-    const membersByProject = await loadProjectMemberMap(projects.map((row) => row.id as string));
+    const projects = await listAllProjects(true);
+    const projectIds = projects.map((row) => row.id as string);
+    const membersByProject = await loadProjectMemberMap(projectIds);
+    const leadIds = projects
+      .map((row) => row.lead_employee_id as string | null)
+      .filter((id): id is string => Boolean(id));
+    const leadNames = await loadEmployeeNames(leadIds);
     return projects.map((row) => {
       const members = membersByProject.get(row.id as string) ?? [];
+      const leadEmployeeId = (row.lead_employee_id as string | null) ?? null;
       return {
         id: row.id as string,
         name: row.name as string,
         code: row.code as string,
         status: row.status as string,
+        leadEmployeeId,
+        leadName: leadEmployeeId ? (leadNames.get(leadEmployeeId) ?? null) : null,
         memberCount: members.length,
         members,
       };
@@ -330,16 +349,35 @@ export function createWorkService(supabase: SupabaseClient) {
   async function listMemberProjects(memberId: string) {
     const { data, error } = await supabase
       .from('project_members')
-      .select('projects ( id, name, code, status )')
+      .select('projects ( id, name, code, status, lead_employee_id )')
       .eq('employee_id', memberId);
     if (error) throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load projects.', 500);
-    const rows: { id: string; name: string; code: string; status: string }[] = [];
+    const rows: {
+      id: string;
+      name: string;
+      code: string;
+      status: string;
+      leadEmployeeId: string | null;
+    }[] = [];
     for (const row of data ?? []) {
       const project = firstRel(
-        (row as { projects?: { id: string; name: string; code: string; status: string } | { id: string; name: string; code: string; status: string }[] })
-          .projects,
+        (
+          row as {
+            projects?:
+              | { id: string; name: string; code: string; status: string; lead_employee_id: string | null }
+              | { id: string; name: string; code: string; status: string; lead_employee_id: string | null }[];
+          }
+        ).projects,
       );
-      if (project && project.status === 'active') rows.push(project);
+      if (project && project.status === 'active') {
+        rows.push({
+          id: project.id,
+          name: project.name,
+          code: project.code,
+          status: project.status,
+          leadEmployeeId: project.lead_employee_id ?? null,
+        });
+      }
     }
     return rows;
   }
@@ -415,17 +453,31 @@ export function createWorkService(supabase: SupabaseClient) {
     async setProjectMembers(
       actor: RequestUser,
       projectId: string,
-      employeeIds: string[],
+      input: { employeeIds: string[]; leadEmployeeId: string },
       meta: RequestMeta,
     ) {
       if (!canManageProjects(actor)) {
         throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot manage projects.', 403);
       }
       await assertActiveProject(projectId);
-      const uniqueIds = [...new Set(employeeIds.filter(Boolean))];
+      const leadEmployeeId = input.leadEmployeeId?.trim();
+      if (!leadEmployeeId) {
+        throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Choose a project lead.', 400);
+      }
+      const uniqueIds = [...new Set([...input.employeeIds.filter(Boolean), leadEmployeeId])];
+      if (!uniqueIds.includes(leadEmployeeId)) {
+        throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'The project lead must also be a member.', 400);
+      }
       for (const employeeId of uniqueIds) {
         await assertActiveEmployee(employeeId);
       }
+
+      const { data: existingProject } = await supabase
+        .from('projects')
+        .select('lead_employee_id, name, code')
+        .eq('id', projectId)
+        .maybeSingle();
+      const previousLeadId = (existingProject?.lead_employee_id as string | null) ?? null;
 
       const { data: existingRows, error: existingError } = await supabase
         .from('project_members')
@@ -455,18 +507,105 @@ export function createWorkService(supabase: SupabaseClient) {
         if (error) throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to assign project members.', 500);
       }
 
+      const { error: leadError } = await supabase
+        .from('projects')
+        .update({ lead_employee_id: leadEmployeeId })
+        .eq('id', projectId);
+      if (leadError) {
+        throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to set the project lead.', 500);
+      }
+
+      if (leadEmployeeId !== previousLeadId) {
+        await notifyProjectLeadAssigned(supabase, {
+          projectId,
+          projectName: (existingProject?.name as string) ?? 'Project',
+          projectCode: (existingProject?.code as string) ?? '',
+          leadEmployeeId,
+        });
+        await notifyNewLeadOfPendingLeave(supabase, {
+          projectId,
+          projectName: (existingProject?.name as string) ?? 'Project',
+          leadEmployeeId,
+        });
+      }
+
       await writeAuditLog(supabase, {
         actorId: actor.employeeId,
         action: 'project.members_set',
         entityType: 'project',
         entityId: projectId,
-        newValues: { employeeIds: uniqueIds, added: toAdd, removed: toRemove },
+        newValues: { employeeIds: uniqueIds, leadEmployeeId, added: toAdd, removed: toRemove },
         ...meta,
       });
 
       const membersByProject = await loadProjectMemberMap([projectId]);
       const members = membersByProject.get(projectId) ?? [];
-      return { projectId, memberCount: members.length, members };
+      const leadNames = await loadEmployeeNames([leadEmployeeId]);
+      return {
+        projectId,
+        memberCount: members.length,
+        members,
+        leadEmployeeId,
+        leadName: leadNames.get(leadEmployeeId) ?? null,
+      };
+    },
+
+    async setProjectStatus(
+      actor: RequestUser,
+      projectId: string,
+      status: 'active' | 'inactive',
+      meta: RequestMeta,
+    ) {
+      if (!canManageProjects(actor)) {
+        throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot manage projects.', 403);
+      }
+      if (status !== 'active' && status !== 'inactive') {
+        throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Status must be active or inactive.', 400);
+      }
+      const { data: existing, error: loadError } = await supabase
+        .from('projects')
+        .select('id, name, code, status, lead_employee_id')
+        .eq('id', projectId)
+        .maybeSingle();
+      if (loadError || !existing) {
+        throw new AppError(API_ERROR_CODES.NOT_FOUND, 'Project not found.', 404);
+      }
+      if (status === 'active' && !existing.lead_employee_id) {
+        throw new AppError(
+          API_ERROR_CODES.VALIDATION_ERROR,
+          'Assign a project lead before reactivating this project.',
+          400,
+        );
+      }
+      if (existing.status === status) {
+        return {
+          id: existing.id as string,
+          name: existing.name as string,
+          code: existing.code as string,
+          status: existing.status as string,
+          leadEmployeeId: (existing.lead_employee_id as string | null) ?? null,
+        };
+      }
+      const { error } = await supabase.from('projects').update({ status }).eq('id', projectId);
+      if (error) {
+        throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to update project status.', 500);
+      }
+      await writeAuditLog(supabase, {
+        actorId: actor.employeeId,
+        action: 'project.status_set',
+        entityType: 'project',
+        entityId: projectId,
+        oldValues: { status: existing.status },
+        newValues: { status },
+        ...meta,
+      });
+      return {
+        id: existing.id as string,
+        name: existing.name as string,
+        code: existing.code as string,
+        status,
+        leadEmployeeId: (existing.lead_employee_id as string | null) ?? null,
+      };
     },
 
     async listEmployeeProjects(actor: RequestUser, employeeId: string) {
@@ -484,6 +623,7 @@ export function createWorkService(supabase: SupabaseClient) {
           name: row.name,
           code: row.code,
           status: row.status,
+          leadEmployeeId: row.leadEmployeeId,
         })),
       };
     },
@@ -508,6 +648,18 @@ export function createWorkService(supabase: SupabaseClient) {
       const next = new Set(uniqueIds);
       const toRemove = [...existing].filter((id) => !next.has(id));
       const toAdd = uniqueIds.filter((id) => !existing.has(id));
+
+      const leadBlocked = current.filter(
+        (row) => toRemove.includes(row.id) && row.leadEmployeeId === employeeId,
+      );
+      if (leadBlocked.length) {
+        const codes = leadBlocked.map((row) => row.code).join(', ');
+        throw new AppError(
+          API_ERROR_CODES.VALIDATION_ERROR,
+          `This person is the project lead for ${codes}. Choose a new lead on Projects before removing them.`,
+          400,
+        );
+      }
 
       if (toRemove.length) {
         const { error } = await supabase
@@ -542,13 +694,14 @@ export function createWorkService(supabase: SupabaseClient) {
           name: row.name,
           code: row.code,
           status: row.status,
+          leadEmployeeId: row.leadEmployeeId,
         })),
       };
     },
 
     async createProject(
       actor: RequestUser,
-      input: { name: string; code: string; employeeIds?: string[] },
+      input: { name: string; code: string; employeeIds?: string[]; leadEmployeeId: string },
       meta: RequestMeta,
     ) {
       if (!canManageProjects(actor)) {
@@ -556,36 +709,60 @@ export function createWorkService(supabase: SupabaseClient) {
       }
       const name = input.name.trim();
       const code = input.code.trim().toUpperCase();
+      const leadEmployeeId = input.leadEmployeeId?.trim();
       if (!name || !code) throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Add a project name and code.', 400);
-      const { data, error } = await supabase.from('projects').insert({ name, code }).select('*').single();
+      if (!leadEmployeeId) {
+        throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Choose a project lead.', 400);
+      }
+      await assertActiveEmployee(leadEmployeeId);
+      const members = [...new Set([actor.employeeId, leadEmployeeId, ...(input.employeeIds ?? [])])];
+      for (const employeeId of members) {
+        if (employeeId === actor.employeeId || employeeId === leadEmployeeId) continue;
+        await assertActiveEmployee(employeeId);
+      }
+
+      const { data, error } = await supabase
+        .from('projects')
+        .insert({ name, code, lead_employee_id: leadEmployeeId })
+        .select('*')
+        .single();
       if (error || !data) {
         if (error?.code === '23505') throw new AppError(API_ERROR_CODES.CONFLICT, 'A project with this code already exists.', 409);
         throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to create the project.', 500);
       }
-      const members = [...new Set([actor.employeeId, ...(input.employeeIds ?? [])])];
       if (members.length) {
-        await supabase
-          .from('project_members')
-          .upsert(
-            members.map((employee_id) => ({ project_id: data.id, employee_id })),
-            { onConflict: 'project_id,employee_id' },
-          );
+        const { error: memberError } = await supabase.from('project_members').upsert(
+          members.map((employee_id) => ({ project_id: data.id, employee_id })),
+          { onConflict: 'project_id,employee_id' },
+        );
+        if (memberError) {
+          throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to add project members.', 500);
+        }
       }
       await writeAuditLog(supabase, {
         actorId: actor.employeeId,
         action: 'project.create',
         entityType: 'project',
         entityId: data.id as string,
-        newValues: { name, code, memberIds: members },
+        newValues: { name, code, memberIds: members, leadEmployeeId },
         ...meta,
+      });
+      await notifyProjectLeadAssigned(supabase, {
+        projectId: data.id as string,
+        projectName: name,
+        projectCode: code,
+        leadEmployeeId,
       });
       const membersByProject = await loadProjectMemberMap([data.id as string]);
       const memberList = membersByProject.get(data.id as string) ?? [];
+      const leadNames = await loadEmployeeNames([leadEmployeeId]);
       return {
         id: data.id as string,
         name: data.name as string,
         code: data.code as string,
         status: data.status as string,
+        leadEmployeeId,
+        leadName: leadNames.get(leadEmployeeId) ?? null,
         memberCount: memberList.length,
         members: memberList,
       };
@@ -595,6 +772,8 @@ export function createWorkService(supabase: SupabaseClient) {
       if (!canManageProjects(actor)) {
         throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot manage projects.', 403);
       }
+      await assertActiveProject(projectId);
+      await assertActiveEmployee(employeeId);
       const { error } = await supabase
         .from('project_members')
         .upsert({ project_id: projectId, employee_id: employeeId }, { onConflict: 'project_id,employee_id' });

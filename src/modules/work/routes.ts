@@ -9,7 +9,9 @@ import { requireSupabase } from '../leave/support';
 import { createWorkBoardService } from './admin-board';
 import { createWorkAnalyticsService } from './analytics';
 import { createDailyWorkService } from './daily';
+import { createLeadDeskService } from './lead-desk';
 import { createWorkOverviewService } from './overview';
+import { createProjectUpdatesService } from './project-updates';
 import { createWorkService } from './service';
 import { createWorkSettingsService } from './settings';
 import { createWeeklyUpdatesService } from './weekly-updates';
@@ -260,6 +262,86 @@ export async function registerWorkRoutes(app: FastifyInstance): Promise<void> {
   );
 
   app.get(
+    '/api/v1/work/lead/projects',
+    {
+      preHandler: [
+        requirePermission(PERMISSIONS.WORK_OWN, PERMISSIONS.WORK_VIEW, PERMISSIONS.PROJECTS_MANAGE),
+      ],
+    },
+    async (request) => {
+      if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
+      return ok(await createLeadDeskService(requireSupabase(app.supabase)).listLeadProjects(request.user));
+    },
+  );
+
+  app.get(
+    '/api/v1/work/lead/projects/:id',
+    {
+      preHandler: [
+        requirePermission(PERMISSIONS.WORK_OWN, PERMISSIONS.WORK_VIEW, PERMISSIONS.PROJECTS_MANAGE),
+      ],
+      schema: {
+        params: Type.Object({ id: Type.String({ minLength: 1 }) }),
+      },
+    },
+    async (request) => {
+      if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
+      const { id } = request.params as { id: string };
+      const query = request.query as { date?: string };
+      return ok(
+        await createLeadDeskService(requireSupabase(app.supabase)).getLeadProjectDesk(
+          request.user,
+          id,
+          query.date,
+        ),
+      );
+    },
+  );
+
+  app.get(
+    '/api/v1/work/projects/:id/updates',
+    {
+      preHandler: [
+        requirePermission(PERMISSIONS.WORK_OWN, PERMISSIONS.WORK_VIEW, PERMISSIONS.PROJECTS_MANAGE),
+      ],
+      schema: {
+        params: Type.Object({ id: Type.String({ minLength: 1 }) }),
+      },
+    },
+    async (request) => {
+      if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
+      const { id } = request.params as { id: string };
+      return ok(await createProjectUpdatesService(requireSupabase(app.supabase)).list(request.user, id));
+    },
+  );
+
+  app.post(
+    '/api/v1/work/projects/:id/updates',
+    {
+      preHandler: [requirePermission(PERMISSIONS.WORK_OWN, PERMISSIONS.PROJECTS_MANAGE)],
+      schema: {
+        params: Type.Object({ id: Type.String({ minLength: 1 }) }),
+        body: Type.Object({
+          body: Type.String({ minLength: 1, maxLength: 2000 }),
+        }),
+      },
+    },
+    async (request) => {
+      if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
+      const { id } = request.params as { id: string };
+      const body = request.body as { body: string };
+      return ok(
+        await createProjectUpdatesService(requireSupabase(app.supabase)).create(
+          request.user,
+          id,
+          body,
+          metaOf(request),
+        ),
+      );
+    },
+  );
+
+  app.get(
     '/api/v1/work/projects',
     { preHandler: [requirePermission(PERMISSIONS.WORK_OWN, PERMISSIONS.PROJECTS_MANAGE)] },
     async (request) => {
@@ -276,13 +358,19 @@ export async function registerWorkRoutes(app: FastifyInstance): Promise<void> {
         body: Type.Object({
           name: Type.String({ minLength: 1 }),
           code: Type.String({ minLength: 1 }),
+          leadEmployeeId: Type.String({ minLength: 1 }),
           employeeIds: Type.Optional(Type.Array(Type.String())),
         }),
       },
     },
     async (request) => {
       if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
-      const body = request.body as { name: string; code: string; employeeIds?: string[] };
+      const body = request.body as {
+        name: string;
+        code: string;
+        leadEmployeeId: string;
+        employeeIds?: string[];
+      };
       return ok(await createWorkService(requireSupabase(app.supabase)).createProject(request.user, body, metaOf(request)));
     },
   );
@@ -306,18 +394,47 @@ export async function registerWorkRoutes(app: FastifyInstance): Promise<void> {
       preHandler: [requirePermission(PERMISSIONS.PROJECTS_MANAGE)],
       schema: {
         params: Type.Object({ id: Type.String({ minLength: 1 }) }),
-        body: Type.Object({ employeeIds: Type.Array(Type.String()) }),
+        body: Type.Object({
+          employeeIds: Type.Array(Type.String()),
+          leadEmployeeId: Type.String({ minLength: 1 }),
+        }),
       },
     },
     async (request) => {
       if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
       const { id } = request.params as { id: string };
-      const { employeeIds } = request.body as { employeeIds: string[] };
+      const body = request.body as { employeeIds: string[]; leadEmployeeId: string };
       return ok(
         await createWorkService(requireSupabase(app.supabase)).setProjectMembers(
           request.user,
           id,
-          employeeIds,
+          body,
+          metaOf(request),
+        ),
+      );
+    },
+  );
+
+  app.patch(
+    '/api/v1/work/projects/:id/status',
+    {
+      preHandler: [requirePermission(PERMISSIONS.PROJECTS_MANAGE)],
+      schema: {
+        params: Type.Object({ id: Type.String({ minLength: 1 }) }),
+        body: Type.Object({
+          status: Type.Union([Type.Literal('active'), Type.Literal('inactive')]),
+        }),
+      },
+    },
+    async (request) => {
+      if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
+      const { id } = request.params as { id: string };
+      const body = request.body as { status: 'active' | 'inactive' };
+      return ok(
+        await createWorkService(requireSupabase(app.supabase)).setProjectStatus(
+          request.user,
+          id,
+          body.status,
           metaOf(request),
         ),
       );
