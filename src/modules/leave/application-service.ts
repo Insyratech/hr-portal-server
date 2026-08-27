@@ -15,6 +15,7 @@ import {
   loadWorkingDays,
   mapRpcError,
   notifyApprovers,
+  notifyHrLeaveRecorded,
   writeLeaveAudit,
 } from './support';
 import { listWorkWeekRows } from '../attendance/work-week';
@@ -498,6 +499,12 @@ export function createLeaveApplicationService(supabase: SupabaseClient) {
           paragraphs: ['Your leave request was auto-approved. Sign in to review the dates.'],
           ctaLabel: 'View leave',
         });
+        await notifyHrLeaveRecorded(
+          supabase,
+          createdId,
+          employee.full_name as string,
+          (leaveType.name as string) || 'leave',
+        );
         await syncEmployeeWorkDays(supabase, actor.employeeId, input.startDate, input.endDate);
       }
 

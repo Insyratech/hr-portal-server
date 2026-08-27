@@ -6,12 +6,19 @@ All work reminder / digests use **Asia/Kolkata (IST)**. Cron runners should call
 
 | Method | Path | When it acts (IST) | What it does |
 |--------|------|--------------------|--------------|
-| `POST` | `/api/v1/jobs/work/monday-priorities` | **Monday 16:00** | Remind employees (work loop only) to set / submit weekly priorities |
+| `POST` | `/api/v1/jobs/work/monday-priorities` | **Monday 16:00** | Remind employees (work loop only) to set / submit weekly priorities. **Reminder only** — there is no 6pm (or other) submit cutoff. |
 | `POST` | `/api/v1/jobs/work/daily-reminders` | **Daily 20:00 & 22:00** (org-configurable hours) | Daily update reminders if priorities are fully approved; on **Saturday** also employee PPT reminders after 18:00 and **CSO PPT digest at 22:00** |
 | `POST` | `/api/v1/jobs/work/weekly-ppt-reminders` | Same Saturday gates as above | PPT employee reminders + CSO digest only (alias for PPT slice) |
 | `POST` | `/api/v1/jobs/reminders/daily` | Morning-style bundle | Leave daily reminders + Monday priorities (if Mon 16) + close missing work days |
 | `POST` | `/api/v1/jobs/work/close-days` | After midnight IST (ops choice) | Close previous calendar day’s missing daily updates |
 | `POST` | `/api/v1/jobs/work/retention-purge` | Weekly / nightly (ops) | Purge work data past retention |
+
+## Monday priorities — leave and submit window
+
+- The Monday 16:00 IST job **skips** people on **approved leave** that day (`onApprovedLeave` / not required). They are not mailed.
+- After they return, they may **submit any day** that week. Create/submit APIs have **no Monday-only lock**.
+- Soft product copy: “submit before end of Monday”; if on leave Monday, “submit when you are back.”
+- **≥ 1 work goal** is required at submit (R&D project or regular). Skill is optional. About 3–5 is suggested, not enforced.
 
 ## Suggested external cron (example)
 

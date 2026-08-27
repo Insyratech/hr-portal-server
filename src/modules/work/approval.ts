@@ -18,6 +18,41 @@ export function isActivePriorityForGate(executionStatus: string): boolean {
   return !SKIP_EXECUTION.has(executionStatus);
 }
 
+export function isWorkGoalType(type: string): boolean {
+  return type === 'PROJECT' || type === 'REGULAR';
+}
+
+export const MIN_WORK_GOAL_MESSAGE =
+  'Add at least one work goal (R&D project or regular work) before submitting. Skill development is optional.';
+
+const WEEK_WORK_GOAL_APPROVAL = new Set(['DRAFT', 'RESUBMIT_REQUESTED', 'SUBMITTED', 'APPROVED']);
+
+/** True when the week already has a live work goal (draft, with CSO, or approved). */
+export function weekHasWorkGoal(
+  priorities: { type: string; status: string; approvalStatus: string }[],
+): boolean {
+  return priorities.some(
+    (row) =>
+      isWorkGoalType(row.type) &&
+      isActivePriorityForGate(row.status) &&
+      WEEK_WORK_GOAL_APPROVAL.has(row.approvalStatus),
+  );
+}
+
+/** Skill lines may submit only after a work goal is in the CSO loop or already approved. */
+export function weekAllowsSkillSubmit(
+  priorities: { type: string; status: string; approvalStatus: string }[],
+): boolean {
+  return priorities.some(
+    (row) =>
+      isWorkGoalType(row.type) &&
+      isActivePriorityForGate(row.status) &&
+      (row.approvalStatus === 'SUBMITTED' ||
+        row.approvalStatus === 'APPROVED' ||
+        row.approvalStatus === 'RESUBMIT_REQUESTED'),
+  );
+}
+
 export function dailyPrioritiesGate(
   priorities: { status: string; approvalStatus: string }[],
 ): { ok: boolean; reason: string | null } {
@@ -76,7 +111,7 @@ export function planApprovalLabel(summary: PlanApprovalSummary): string {
     case 'none':
       return 'No priorities';
     case 'draft':
-      return 'Draft';
+      return 'Not submitted';
     case 'awaiting':
       return 'Awaiting CSO';
     case 'needs_resubmit':

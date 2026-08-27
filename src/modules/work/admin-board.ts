@@ -8,6 +8,7 @@ import { formatIsoDate, patternOnDate } from '../leave/day-count';
 import { loadHolidayDates, loadWorkingDays } from '../leave/support';
 import {
   aggregatePriorityApproval,
+  isActivePriorityForGate,
   planApprovalLabel,
   skipsWorkApprovalLoop,
   weeklyPptGlanceLabel,
@@ -35,6 +36,30 @@ export type WorkBoardFilters = {
 function isoOrToday(value?: string): string {
   return value && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : formatIsoDate(new Date());
 }
+
+export type PrioritiesQueueItem = {
+  employeeId: string;
+  employeeName: string;
+  departmentId: string | null;
+  departmentName: string | null;
+  workGoalCount: number;
+  skillCount: number;
+  submittedCount: number;
+  weekStart: string;
+  weekEnd: string;
+};
+
+export type PrioritiesApprovedItem = {
+  employeeId: string;
+  employeeName: string;
+  departmentId: string | null;
+  departmentName: string | null;
+  workGoalCount: number;
+  skillCount: number;
+  approvedCount: number;
+  weekStart: string;
+  weekEnd: string;
+};
 
 export function createWorkBoardService(supabase: SupabaseClient) {
   return {
@@ -215,7 +240,7 @@ export function createWorkBoardService(supabase: SupabaseClient) {
               : today.status === 'COMPLETED' || today.submitted
                 ? 'Submitted'
                 : today.required
-                  ? 'Missing'
+                  ? 'Pending'
                   : today.status === 'HOLIDAY'
                     ? 'Holiday'
                     : 'Not expected',
@@ -237,6 +262,135 @@ export function createWorkBoardService(supabase: SupabaseClient) {
         openBlockers,
         people: peopleOut,
       };
+    },
+
+    async listPriorityDesk(
+      actor: RequestUser,
+      approvalStatus: 'SUBMITTED' | 'APPROVED',
+      filters?: { date?: string },
+    ) {
+      if (
+        !actor.permissions.includes(PERMISSIONS.WORK_VIEW) &&
+        !actor.permissions.includes(PERMISSIONS.WORK_ASSIGN)
+      ) {
+        throw new AppError(
+          API_ERROR_CODES.FORBIDDEN,
+          approvalStatus === 'SUBMITTED'
+            ? 'You cannot view the priorities queue.'
+            : 'You cannot view approved priorities.',
+          403,
+        );
+      }
+      const date = isoOrToday(filters?.date);
+      const workingDays = await loadWorkingDays(supabase);
+      const week = weekBounds(date, workingDays);
+
+      const { data: peopleRows, error: peopleError } = await supabase
+        .from('employees')
+        .select('id, full_name, department_id, departments ( name )')
+        .eq('status', 'active')
+        .order('full_name');
+      if (peopleError) {
+        throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load people for the priorities desk.', 500);
+      }
+
+      const rolesByEmployee = await loadEmployeeRoleMap(supabase);
+      const people = (peopleRows ?? [])
+        .map((row) => {
+          const dept = row.departments as { name?: string } | { name?: string }[] | null;
+          const departmentName = Array.isArray(dept) ? dept[0]?.name : dept?.name;
+          return {
+            id: row.id as string,
+            name: row.full_name as string,
+            departmentId: (row.department_id as string | null) ?? null,
+            departmentName: departmentName ?? null,
+          };
+        })
+        .filter((person) => !skipsWorkApprovalLoop(rolesByEmployee.get(person.id) ?? []));
+      const ids = people.map((row) => row.id);
+      if (ids.length === 0) {
+        return { week, items: [] as Array<PrioritiesQueueItem | PrioritiesApprovedItem> };
+      }
+
+      const { data: plans, error: plansError } = await supabase
+        .from('weekly_plans')
+        .select('id, employee_id')
+        .eq('week_start', week.start)
+        .in('employee_id', ids);
+      if (plansError) {
+        throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load weekly plans for the priorities desk.', 500);
+      }
+      const planIds = (plans ?? []).map((row) => row.id as string);
+      if (planIds.length === 0) {
+        return { week, items: [] as Array<PrioritiesQueueItem | PrioritiesApprovedItem> };
+      }
+
+      const { data: priorityRows, error: priorityError } = await supabase
+        .from('weekly_priorities')
+        .select('id, employee_id, status, approval_status, priority_type')
+        .in('plan_id', planIds)
+        .eq('approval_status', approvalStatus);
+      if (priorityError) {
+        throw new AppError(
+          API_ERROR_CODES.INTERNAL_ERROR,
+          approvalStatus === 'SUBMITTED'
+            ? 'Failed to load submitted priorities.'
+            : 'Failed to load approved priorities.',
+          500,
+        );
+      }
+
+      type Tally = { workGoalCount: number; skillCount: number; lineCount: number };
+      const tallyByEmployee = new Map<string, Tally>();
+      for (const row of priorityRows ?? []) {
+        if (!isActivePriorityForGate(row.status as string)) continue;
+        const employeeId = row.employee_id as string;
+        const next = tallyByEmployee.get(employeeId) ?? {
+          workGoalCount: 0,
+          skillCount: 0,
+          lineCount: 0,
+        };
+        next.lineCount += 1;
+        if ((row.priority_type as string) === 'SKILL') next.skillCount += 1;
+        else next.workGoalCount += 1;
+        tallyByEmployee.set(employeeId, next);
+      }
+
+      const personById = new Map(people.map((person) => [person.id, person]));
+      const items = [...tallyByEmployee.entries()]
+        .map(([employeeId, tally]) => {
+          const person = personById.get(employeeId);
+          if (!person) return null;
+          const base = {
+            employeeId,
+            employeeName: person.name,
+            departmentId: person.departmentId,
+            departmentName: person.departmentName,
+            workGoalCount: tally.workGoalCount,
+            skillCount: tally.skillCount,
+            weekStart: week.start,
+            weekEnd: week.end,
+          };
+          return approvalStatus === 'SUBMITTED'
+            ? ({ ...base, submittedCount: tally.lineCount } as PrioritiesQueueItem)
+            : ({ ...base, approvedCount: tally.lineCount } as PrioritiesApprovedItem);
+        })
+        .filter((row): row is PrioritiesQueueItem | PrioritiesApprovedItem => row != null)
+        .sort((a, b) => a.employeeName.localeCompare(b.employeeName));
+
+      return { week, items };
+    },
+
+    /** Employees with ≥1 SUBMITTED priority in the planning week containing `date`. */
+    async getPrioritiesQueue(actor: RequestUser, filters?: { date?: string }) {
+      const result = await this.listPriorityDesk(actor, 'SUBMITTED', filters);
+      return { week: result.week, items: result.items as PrioritiesQueueItem[] };
+    },
+
+    /** Employees with ≥1 APPROVED priority in the planning week containing `date`. */
+    async getApprovedPriorities(actor: RequestUser, filters?: { date?: string }) {
+      const result = await this.listPriorityDesk(actor, 'APPROVED', filters);
+      return { week: result.week, items: result.items as PrioritiesApprovedItem[] };
     },
   };
 }

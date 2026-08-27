@@ -23,6 +23,8 @@ const priorityBody = Type.Object({
   employeeId: Type.Optional(Type.String({ minLength: 1 })),
   type: Type.String({ minLength: 1 }),
   projectId: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  regularSubtype: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  regularSubtypeLabel: Type.Optional(Type.Union([Type.String(), Type.Null()])),
   title: Type.String({ minLength: 1 }),
   description: Type.Optional(Type.String()),
   expectedOutcome: Type.Optional(Type.String()),
@@ -36,6 +38,8 @@ const priorityPatch = Type.Object({
   expectedOutcome: Type.Optional(Type.String()),
   successCriteria: Type.Optional(Type.String()),
   level: Type.Optional(Type.String()),
+  regularSubtype: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  regularSubtypeLabel: Type.Optional(Type.Union([Type.String(), Type.Null()])),
   status: Type.Optional(Type.String()),
   incompleteReason: Type.Optional(Type.Union([Type.String(), Type.Null()])),
 });
@@ -132,6 +136,30 @@ export async function registerWorkRoutes(app: FastifyInstance): Promise<void> {
         projectId?: string;
       };
       return ok(await createWorkBoardService(requireSupabase(app.supabase)).getBoard(request.user, query));
+    },
+  );
+
+  app.get(
+    '/api/v1/work/priorities/queue',
+    { preHandler: [requirePermission(PERMISSIONS.WORK_VIEW, PERMISSIONS.WORK_ASSIGN)] },
+    async (request) => {
+      if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
+      const query = request.query as { date?: string };
+      return ok(
+        await createWorkBoardService(requireSupabase(app.supabase)).getPrioritiesQueue(request.user, query),
+      );
+    },
+  );
+
+  app.get(
+    '/api/v1/work/priorities/approved',
+    { preHandler: [requirePermission(PERMISSIONS.WORK_VIEW, PERMISSIONS.WORK_ASSIGN)] },
+    async (request) => {
+      if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
+      const query = request.query as { date?: string };
+      return ok(
+        await createWorkBoardService(requireSupabase(app.supabase)).getApprovedPriorities(request.user, query),
+      );
     },
   );
 
@@ -361,6 +389,8 @@ export async function registerWorkRoutes(app: FastifyInstance): Promise<void> {
         employeeId?: string;
         type: string;
         projectId?: string | null;
+        regularSubtype?: string | null;
+        regularSubtypeLabel?: string | null;
         title: string;
         description?: string;
         expectedOutcome?: string;
@@ -417,6 +447,30 @@ export async function registerWorkRoutes(app: FastifyInstance): Promise<void> {
       return ok(
         await createWorkService(requireSupabase(app.supabase)).submitAllPendingPriorities(
           request.user,
+          metaOf(request),
+        ),
+      );
+    },
+  );
+
+  app.post(
+    '/api/v1/work/priorities/approve-all',
+    {
+      preHandler: [requirePermission(PERMISSIONS.WORK_VIEW, PERMISSIONS.WORK_ASSIGN)],
+      schema: {
+        body: Type.Object({
+          employeeId: Type.String({ minLength: 1 }),
+          date: Type.Optional(Type.String({ pattern: '^\\d{4}-\\d{2}-\\d{2}$' })),
+        }),
+      },
+    },
+    async (request) => {
+      if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
+      const body = request.body as { employeeId: string; date?: string };
+      return ok(
+        await createWorkService(requireSupabase(app.supabase)).approveAllSubmittedPriorities(
+          request.user,
+          body,
           metaOf(request),
         ),
       );

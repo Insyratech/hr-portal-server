@@ -5,6 +5,8 @@ import {
   canEditPriorityExecution,
   dailyPrioritiesGate,
   skipsWorkApprovalLoop,
+  weekAllowsSkillSubmit,
+  weekHasWorkGoal,
   weeklyPptGlanceStatus,
 } from './approval';
 
@@ -38,6 +40,38 @@ describe('work priority approval helpers', () => {
     expect(canEditPriorityContent('APPROVED')).toBe(false);
     expect(canEditPriorityExecution('APPROVED')).toBe(true);
     expect(canEditPriorityExecution('SUBMITTED')).toBe(false);
+  });
+
+  it('requires at least one live work goal before a week can be submitted', () => {
+    expect(
+      weekHasWorkGoal([{ type: 'SKILL', status: 'NOT_STARTED', approvalStatus: 'DRAFT' }]),
+    ).toBe(false);
+    expect(
+      weekHasWorkGoal([
+        { type: 'SKILL', status: 'NOT_STARTED', approvalStatus: 'DRAFT' },
+        { type: 'REGULAR', status: 'CANCELLED', approvalStatus: 'DRAFT' },
+      ]),
+    ).toBe(false);
+    expect(
+      weekHasWorkGoal([{ type: 'REGULAR', status: 'NOT_STARTED', approvalStatus: 'DRAFT' }]),
+    ).toBe(true);
+    expect(
+      weekHasWorkGoal([{ type: 'PROJECT', status: 'NOT_STARTED', approvalStatus: 'APPROVED' }]),
+    ).toBe(true);
+  });
+
+  it('lets a skill submit only when a work goal is already with CSO, approved, or sent back', () => {
+    expect(
+      weekAllowsSkillSubmit([{ type: 'REGULAR', status: 'NOT_STARTED', approvalStatus: 'DRAFT' }]),
+    ).toBe(false);
+    expect(
+      weekAllowsSkillSubmit([{ type: 'REGULAR', status: 'NOT_STARTED', approvalStatus: 'SUBMITTED' }]),
+    ).toBe(true);
+    expect(
+      weekAllowsSkillSubmit([
+        { type: 'PROJECT', status: 'NOT_STARTED', approvalStatus: 'RESUBMIT_REQUESTED' },
+      ]),
+    ).toBe(true);
   });
 
   it('rolls up plan approval for Team week glance', () => {

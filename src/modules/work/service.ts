@@ -15,12 +15,22 @@ import { canViewOthersWork } from './access';
 import {
   canEditPriorityContent,
   canEditPriorityExecution,
+  MIN_WORK_GOAL_MESSAGE,
   skipsWorkApprovalLoop,
+  weekAllowsSkillSubmit,
+  weekHasWorkGoal,
   type PriorityApprovalStatus,
 } from './approval';
 
 const SOFT_CAP = 5;
 const TYPES = ['PROJECT', 'REGULAR', 'SKILL'] as const;
+const REGULAR_SUBTYPES = [
+  'TESTING',
+  'PRODUCTION',
+  'GENERAL_MANAGEMENT',
+  'INVENTORY',
+  'OTHER',
+] as const;
 const LEVELS = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'] as const;
 const STATUSES = [
   'NOT_STARTED',
@@ -43,6 +53,7 @@ const INCOMPLETE_REASONS = [
 ] as const;
 
 export type PriorityType = (typeof TYPES)[number];
+export type RegularSubtype = (typeof REGULAR_SUBTYPES)[number];
 export type PriorityLevel = (typeof LEVELS)[number];
 export type PriorityStatus = (typeof STATUSES)[number];
 export type IncompleteReason = (typeof INCOMPLETE_REASONS)[number];
@@ -55,6 +66,8 @@ type PriorityRow = {
   employee_id: string;
   priority_type: string;
   project_id: string | null;
+  regular_subtype: string | null;
+  regular_subtype_label: string | null;
   title: string;
   description: string;
   expected_outcome: string;
@@ -99,6 +112,47 @@ function canManageProjects(actor: RequestUser): boolean {
   return isCsoDomainOwner(actor) && actor.permissions.includes(PERMISSIONS.PROJECTS_MANAGE);
 }
 
+/** Resolve project / regular-subtype rules for create + content update. */
+function resolveTypeFields(input: {
+  type: PriorityType;
+  projectId?: string | null;
+  regularSubtype?: string | null;
+  regularSubtypeLabel?: string | null;
+}): {
+  projectId: string | null;
+  regularSubtype: string | null;
+  regularSubtypeLabel: string | null;
+} {
+  if (input.type === 'PROJECT') {
+    const projectId = input.projectId ?? null;
+    if (!projectId) {
+      throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Pick a project for this R&D priority.', 400);
+    }
+    return { projectId, regularSubtype: null, regularSubtypeLabel: null };
+  }
+  if (input.type === 'REGULAR') {
+    const regularSubtype = asType(
+      String(input.regularSubtype ?? ''),
+      REGULAR_SUBTYPES,
+      'regular work type',
+    );
+    const label = (input.regularSubtypeLabel ?? '').trim();
+    if (regularSubtype === 'OTHER' && !label) {
+      throw new AppError(
+        API_ERROR_CODES.VALIDATION_ERROR,
+        'Describe the regular work type when you choose Other.',
+        400,
+      );
+    }
+    return {
+      projectId: null,
+      regularSubtype,
+      regularSubtypeLabel: label || null,
+    };
+  }
+  return { projectId: null, regularSubtype: null, regularSubtypeLabel: null };
+}
+
 function mapPriority(row: PriorityRow) {
   const project = firstRel(row.projects);
   return {
@@ -109,6 +163,8 @@ function mapPriority(row: PriorityRow) {
     projectId: row.project_id,
     projectName: project?.name ?? null,
     projectCode: project?.code ?? null,
+    regularSubtype: (row.regular_subtype as RegularSubtype | null) ?? null,
+    regularSubtypeLabel: row.regular_subtype_label ?? null,
     title: row.title,
     description: row.description,
     expectedOutcome: row.expected_outcome,
@@ -560,6 +616,8 @@ export function createWorkService(supabase: SupabaseClient) {
         employeeId?: string;
         type: string;
         projectId?: string | null;
+        regularSubtype?: string | null;
+        regularSubtypeLabel?: string | null;
         title: string;
         description?: string;
         expectedOutcome?: string;
@@ -590,12 +648,14 @@ export function createWorkService(supabase: SupabaseClient) {
       const level = asType(input.level, LEVELS, 'priority level');
       const title = input.title.trim();
       if (!title) throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Add a short priority title.', 400);
-      let projectId = input.projectId ?? null;
-      if (type === 'PROJECT') {
-        if (!projectId) throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Pick a project for this priority.', 400);
-        await assertProjectAccess(employeeId, projectId, actor);
-      } else {
-        projectId = null;
+      const fields = resolveTypeFields({
+        type,
+        projectId: input.projectId,
+        regularSubtype: input.regularSubtype,
+        regularSubtypeLabel: input.regularSubtypeLabel,
+      });
+      if (type === 'PROJECT' && fields.projectId) {
+        await assertProjectAccess(employeeId, fields.projectId, actor);
       }
 
       const workingDays = await loadWorkingDays(supabase);
@@ -609,7 +669,9 @@ export function createWorkService(supabase: SupabaseClient) {
           plan_id: planId,
           employee_id: employeeId,
           priority_type: type,
-          project_id: projectId,
+          project_id: fields.projectId,
+          regular_subtype: fields.regularSubtype,
+          regular_subtype_label: fields.regularSubtypeLabel,
           title,
           description: input.description?.trim() ?? '',
           expected_outcome: input.expectedOutcome?.trim() ?? '',
@@ -658,6 +720,8 @@ export function createWorkService(supabase: SupabaseClient) {
         expectedOutcome?: string;
         successCriteria?: string;
         level?: string;
+        regularSubtype?: string | null;
+        regularSubtypeLabel?: string | null;
         status?: string;
         incompleteReason?: string | null;
       },
@@ -674,7 +738,9 @@ export function createWorkService(supabase: SupabaseClient) {
         input.description !== undefined ||
         input.expectedOutcome !== undefined ||
         input.successCriteria !== undefined ||
-        input.level !== undefined;
+        input.level !== undefined ||
+        input.regularSubtype !== undefined ||
+        input.regularSubtypeLabel !== undefined;
       if (contentTouch && !canEditPriorityContent(approval)) {
         throw new AppError(
           API_ERROR_CODES.CONFLICT,
@@ -701,6 +767,23 @@ export function createWorkService(supabase: SupabaseClient) {
       if (input.expectedOutcome !== undefined) patch.expected_outcome = input.expectedOutcome.trim();
       if (input.successCriteria !== undefined) patch.success_criteria = input.successCriteria.trim();
       if (input.level !== undefined) patch.priority_level = asType(input.level, LEVELS, 'priority level');
+      if (input.regularSubtype !== undefined || input.regularSubtypeLabel !== undefined) {
+        const fields = resolveTypeFields({
+          type: existing.priority_type as PriorityType,
+          projectId: existing.project_id,
+          regularSubtype:
+            input.regularSubtype !== undefined ? input.regularSubtype : existing.regular_subtype,
+          regularSubtypeLabel:
+            input.regularSubtypeLabel !== undefined
+              ? input.regularSubtypeLabel
+              : existing.regular_subtype_label,
+        });
+        if (existing.priority_type === 'REGULAR') {
+          patch.regular_subtype = fields.regularSubtype;
+          patch.regular_subtype_label = fields.regularSubtypeLabel;
+          patch.project_id = null;
+        }
+      }
       if (input.status !== undefined) {
         const status = asType(input.status, STATUSES, 'status');
         if (status === 'CARRIED_FORWARD') {
@@ -792,6 +875,8 @@ export function createWorkService(supabase: SupabaseClient) {
           employee_id: existing.employee_id,
           priority_type: existing.priority_type,
           project_id: existing.project_id,
+          regular_subtype: existing.regular_subtype,
+          regular_subtype_label: existing.regular_subtype_label,
           title: existing.title,
           description: existing.description,
           expected_outcome: existing.expected_outcome,
@@ -857,6 +942,12 @@ export function createWorkService(supabase: SupabaseClient) {
         );
       }
       const wasResubmit = approval === 'RESUBMIT_REQUESTED';
+      if (existing.priority_type === 'SKILL') {
+        const week = await this.getWeek(actor, { employeeId: existing.employee_id });
+        if (!weekAllowsSkillSubmit(week.priorities)) {
+          throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, MIN_WORK_GOAL_MESSAGE, 400);
+        }
+      }
       const { data, error } = await supabase
         .from('weekly_priorities')
         .update({
@@ -954,22 +1045,42 @@ export function createWorkService(supabase: SupabaseClient) {
           400,
         );
       }
+      if (!weekHasWorkGoal(week.priorities)) {
+        throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, MIN_WORK_GOAL_MESSAGE, 400);
+      }
+      const resubmitCount = pending.filter((row) => row.approvalStatus === 'RESUBMIT_REQUESTED').length;
+      const workFirst = [
+        ...pending.filter((row) => row.type === 'PROJECT' || row.type === 'REGULAR'),
+        ...pending.filter((row) => row.type === 'SKILL'),
+      ];
       const submitted = [];
-      for (const item of pending) {
+      for (const item of workFirst) {
         submitted.push(await this.submitPriorityForApproval(actor, item.id, meta, { notify: false }));
       }
       const employee = await loadStaffById(supabase, actor.employeeId);
       const csoStaff = await listStaffByRole(supabase, ROLE_CODES.CSO);
       const titles = submitted.map((row) => row.title).join('; ');
+      const allResubmits = resubmitCount === pending.length;
+      const mixedResubmits = resubmitCount > 0 && !allResubmits;
+      const notifyTitle = allResubmits
+        ? 'Priorities resubmitted for approval'
+        : mixedResubmits
+          ? 'Priorities submitted and resubmitted for approval'
+          : 'Weekly priorities submitted for approval';
+      const notifyMessage = allResubmits
+        ? `${employee?.fullName ?? 'An employee'} resubmitted ${submitted.length} priorit${submitted.length === 1 ? 'y' : 'ies'} after your comment.`
+        : `${employee?.fullName ?? 'An employee'} submitted ${submitted.length} priorit${submitted.length === 1 ? 'y' : 'ies'} for CSO approval.`;
       await notifyStaff(supabase, csoStaff, {
         type: 'work',
-        title: 'Weekly priorities submitted for approval',
-        message: `${employee?.fullName ?? 'An employee'} submitted ${submitted.length} priorit${submitted.length === 1 ? 'y' : 'ies'} for CSO approval.`,
+        title: notifyTitle,
+        message: notifyMessage,
         referenceType: 'weekly_plan',
         referenceId: actor.employeeId,
         eyebrow: 'Work',
         paragraphs: [
-          `${employee?.fullName ?? 'An employee'} submitted ${submitted.length} weekly priorit${submitted.length === 1 ? 'y' : 'ies'} for your review.`,
+          allResubmits
+            ? `${employee?.fullName ?? 'An employee'} updated and resubmitted ${submitted.length} weekly priorit${submitted.length === 1 ? 'y' : 'ies'} for your review.`
+            : `${employee?.fullName ?? 'An employee'} submitted ${submitted.length} weekly priorit${submitted.length === 1 ? 'y' : 'ies'} for your review.`,
           titles,
         ],
         details: [
@@ -982,7 +1093,12 @@ export function createWorkService(supabase: SupabaseClient) {
       return { submitted, week: await this.getWeek(actor, {}) };
     },
 
-    async approvePriority(actor: RequestUser, id: string, meta: RequestMeta) {
+    async approvePriority(
+      actor: RequestUser,
+      id: string,
+      meta: RequestMeta,
+      options?: { notify?: boolean },
+    ) {
       assertCsoDomainOwner(actor, 'approve weekly priorities');
       if (!actor.permissions.includes(PERMISSIONS.WORK_VIEW) && !actor.permissions.includes(PERMISSIONS.WORK_ASSIGN)) {
         throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot approve priorities.', 403);
@@ -1024,6 +1140,9 @@ export function createWorkService(supabase: SupabaseClient) {
         newValues: mapped,
         ...meta,
       });
+      if (options?.notify === false) {
+        return mapped;
+      }
       const employee = await loadStaffById(supabase, existing.employee_id);
       await notifyStaff(supabase, employee, {
         type: 'work',
@@ -1041,6 +1160,68 @@ export function createWorkService(supabase: SupabaseClient) {
         ctaHref: portalUrl('/work/priorities'),
       });
       return mapped;
+    },
+
+    async approveAllSubmittedPriorities(
+      actor: RequestUser,
+      input: { employeeId: string; date?: string },
+      meta: RequestMeta,
+    ) {
+      assertCsoDomainOwner(actor, 'approve weekly priorities');
+      if (!actor.permissions.includes(PERMISSIONS.WORK_VIEW) && !actor.permissions.includes(PERMISSIONS.WORK_ASSIGN)) {
+        throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot approve priorities.', 403);
+      }
+      const employeeId = input.employeeId.trim();
+      if (!employeeId) {
+        throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Choose an employee to approve.', 400);
+      }
+      const week = await this.getWeek(actor, { employeeId, date: input.date });
+      const pending = week.priorities.filter(
+        (row) =>
+          row.status !== 'CANCELLED' &&
+          row.status !== 'CARRIED_FORWARD' &&
+          row.approvalStatus === 'SUBMITTED',
+      );
+      if (pending.length === 0) {
+        throw new AppError(
+          API_ERROR_CODES.VALIDATION_ERROR,
+          'Nothing left to approve for this employee this week.',
+          400,
+        );
+      }
+      const approved = [];
+      for (const item of pending) {
+        approved.push(await this.approvePriority(actor, item.id, meta, { notify: false }));
+      }
+      const employee = await loadStaffById(supabase, employeeId);
+      const titles = approved.map((row) => row.title).join('; ');
+      await notifyStaff(supabase, employee, {
+        type: 'work',
+        title:
+          approved.length === 1
+            ? 'Priority approved'
+            : `${approved.length} priorities approved`,
+        message:
+          approved.length === 1
+            ? `CSO approved “${approved[0].title}”. You can use it in today’s work update once every priority for the week is approved.`
+            : `CSO approved ${approved.length} of your weekly priorities.`,
+        referenceType: 'weekly_plan',
+        referenceId: employeeId,
+        eyebrow: 'Work',
+        paragraphs: [
+          approved.length === 1
+            ? `Your priority “${approved[0].title}” was approved.`
+            : `CSO approved ${approved.length} priorities for this week.`,
+          titles,
+          'When every priority for this week is approved, you can start today’s work update.',
+        ],
+        details: [
+          { label: 'Count', value: String(approved.length) },
+        ],
+        ctaLabel: 'Open priorities',
+        ctaHref: portalUrl('/work/priorities'),
+      });
+      return { approved, week: await this.getWeek(actor, { employeeId, date: input.date }) };
     },
 
     async requestPriorityResubmit(actor: RequestUser, id: string, comment: string, meta: RequestMeta) {

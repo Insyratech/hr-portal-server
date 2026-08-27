@@ -108,6 +108,35 @@ export async function notifyApprovers(
   }
 }
 
+/** Info-only: leave was auto-approved (approval not required). HR does not need to act. */
+export async function notifyHrLeaveRecorded(
+  supabase: SupabaseClient,
+  applicationId: string,
+  applicantName: string,
+  leaveTypeName: string,
+): Promise<void> {
+  const staff = await loadApproverStaff(supabase);
+  const title = 'Leave recorded';
+  const message = `${applicantName} applied for ${leaveTypeName}. No approval is required — this is for your awareness.`;
+  for (const person of staff) {
+    await insertNotification(supabase, {
+      userId: person.userId,
+      title,
+      message,
+      referenceId: applicationId,
+    });
+    await sendPortalMail({
+      to: [person.email],
+      subject: title,
+      eyebrow: 'Leave',
+      title,
+      greeting: `Hi ${person.name},`,
+      paragraphs: [message, 'Open the leave record if you need the dates. You do not need to approve this request.'],
+      cta: { label: 'View leave', href: portalUrl(`/hr/leaves/${applicationId}`) },
+    });
+  }
+}
+
 export function requireSupabase(supabase: SupabaseClient | null): SupabaseClient {
   if (!supabase) {
     throw new AppError(API_ERROR_CODES.SERVICE_UNAVAILABLE, 'Database is not configured.', 503);

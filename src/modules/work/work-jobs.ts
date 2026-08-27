@@ -40,6 +40,13 @@ export function shouldMailDailyUpdate(context: DayContext): boolean {
   return context.required && !context.submitted && !context.onApprovedLeave;
 }
 
+/** Monday 16:00 IST is a reminder only — never a submit cutoff. Skip leave / not-expected days. */
+export function shouldSkipMondayPriorityReminder(
+  context: Pick<DayContext, 'onApprovedLeave' | 'required'>,
+): boolean {
+  return context.onApprovedLeave || !context.required;
+}
+
 export type ReminderHours = { primary: number; second: number | null; timeZone: string };
 
 export async function loadReminderHours(supabase: SupabaseClient): Promise<ReminderHours> {
@@ -229,18 +236,19 @@ export async function runMondayPriorityReminders(
     plans += 1;
     if (await hasSubmittedPrioritiesForApproval(supabase, planId)) continue;
     const context = await loadDayContext(supabase, person.id, today);
-    if (context.onApprovedLeave || !context.required) continue;
+    if (shouldSkipMondayPriorityReminder(context)) continue;
     if (!(await claimReminder(supabase, person.id, today, 'monday_priorities'))) continue;
     await notifyStaff(supabase, person, {
       type: 'work_week_priorities',
       title: 'Submit this week’s priorities',
-      message: `Set 3–5 priorities for ${week.start} – ${week.end} and submit them for CSO approval.`,
+      message: `Plan your week (${week.start} – ${week.end}) and submit for CSO approval before end of Monday.`,
       referenceType: 'weekly_plan',
       referenceId: planId,
       eyebrow: 'Work & Priorities',
       paragraphs: [
-        'A short Monday plan keeps the week clear.',
-        'Add about 3–5 items, then tap Submit for CSO approval. Daily updates unlock after every line is approved.',
+        'Add at least one work goal (R&D project or regular work). Skill development is optional.',
+        'Submit everything together for CSO approval before end of Monday. If you are on leave today, submit when you are back.',
+        'Daily updates unlock after every priority line is approved.',
       ],
       details: [
         { label: 'This week', value: `${week.start} – ${week.end}` },
