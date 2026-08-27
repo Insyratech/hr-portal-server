@@ -1,6 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { API_ERROR_CODES } from '../../shared/constants/error-codes';
 import { PERMISSIONS } from '../../shared/constants/permissions';
+import { isSuperAdminOwner } from '../../shared/domain-owners';
 import { AppError } from '../../shared/errors/app-error';
 import type { RequestUser } from '../../shared/types/request-user';
 import { writeAuditLog } from '../audit/write-audit-log';
@@ -22,7 +23,7 @@ type VersionRow = {
 };
 
 function canManage(user: RequestUser): boolean {
-  return user.permissions.includes(PERMISSIONS.POLICIES_MANAGE);
+  return isSuperAdminOwner(user) && user.permissions.includes(PERMISSIONS.POLICIES_MANAGE);
 }
 
 function canView(user: RequestUser): boolean {

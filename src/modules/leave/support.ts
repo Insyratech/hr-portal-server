@@ -1,6 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { API_ERROR_CODES } from '../../shared/constants/error-codes';
 import { PERMISSIONS } from '../../shared/constants/permissions';
+import { isHrDomainOwner } from '../../shared/domain-owners';
 import { AppError } from '../../shared/errors/app-error';
 import type { RequestUser } from '../../shared/types/request-user';
 import { writeAuditLog } from '../audit/write-audit-log';
@@ -44,7 +45,7 @@ export async function loadApproverStaff(
   const seen = new Set<string>();
   for (const row of (data ?? []) as RoleEmployee[]) {
     const code = firstRel(row.roles)?.code;
-    if (code !== 'ADMIN' && code !== 'SUPER_ADMIN') continue;
+    if (code !== 'HR_MANAGER') continue;
     const employee = firstRel(row.employees);
     if (!employee?.user_id || seen.has(employee.user_id)) continue;
     seen.add(employee.user_id);
@@ -94,8 +95,7 @@ export async function notifyApprovers(
       message,
       referenceId: applicationId,
     });
-    const reviewPath =
-      person.role === 'SUPER_ADMIN' ? `/super-admin/leaves/${applicationId}` : `/admin/leaves/${applicationId}`;
+    const reviewPath = `/hr/leaves/${applicationId}`;
     await sendPortalMail({
       to: [person.email],
       subject: title,
@@ -115,6 +115,7 @@ export function requireSupabase(supabase: SupabaseClient | null): SupabaseClient
   return supabase;
 }
 
+/** Working days from org settings. Unchecked weekdays are weekly offs. Do not hardcode Saturday or Sunday. */
 export async function loadWorkingDays(supabase: SupabaseClient): Promise<string[]> {
   const { data, error } = await supabase.from('organization_settings').select('working_days').limit(1).maybeSingle();
   if (error || !data) {
@@ -186,17 +187,21 @@ export async function writeLeaveAudit(
 }
 
 export function canApprove(user: RequestUser): boolean {
-  return user.permissions.includes(PERMISSIONS.LEAVE_APPROVE);
+  return isHrDomainOwner(user) && user.permissions.includes(PERMISSIONS.LEAVE_APPROVE);
+}
+
+export function canSeeAllApplications(user: RequestUser): boolean {
+  return canApprove(user) || canManageAllocations(user);
 }
 
 export function canManageTypes(user: RequestUser): boolean {
-  return user.permissions.includes(PERMISSIONS.LEAVE_TYPES_MANAGE);
+  return isHrDomainOwner(user) && user.permissions.includes(PERMISSIONS.LEAVE_TYPES_MANAGE);
 }
 
 export function canManagePolicies(user: RequestUser): boolean {
-  return user.permissions.includes(PERMISSIONS.LEAVE_POLICIES_MANAGE);
+  return isHrDomainOwner(user) && user.permissions.includes(PERMISSIONS.LEAVE_POLICIES_MANAGE);
 }
 
 export function canManageAllocations(user: RequestUser): boolean {
-  return user.permissions.includes(PERMISSIONS.LEAVE_ALLOCATIONS_MANAGE);
+  return isHrDomainOwner(user) && user.permissions.includes(PERMISSIONS.LEAVE_ALLOCATIONS_MANAGE);
 }

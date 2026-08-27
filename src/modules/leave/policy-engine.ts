@@ -76,13 +76,14 @@ export function validateApplication(
     duration: input.duration,
     workingDays: input.workingDays,
     holidayDates: input.holidayDates,
+    weekPatternForDate: input.weekPatternForDate,
   });
 
   if (quantity <= 0) {
     add(
       violations,
       API_ERROR_CODES.HOLIDAY_OR_WEEKEND,
-      'Selected dates are not working days for this organisation.',
+      'Selected dates are not working days for this person.',
     );
   }
 

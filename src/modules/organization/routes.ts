@@ -38,7 +38,7 @@ export async function registerOrganizationRoutes(app: FastifyInstance): Promise<
   app.post(
     '/api/v1/departments',
     {
-      preHandler: [requirePermission(PERMISSIONS.USERS_MANAGE, PERMISSIONS.SYSTEM_MANAGE)],
+      preHandler: [requirePermission(PERMISSIONS.SYSTEM_MANAGE)],
       schema: { body: namedBody },
     },
     async (request) => {
@@ -48,7 +48,7 @@ export async function registerOrganizationRoutes(app: FastifyInstance): Promise<
       const body = request.body as { name: string; code: string };
       return ok(
         await createOrganizationService(app.supabase).createDepartment(
-          request.user.employeeId,
+          request.user,
           body,
           metaOf(request),
         ),
@@ -59,7 +59,7 @@ export async function registerOrganizationRoutes(app: FastifyInstance): Promise<
   app.patch(
     '/api/v1/departments/:id',
     {
-      preHandler: [requirePermission(PERMISSIONS.USERS_MANAGE, PERMISSIONS.SYSTEM_MANAGE)],
+      preHandler: [requirePermission(PERMISSIONS.SYSTEM_MANAGE)],
       schema: { body: namedPatchBody },
     },
     async (request) => {
@@ -69,7 +69,7 @@ export async function registerOrganizationRoutes(app: FastifyInstance): Promise<
       const { id } = request.params as { id: string };
       return ok(
         await createOrganizationService(app.supabase).updateDepartment(
-          request.user.employeeId,
+          request.user,
           id,
           request.body as { name?: string; code?: string; status?: 'active' | 'inactive' },
           metaOf(request),
@@ -98,7 +98,7 @@ export async function registerOrganizationRoutes(app: FastifyInstance): Promise<
       const body = request.body as { name: string; code: string };
       return ok(
         await createOrganizationService(app.supabase).createDesignation(
-          request.user.employeeId,
+          request.user,
           body,
           metaOf(request),
         ),
@@ -119,7 +119,7 @@ export async function registerOrganizationRoutes(app: FastifyInstance): Promise<
       const { id } = request.params as { id: string };
       return ok(
         await createOrganizationService(app.supabase).updateDesignation(
-          request.user.employeeId,
+          request.user,
           id,
           request.body as { name?: string; code?: string; status?: 'active' | 'inactive' },
           metaOf(request),
@@ -155,7 +155,7 @@ export async function registerOrganizationRoutes(app: FastifyInstance): Promise<
       const body = request.body as { workingDays: string[] };
       return ok(
         await createOrganizationService(app.supabase).updateSettings(
-          request.user.employeeId,
+          request.user,
           body.workingDays,
           metaOf(request),
         ),

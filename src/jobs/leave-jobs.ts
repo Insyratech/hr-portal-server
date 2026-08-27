@@ -175,7 +175,7 @@ export async function runDailyReminders(supabase: SupabaseClient, now = new Date
   for (const row of adminRoles ?? []) {
     const role = (row as { roles?: { code?: string } | { code?: string }[] }).roles;
     const code = Array.isArray(role) ? role[0]?.code : role?.code;
-    if (code !== 'ADMIN' && code !== 'SUPER_ADMIN') continue;
+    if (code !== 'HR_MANAGER') continue;
     const employee = (row as { employees?: { user_id?: string } | { user_id?: string }[] }).employees;
     const userId = Array.isArray(employee) ? employee[0]?.user_id : employee?.user_id;
     if (userId) adminUserIds.add(userId);

@@ -1,40 +1,104 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { API_ERROR_CODES } from '../../shared/constants/error-codes';
-import { PERMISSIONS } from '../../shared/constants/permissions';
+import { PERMISSIONS, ROLE_CODES, ROLE_IDS } from '../../shared/constants/permissions';
 import { AppError } from '../../shared/errors/app-error';
 import type { RequestUser } from '../../shared/types/request-user';
 import { writeAuditLog } from '../audit/write-audit-log';
 import { portalLoginUrl, sendPortalMail } from '../notifications/mail';
 import { notifyUser } from '../notifications/notify-user';
+import {
+  confirmWorkEmailOtp,
+  consumeWorkEmailVerification,
+  issueWorkEmailOtp,
+  normalizeWorkEmail,
+} from './email-otp';
+import {
+  assertCanAssignRoles,
+  assertCanLifecycleTarget,
+  assertCanMutateTarget,
+  canWriteEmployeeCompany,
+  hasRole,
+  isSuperAdmin,
+} from './access';
 import { emptyToNull, toDateColumn } from './dates';
+import { findActiveUnlock } from './edit-requests';
+import { createEmployeeMasterService } from './master';
+import { assertCanStaffDirectoryTarget } from './staff-target';
 import type { EmployeeRepository } from './repository';
-import type { CreateEmployeeInput, EmployeeRecord, EmployeeStatus, UpdateEmployeeInput } from './types';
+import type {
+  CompensationInput,
+  CreateEmployeeInput,
+  EmployeeRecord,
+  EmployeeStatus,
+  PaymentInput,
+  UpdateEmployeeInput,
+  UpdateEmployeeRolesInput,
+} from './types';
 
-/** Roles that may be assigned when creating or changing an employee via API. */
-const ASSIGNABLE_ROLE_CODES = new Set(['EMPLOYEE', 'ADMIN']);
+const MANAGERIAL_ROLE_CODES: ReadonlySet<string> = new Set([
+  ROLE_CODES.HR_MANAGER,
+  ROLE_CODES.GENERAL_MANAGER,
+  ROLE_CODES.CSO,
+  ROLE_CODES.FINANCE_MANAGER,
+  ROLE_CODES.ADMIN,
+]);
 
-async function resolveAssignableRoleIds(
-  employees: EmployeeRepository,
-  input: { roleId?: string; roleIds?: string[] },
-): Promise<string[]> {
-  const requested = [...new Set(input.roleIds?.length ? input.roleIds : input.roleId ? [input.roleId] : [])];
-  if (requested.length === 0) {
-    throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Select at least one access role.', 400);
+function normalizeManagerialCode(code: string): string {
+  return code === ROLE_CODES.ADMIN ? ROLE_CODES.GENERAL_MANAGER : code;
+}
+
+function managerialRoleLabel(code: string): string {
+  switch (normalizeManagerialCode(code)) {
+    case ROLE_CODES.HR_MANAGER:
+      return 'HR Manager';
+    case ROLE_CODES.GENERAL_MANAGER:
+      return 'General Manager';
+    case ROLE_CODES.CSO:
+      return 'Chief Scientific Officer';
+    case ROLE_CODES.FINANCE_MANAGER:
+      return 'Finance Manager';
+    default:
+      return code;
   }
+}
+
+function managerialHats(roleCodes: string[]): string[] {
+  return [
+    ...new Set(
+      roleCodes.filter((code) => MANAGERIAL_ROLE_CODES.has(code)).map(normalizeManagerialCode),
+    ),
+  ].sort();
+}
+
+function formatRoleList(codes: string[]): string {
+  if (codes.length === 0) return 'none';
+  return codes.map(managerialRoleLabel).join(', ');
+}
+
+async function resolveProfileRoleIds(
+  employees: EmployeeRepository,
+  actor: RequestUser,
+  roleIds: string[],
+): Promise<string[]> {
+  const requested = [...new Set(roleIds)];
+  const roleCodes: string[] = [];
   for (const roleId of requested) {
     if (!(await employees.roleExists(roleId))) {
       throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Role not found.', 400);
     }
     const roleCode = await employees.findRoleCode(roleId);
-    if (!roleCode || !ASSIGNABLE_ROLE_CODES.has(roleCode)) {
-      throw new AppError(
-        API_ERROR_CODES.VALIDATION_ERROR,
-        'Onboarding may only assign Employee and/or Admin (HR manager).',
-        400,
-      );
+    if (!roleCode) {
+      throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Role not found.', 400);
     }
+    roleCodes.push(roleCode);
   }
-  return requested;
+  if (roleCodes.length > 0) {
+    assertCanAssignRoles(actor, roleCodes);
+  }
+  if (!(await employees.roleExists(ROLE_IDS.EMPLOYEE))) {
+    throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Employee role is missing from the database.', 500);
+  }
+  return [...new Set([...requested, ROLE_IDS.EMPLOYEE])];
 }
 
 type RequestMeta = {
@@ -83,7 +147,7 @@ export function createEmployeeService(supabase: SupabaseClient, employees: Emplo
       }
 
       const employee = await employees.findById(id);
-      if (!employee) {
+      if (!employee || employee.deletedAt) {
         throw new AppError(API_ERROR_CODES.NOT_FOUND, 'Employee not found.', 404);
       }
 
@@ -95,6 +159,10 @@ export function createEmployeeService(supabase: SupabaseClient, employees: Emplo
       input: CreateEmployeeInput,
       meta: RequestMeta,
     ): Promise<EmployeeRecord> {
+      if (!isSuperAdmin(actor) || !actor.permissions.includes(PERMISSIONS.USERS_MANAGE)) {
+        throw new AppError(API_ERROR_CODES.FORBIDDEN, 'Only Super Admin can create accounts.', 403);
+      }
+      consumeWorkEmailVerification(actor.employeeId, input.email, input.emailVerificationToken);
       if (await employees.findByEmail(input.email)) {
         throw new AppError(API_ERROR_CODES.CONFLICT, 'An employee with this email already exists.', 409);
       }
@@ -103,7 +171,13 @@ export function createEmployeeService(supabase: SupabaseClient, employees: Emplo
         throw new AppError(API_ERROR_CODES.CONFLICT, 'An employee with this code already exists.', 409);
       }
 
-      const roleIds = await resolveAssignableRoleIds(employees, input);
+      // Create is always Employee. HR later sets company, shift, leave, and pay.
+      const roleIds = [ROLE_IDS.EMPLOYEE];
+      if (!(await employees.roleExists(ROLE_IDS.EMPLOYEE))) {
+        throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Employee role is missing from the database.', 500);
+      }
+
+      const joiningDate = toDateColumn(input.joiningDate, 'Joining date', true) as string;
 
       const userId = await createAuthUser(input.email, input.password);
       let employeeId: string;
@@ -118,7 +192,8 @@ export function createEmployeeService(supabase: SupabaseClient, employees: Emplo
           dateOfBirth: toDateColumn(input.dateOfBirth ?? null, 'Date of birth') ?? null,
           departmentId: emptyToNull(input.departmentId) ?? null,
           designationId: emptyToNull(input.designationId) ?? null,
-          joiningDate: toDateColumn(input.joiningDate, 'Joining date', true) as string,
+          companyId: null,
+          joiningDate,
           employmentType: input.employmentType,
           managerId: emptyToNull(input.managerId) ?? null,
           status: input.status ?? 'active',
@@ -189,9 +264,11 @@ export function createEmployeeService(supabase: SupabaseClient, employees: Emplo
       meta: RequestMeta,
     ): Promise<EmployeeRecord> {
       const existing = await employees.findById(id);
-      if (!existing) {
+      if (!existing || existing.deletedAt) {
         throw new AppError(API_ERROR_CODES.NOT_FOUND, 'Employee not found.', 404);
       }
+      const unlock = await findActiveUnlock(supabase, id);
+      assertCanMutateTarget(actor, existing.roleCodes, { unlocked: Boolean(unlock) });
 
       if (input.employeeCode && input.employeeCode !== existing.employeeCode) {
         const clash = await employees.findByCode(input.employeeCode);
@@ -213,22 +290,16 @@ export function createEmployeeService(supabase: SupabaseClient, employees: Emplo
       if (input.managerId !== undefined) patch.manager_id = emptyToNull(input.managerId);
       if (input.status !== undefined) patch.status = input.status;
 
-      if (Object.keys(patch).length > 0) {
-        await employees.update(id, patch);
+      if (input.companyId !== undefined) {
+        throw new AppError(
+          API_ERROR_CODES.VALIDATION_ERROR,
+          'Company is assigned by HR Manager on the profile, not via directory edit.',
+          400,
+        );
       }
 
-      if (input.roleIds?.length || input.roleId) {
-        const roleIds = await resolveAssignableRoleIds(employees, input);
-        await employees.setRoles(id, roleIds);
-        await writeAuditLog(supabase, {
-          actorId: actor.employeeId,
-          action: 'employee.role_change',
-          entityType: 'employee',
-          entityId: id,
-          oldValues: { roleCodes: existing.roleCodes },
-          ipAddress: meta.ipAddress,
-          userAgent: meta.userAgent,
-        });
+      if (Object.keys(patch).length > 0) {
+        await employees.update(id, patch);
       }
 
       const updated = await employees.findById(id);
@@ -288,6 +359,267 @@ export function createEmployeeService(supabase: SupabaseClient, employees: Emplo
       }
 
       return updated;
+    },
+
+    async updateRoles(
+      actor: RequestUser,
+      id: string,
+      input: UpdateEmployeeRolesInput,
+      meta: RequestMeta,
+    ): Promise<EmployeeRecord> {
+      if (!isSuperAdmin(actor) || !actor.permissions.includes(PERMISSIONS.USERS_MANAGE)) {
+        throw new AppError(API_ERROR_CODES.FORBIDDEN, 'Only Super Admin can assign access roles.', 403);
+      }
+
+      const existing = await employees.findById(id);
+      if (!existing || existing.deletedAt) {
+        throw new AppError(API_ERROR_CODES.NOT_FOUND, 'Employee not found.', 404);
+      }
+      if (hasRole(existing.roleCodes, ROLE_CODES.SUPER_ADMIN)) {
+        throw new AppError(API_ERROR_CODES.FORBIDDEN, 'This account cannot be edited here.', 403);
+      }
+
+      const roleIds = await resolveProfileRoleIds(employees, actor, input.roleIds ?? []);
+      await employees.setRoles(id, roleIds);
+
+      const updated = await employees.findById(id);
+      if (!updated) {
+        throw new AppError(
+          API_ERROR_CODES.INTERNAL_ERROR,
+          'Roles were updated but the employee could not be loaded.',
+          500,
+        );
+      }
+
+      await writeAuditLog(supabase, {
+        actorId: actor.employeeId,
+        action: 'employee.role_change',
+        entityType: 'employee',
+        entityId: id,
+        oldValues: { roleCodes: existing.roleCodes },
+        newValues: { roleCodes: updated.roleCodes },
+        ipAddress: meta.ipAddress,
+        userAgent: meta.userAgent,
+      });
+
+      const previousHats = managerialHats(existing.roleCodes);
+      const nextHats = managerialHats(updated.roleCodes);
+      if (previousHats.join(',') !== nextHats.join(',')) {
+        const added = nextHats.filter((code) => !previousHats.includes(code));
+        const removed = previousHats.filter((code) => !nextHats.includes(code));
+        const changeParts: string[] = [];
+        if (added.length > 0) changeParts.push(`added ${formatRoleList(added)}`);
+        if (removed.length > 0) changeParts.push(`removed ${formatRoleList(removed)}`);
+        const changeSummary = changeParts.join('; ');
+        const alertTitle =
+          added.length > 0 && removed.length === 0
+            ? 'Portal access role assigned'
+            : removed.length > 0 && added.length === 0
+              ? 'Portal access role removed'
+              : 'Portal access roles updated';
+        const alertMessage =
+          nextHats.length > 0
+            ? `Your access roles were updated (${changeSummary}). You now have: ${formatRoleList(nextHats)}. Refresh the page (or sign in again) so your menu and home desk match the new role.`
+            : `Your managerial access was removed (${changeSummary}). You still have Employee access for personal tools. Refresh the page so your menu updates.`;
+
+        try {
+          const portalUrl = portalLoginUrl();
+          await notifyUser(supabase, {
+            userId: updated.userId,
+            type: 'profile',
+            title: alertTitle,
+            message: alertMessage,
+            referenceType: 'employee',
+            referenceId: updated.id,
+          });
+          await sendPortalMail({
+            to: [updated.notificationEmail || updated.email],
+            subject: alertTitle,
+            eyebrow: 'Access',
+            title: alertTitle,
+            greeting: `Hi ${updated.fullName},`,
+            paragraphs: [
+              alertMessage,
+              'Open Alerts in the portal for the same update. Use Sign in if you are not already logged in.',
+            ],
+            details: [
+              { label: 'Previous roles', value: formatRoleList(previousHats) },
+              { label: 'Current roles', value: formatRoleList(nextHats) },
+            ],
+            cta: { label: 'Open portal', href: portalUrl },
+          });
+        } catch {
+          /* Role change is saved even if mail or in-app notify is unavailable. */
+        }
+      }
+
+      return updated;
+    },
+
+    async updateCompany(
+      actor: RequestUser,
+      id: string,
+      companyId: string | null,
+      meta: RequestMeta,
+    ): Promise<EmployeeRecord> {
+      if (!canWriteEmployeeCompany(actor)) {
+        throw new AppError(API_ERROR_CODES.FORBIDDEN, 'Only HR Manager can assign company.', 403);
+      }
+      await assertCanStaffDirectoryTarget(supabase, actor, id);
+
+      const existing = await employees.findById(id);
+      if (!existing || existing.deletedAt) {
+        throw new AppError(API_ERROR_CODES.NOT_FOUND, 'Employee not found.', 404);
+      }
+
+      const nextId = emptyToNull(companyId) ?? null;
+      if (!nextId) {
+        throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Select a company for this employee.', 400);
+      }
+      const company = await employees.findActiveCompany(nextId);
+      if (!company) {
+        throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Company not found or inactive.', 400);
+      }
+
+      if (existing.companyId === nextId) {
+        return existing;
+      }
+
+      await employees.update(id, { company_id: nextId });
+      const updated = await employees.findById(id);
+      if (!updated) {
+        throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Company was saved but the employee could not be loaded.', 500);
+      }
+
+      await writeAuditLog(supabase, {
+        actorId: actor.employeeId,
+        action: 'employee.company_change',
+        entityType: 'employee',
+        entityId: id,
+        oldValues: { companyId: existing.companyId, companyName: existing.companyName },
+        newValues: { companyId: updated.companyId, companyName: updated.companyName ?? company.name },
+        ipAddress: meta.ipAddress,
+        userAgent: meta.userAgent,
+      });
+
+      return updated;
+    },
+
+    async setStatus(
+      actor: RequestUser,
+      id: string,
+      status: 'active' | 'inactive',
+      meta: RequestMeta,
+    ): Promise<EmployeeRecord> {
+      const existing = await employees.findById(id);
+      if (!existing || existing.deletedAt) {
+        throw new AppError(API_ERROR_CODES.NOT_FOUND, 'Employee not found.', 404);
+      }
+      if (!actor.permissions.includes(PERMISSIONS.USERS_MANAGE)) {
+        throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot change account status.', 403);
+      }
+      assertCanLifecycleTarget(actor, existing.roleCodes, id);
+      if (existing.status === status) {
+        return existing;
+      }
+      await employees.update(id, { status });
+      const updated = await employees.findById(id);
+      if (!updated) {
+        throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Employee status was saved but could not be loaded.', 500);
+      }
+      await writeAuditLog(supabase, {
+        actorId: actor.employeeId,
+        action: status === 'inactive' ? 'employee.deactivate' : 'employee.activate',
+        entityType: 'employee',
+        entityId: id,
+        oldValues: { status: existing.status },
+        newValues: { status },
+        ipAddress: meta.ipAddress,
+        userAgent: meta.userAgent,
+      });
+      return updated;
+    },
+
+    async remove(actor: RequestUser, id: string, meta: RequestMeta): Promise<void> {
+      const existing = await employees.findById(id);
+      if (!existing || existing.deletedAt) {
+        throw new AppError(API_ERROR_CODES.NOT_FOUND, 'Employee not found.', 404);
+      }
+      if (!actor.permissions.includes(PERMISSIONS.USERS_MANAGE)) {
+        throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot delete this employee.', 403);
+      }
+      assertCanLifecycleTarget(actor, existing.roleCodes, id);
+      const userId = existing.userId;
+      await employees.update(id, {
+        status: 'inactive',
+        deleted_at: new Date().toISOString(),
+        user_id: null,
+        email: `deleted.${id.replaceAll('-', '')}@invalid.local`,
+        employee_code: `DEL-${id.slice(0, 8).toUpperCase()}`,
+      });
+      if (userId) {
+        await supabase.auth.admin.deleteUser(userId);
+      }
+      await writeAuditLog(supabase, {
+        actorId: actor.employeeId,
+        action: 'employee.delete',
+        entityType: 'employee',
+        entityId: id,
+        oldValues: { employeeCode: existing.employeeCode, fullName: existing.fullName, status: existing.status },
+        ipAddress: meta.ipAddress,
+        userAgent: meta.userAgent,
+      });
+    },
+
+    async getPayroll(actor: RequestUser, id: string) {
+      await this.getById(actor, id);
+      return createEmployeeMasterService(supabase).getPayroll(actor, id);
+    },
+
+    async saveCompensation(actor: RequestUser, id: string, input: Partial<CompensationInput>, meta: RequestMeta) {
+      await assertCanStaffDirectoryTarget(supabase, actor, id);
+      return createEmployeeMasterService(supabase).saveCompensation(actor, id, input, meta);
+    },
+
+    async savePayment(actor: RequestUser, id: string, input: PaymentInput, meta: RequestMeta) {
+      await assertCanStaffDirectoryTarget(supabase, actor, id);
+      return createEmployeeMasterService(supabase).savePayment(actor, id, input, meta);
+    },
+
+    async sendWorkEmailOtp(actor: RequestUser, email: string): Promise<{ sent: true }> {
+      if (!actor.permissions.includes(PERMISSIONS.USERS_MANAGE)) {
+        throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot create employee logins.', 403);
+      }
+      const normalized = normalizeWorkEmail(email);
+      if (await employees.findByEmail(normalized)) {
+        throw new AppError(API_ERROR_CODES.CONFLICT, 'An employee with this email already exists.', 409);
+      }
+      const code = issueWorkEmailOtp(actor.employeeId, normalized);
+      await sendPortalMail({
+        to: [normalized],
+        subject: 'Confirm this work email',
+        eyebrow: 'Work email',
+        title: 'Your confirmation code',
+        greeting: 'Hello',
+        paragraphs: [
+          'HR is setting up your HR Portal account. Give them this 4-digit code so they can use this email for updates and login.',
+          'The code expires in 10 minutes. If you did not expect this, you can ignore it.',
+        ],
+        details: [{ label: 'Code', value: code }],
+      });
+      return { sent: true };
+    },
+
+    async verifyWorkEmailOtp(
+      actor: RequestUser,
+      email: string,
+      code: string,
+    ): Promise<{ email: string; emailVerificationToken: string }> {
+      if (!actor.permissions.includes(PERMISSIONS.USERS_MANAGE)) {
+        throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot create employee logins.', 403);
+      }
+      const token = confirmWorkEmailOtp(actor.employeeId, email, code);
+      return { email: normalizeWorkEmail(email), emailVerificationToken: token };
     },
   };
 }

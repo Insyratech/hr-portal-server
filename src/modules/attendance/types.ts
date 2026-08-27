@@ -1,3 +1,6 @@
+import type { WeekPattern } from '../leave/day-count';
+
+/** Day outcome from the rule engine. MISSING_PUNCH is a flag only — HR chooses LOP in payroll Phase 5; never auto half-day. */
 export type AttendanceStatus =
   | 'PRESENT'
   | 'ABSENT'
@@ -22,6 +25,7 @@ export type DeriveAttendanceInput = {
   isoDate: string;
   workingDays: string[];
   holidayDates: string[];
+  weekPattern?: WeekPattern | null;
   onApprovedLeave: boolean;
   shift: ShiftDefinition | null;
   actualIn: Date | null;

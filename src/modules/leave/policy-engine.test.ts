@@ -84,6 +84,29 @@ describe('day-count', () => {
     ).toBe(2);
   });
 
+  it('counts 2nd and 4th Saturday as week off when that pattern is set', () => {
+    expect(
+      countLeaveQuantity({
+        startDate: '2026-08-08',
+        endDate: '2026-08-08',
+        duration: 'full',
+        workingDays: ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'],
+        holidayDates: [],
+        weekPatternForDate: () => 'SECOND_FOURTH_SATURDAY',
+      }),
+    ).toBe(0);
+    expect(
+      countLeaveQuantity({
+        startDate: '2026-08-15',
+        endDate: '2026-08-15',
+        duration: 'full',
+        workingDays: ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'],
+        holidayDates: [],
+        weekPatternForDate: () => 'SECOND_FOURTH_SATURDAY',
+      }),
+    ).toBe(1);
+  });
+
   it('counts half-day as 0.5', () => {
     expect(
       countLeaveQuantity({

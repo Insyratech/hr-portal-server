@@ -143,7 +143,13 @@ export async function registerLeaveRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/v1/leave-colleagues', { preHandler: [requireAuth()] }, async (request) => {
     const supabase = requireSupabase(app.supabase);
     if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
-    return ok(await createLeaveApplicationService(supabase).listColleagues(request.user));
+    return ok(
+      await createLeaveApplicationService(supabase).listColleagues(
+        request.user,
+        (request.query as { startDate?: string }).startDate,
+        (request.query as { endDate?: string }).endDate,
+      ),
+    );
   });
 
   app.get('/api/v1/leave-types', { preHandler: [requireAuth()] }, async () => {
@@ -218,7 +224,7 @@ export async function registerLeaveRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
-  app.get('/api/v1/leave-allocations', { preHandler: [requirePermission(PERMISSIONS.LEAVE_ALLOCATIONS_MANAGE)] }, async (request) => {
+  app.get('/api/v1/leave-allocations', { preHandler: [requirePermission(PERMISSIONS.LEAVE_ALLOCATIONS_MANAGE, PERMISSIONS.USERS_VIEW)] }, async (request) => {
     if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
     const query = request.query as { employeeId?: string };
     return ok(

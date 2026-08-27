@@ -1,4 +1,4 @@
-import { isWorkingDate, parseIsoDate, weekdayCode } from '../leave/day-count';
+import { isWorkingDate, parseIsoDate } from '../leave/day-count';
 import type { DeriveAttendanceInput, DeriveAttendanceResult, ShiftDefinition } from './types';
 
 function parseTimeParts(time: string): { hours: number; minutes: number } {
@@ -24,8 +24,9 @@ export function scheduledBounds(isoDate: string, shift: ShiftDefinition): { sche
 }
 
 /**
- * Single attendance formula used on punch-out, correction approve, and read.
- * Do not duplicate this logic elsewhere.
+ * Single attendance formula used on Excel import and read.
+ * Weekly off: personal week pattern if set, otherwise weekdays missing from org workingDays.
+ * MISSING_PUNCH is a status only; HR chooses LOP (no auto half-day).
  */
 export function deriveAttendance(input: DeriveAttendanceInput): DeriveAttendanceResult {
   const empty: DeriveAttendanceResult = {
@@ -52,12 +53,7 @@ export function deriveAttendance(input: DeriveAttendanceInput): DeriveAttendance
     return { ...empty, status: 'HOLIDAY' };
   }
 
-  if (!input.workingDays.includes(weekdayCode(parseIsoDate(input.isoDate)))) {
-    return { ...empty, status: 'WEEK_OFF' };
-  }
-
-  // Defensive: holidays already covered; keep isWorkingDate aligned with leave module.
-  if (!isWorkingDate(input.isoDate, input.workingDays, input.holidayDates)) {
+  if (!isWorkingDate(input.isoDate, input.workingDays, input.holidayDates, input.weekPattern)) {
     return { ...empty, status: 'WEEK_OFF' };
   }
 
@@ -86,9 +82,9 @@ export function deriveAttendance(input: DeriveAttendanceInput): DeriveAttendance
 
   const workedMinutes = minutesBetween(input.actualIn, input.actualOut);
   const graceEnd = new Date(scheduledIn.getTime() + input.shift.gracePeriodMinutes * 60_000);
-  const lateMinutes = Math.max(0, minutesBetween(graceEnd, input.actualIn));
+  let lateMinutes = Math.max(0, minutesBetween(graceEnd, input.actualIn));
   const earlyCutoff = new Date(scheduledOut.getTime() - input.shift.earlyExitThresholdMinutes * 60_000);
-  const earlyExitMinutes =
+  let earlyExitMinutes =
     input.actualOut.getTime() < earlyCutoff.getTime()
       ? minutesBetween(input.actualOut, scheduledOut)
       : 0;
@@ -98,6 +94,8 @@ export function deriveAttendance(input: DeriveAttendanceInput): DeriveAttendance
   let status: DeriveAttendanceResult['status'] = 'PRESENT';
 
   if (input.shift.flexible) {
+    lateMinutes = 0;
+    earlyExitMinutes = 0;
     if (workedMinutes >= input.shift.minimumDurationMinutes) {
       status = 'PRESENT';
     } else if (workedMinutes >= halfThreshold) {

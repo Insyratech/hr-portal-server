@@ -1,3 +1,5 @@
+import type { WeekPattern } from './day-count';
+
 export type NoticeUnit = 'hours' | 'days';
 
 export type PolicyRules = {
@@ -45,6 +47,7 @@ export type ApplicationInput = {
   overlapping: boolean;
   workingDays: string[];
   holidayDates: string[];
+  weekPatternForDate?: (isoDate: string) => WeekPattern | null;
 };
 
 export type Violation = {

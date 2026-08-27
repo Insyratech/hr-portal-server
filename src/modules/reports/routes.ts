@@ -14,7 +14,7 @@ export async function registerReportRoutes(app: FastifyInstance): Promise<void> 
     async (request) => {
       const supabase = requireSupabase(app.supabase);
       if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
-      const query = request.query as { from?: string; to?: string; period?: string };
+      const query = request.query as { from?: string; to?: string; period?: string; companyId?: string };
       return ok(await createReportService(supabase).overview(request.user, query));
     },
   );

@@ -15,15 +15,66 @@ export type EmployeeRecord = {
   dateOfBirth: string | null;
   departmentId: string | null;
   designationId: string | null;
+  companyId: string | null;
   joiningDate: string;
   employmentType: EmploymentType;
   managerId: string | null;
   status: EmployeeStatus;
+  deletedAt: string | null;
   createdAt: string;
   updatedAt: string;
   departmentName: string | null;
   designationName: string | null;
+  companyName: string | null;
   roleCodes: string[];
+};
+
+export type CompensationInput = {
+  basic: number;
+  da: number;
+  hra: number;
+  fuel: number;
+  incentives: number;
+  other: number;
+  professionalTax: number;
+  tds: number;
+  employeeWelfare: number;
+  kpi: number;
+  otherDeductions: number;
+  effectiveFrom: string;
+};
+
+export type CompensationRecord = CompensationInput & {
+  id: string;
+  employeeId: string;
+  createdAt: string;
+};
+
+export type PaymentInput = {
+  pan?: string | null;
+  bankAccountNumber?: string | null;
+  bankName?: string | null;
+  ifsc?: string | null;
+};
+
+export type PaymentRecord = {
+  employeeId: string;
+  pan: string | null;
+  bankAccountNumber: string | null;
+  bankName: string | null;
+  ifsc: string | null;
+  updatedAt: string;
+};
+
+export type EmployeePayroll = {
+  current: CompensationRecord | null;
+  history: CompensationRecord[];
+  payment: PaymentRecord | null;
+};
+
+export type LeaveAllocationInput = {
+  leaveTypeId: string;
+  allocated: number;
 };
 
 export type CreateEmployeeInput = {
@@ -34,6 +85,7 @@ export type CreateEmployeeInput = {
   dateOfBirth?: string;
   departmentId?: string;
   designationId?: string;
+  companyId?: string;
   joiningDate: string;
   employmentType: EmploymentType;
   managerId?: string;
@@ -41,7 +93,12 @@ export type CreateEmployeeInput = {
   roleId?: string;
   roleIds?: string[];
   password: string;
-};
+  shiftId?: string;
+  compensation?: Partial<CompensationInput>;
+  payment?: PaymentInput;
+      leaveAllocations?: LeaveAllocationInput[];
+      emailVerificationToken?: string;
+    };
 
 export type UpdateEmployeeInput = {
   employeeCode?: string;
@@ -51,10 +108,14 @@ export type UpdateEmployeeInput = {
   dateOfBirth?: string | null;
   departmentId?: string | null;
   designationId?: string | null;
+  companyId?: string | null;
   joiningDate?: string;
   employmentType?: EmploymentType;
   managerId?: string | null;
   status?: EmployeeStatus;
-  roleId?: string;
-  roleIds?: string[];
+};
+
+/** Managerial hats for PATCH /employees/:id/roles. Server always keeps EMPLOYEE. */
+export type UpdateEmployeeRolesInput = {
+  roleIds: string[];
 };

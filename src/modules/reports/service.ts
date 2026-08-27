@@ -3,8 +3,9 @@ import { API_ERROR_CODES } from '../../shared/constants/error-codes';
 import { PERMISSIONS } from '../../shared/constants/permissions';
 import { AppError } from '../../shared/errors/app-error';
 import type { RequestUser } from '../../shared/types/request-user';
+import { parsePeriod } from '../attendance/import/period';
 import { currentPeriod } from '../leave/balance';
-import { formatIsoDate } from '../leave/day-count';
+import { summarizeConfirmedAttendance, type AttendanceReviewStatRow } from './attendance-summary';
 
 function requireReports(actor: RequestUser): void {
   if (!actor.permissions.includes(PERMISSIONS.REPORTS_VIEW) && !actor.permissions.includes(PERMISSIONS.SYSTEM_MANAGE)) {
@@ -12,46 +13,82 @@ function requireReports(actor: RequestUser): void {
   }
 }
 
-function monthBounds(now = new Date()): { from: string; to: string } {
-  const y = now.getUTCFullYear();
-  const m = now.getUTCMonth();
-  const from = formatIsoDate(new Date(Date.UTC(y, m, 1)));
-  const to = formatIsoDate(new Date(Date.UTC(y, m + 1, 0)));
-  return { from, to };
-}
-
 export function createReportService(supabase: SupabaseClient) {
   return {
-    async overview(actor: RequestUser, opts?: { from?: string; to?: string; period?: string }) {
+    async overview(actor: RequestUser, opts?: { from?: string; to?: string; period?: string; companyId?: string }) {
       requireReports(actor);
-      const period = opts?.period ?? currentPeriod();
-      const bounds = monthBounds();
-      const from = opts?.from && /^\d{4}-\d{2}-\d{2}$/.test(opts.from) ? opts.from : bounds.from;
-      const to = opts?.to && /^\d{4}-\d{2}-\d{2}$/.test(opts.to) ? opts.to : bounds.to;
+      const period = opts?.period && /^\d{4}-\d{2}$/.test(opts.period) ? opts.period : currentPeriod();
+      const bounds = parsePeriod(period);
+      const from = opts?.from && /^\d{4}-\d{2}-\d{2}$/.test(opts.from) ? opts.from : bounds.start;
+      const to = opts?.to && /^\d{4}-\d{2}-\d{2}$/.test(opts.to) ? opts.to : bounds.end;
+      const companyId =
+        opts?.companyId && /^[0-9a-f-]{36}$/i.test(opts.companyId) ? opts.companyId : undefined;
+
+      let empQuery = supabase
+        .from('employees')
+        .select('id, status, department_id, designation_id, departments (name), designations (name)');
+      if (companyId) empQuery = empQuery.eq('company_id', companyId);
 
       const [
         { data: employees, error: empError },
         { data: allocations, error: allocError },
         { count: pendingLeaves, error: pendingError },
-        { data: attendance, error: attError },
+        { data: imports, error: importError },
         { data: grievances, error: grievError },
       ] = await Promise.all([
-        supabase.from('employees').select('id, status, department_id, designation_id, departments (name), designations (name)'),
+        empQuery,
         supabase
           .from('leave_allocations')
-          .select('leave_type_id, used, allocated, available, employees (department_id, departments (name)), leave_types (name, code)')
+          .select(
+            'leave_type_id, used, allocated, available, employees (department_id, company_id, departments (name)), leave_types (name, code)',
+          )
           .eq('period', period),
         supabase.from('leave_applications').select('id', { count: 'exact', head: true }).eq('status', 'PENDING'),
         supabase
-          .from('attendance_records')
-          .select('status, overtime_minutes, late_minutes')
-          .gte('attendance_date', from)
-          .lte('attendance_date', to),
+          .from('attendance_imports')
+          .select('id, confirmed_at')
+          .eq('period', period)
+          .eq('status', 'CONFIRMED')
+          .order('confirmed_at', { ascending: false })
+          .limit(1),
         supabase.from('grievances').select('id, category, status, created_at, resolved_at'),
       ]);
 
-      if (empError || allocError || pendingError || attError || grievError) {
+      if (empError || allocError || pendingError || importError || grievError) {
         throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load report aggregates.', 500);
+      }
+
+      const confirmedImport = (imports ?? [])[0] as { id: string } | undefined;
+      let reviewRows: AttendanceReviewStatRow[] = [];
+      if (confirmedImport) {
+        const { data: reviews, error: reviewError } = await supabase
+          .from('attendance_day_reviews')
+          .select('status, final_lop, employees (company_id)')
+          .eq('import_id', confirmedImport.id);
+        if (reviewError) {
+          throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load confirmed attendance.', 500);
+        }
+        reviewRows = (reviews ?? []).map((row) => ({
+          status: row.status as string,
+          finalLop: Number(row.final_lop ?? 0),
+          companyId: nestedCompanyId(row.employees as NameRel),
+        }));
+      }
+
+      const stats = summarizeConfirmedAttendance(reviewRows, companyId);
+      const attendanceCounts: Record<string, number> = {
+        PRESENT: 0,
+        ABSENT: 0,
+        LATE: 0,
+        MISSING_PUNCH: 0,
+        HALF_DAY: 0,
+        LEAVE: 0,
+        WEEK_OFF: 0,
+        HOLIDAY: 0,
+      };
+      const scoped = companyId ? reviewRows.filter((row) => row.companyId === companyId) : reviewRows;
+      for (const row of scoped) {
+        attendanceCounts[row.status] = (attendanceCounts[row.status] ?? 0) + 1;
       }
 
       const employeeRows = employees ?? [];
@@ -73,6 +110,13 @@ export function createReportService(supabase: SupabaseClient) {
       let leaveUsed = 0;
       let leaveAllocated = 0;
       for (const row of allocations ?? []) {
+        const emp = row.employees as
+          | { department_id?: string; company_id?: string; departments?: NameRel }
+          | { department_id?: string; company_id?: string; departments?: NameRel }[]
+          | null;
+        const empOne = Array.isArray(emp) ? emp[0] : emp;
+        if (companyId && empOne?.company_id !== companyId) continue;
+
         const typeRel = row.leave_types as { name?: string; code?: string } | { name?: string; code?: string }[] | null;
         const typeName = (Array.isArray(typeRel) ? typeRel[0]?.name : typeRel?.name) ?? 'Unknown';
         const used = Number(row.used);
@@ -86,34 +130,8 @@ export function createReportService(supabase: SupabaseClient) {
         bucket.available += available;
         leaveByType.set(typeName, bucket);
 
-        const emp = row.employees as
-          | { department_id?: string; departments?: NameRel }
-          | { department_id?: string; departments?: NameRel }[]
-          | null;
-        const empOne = Array.isArray(emp) ? emp[0] : emp;
         const deptName = firstName(empOne?.departments ?? null) ?? 'Unassigned';
         leaveByDepartment.set(deptName, (leaveByDepartment.get(deptName) ?? 0) + used);
-      }
-
-      const attendanceCounts: Record<string, number> = {
-        PRESENT: 0,
-        ABSENT: 0,
-        LATE: 0,
-        MISSING_PUNCH: 0,
-        HALF_DAY: 0,
-        LEAVE: 0,
-        WEEK_OFF: 0,
-        HOLIDAY: 0,
-      };
-      let overtimeMinutes = 0;
-      let lateOccurrences = 0;
-      for (const row of attendance ?? []) {
-        const status = row.status as string;
-        attendanceCounts[status] = (attendanceCounts[status] ?? 0) + 1;
-        overtimeMinutes += Number(row.overtime_minutes ?? 0);
-        if (Number(row.late_minutes ?? 0) > 0 || status === 'LATE') {
-          lateOccurrences += 1;
-        }
       }
 
       const grievanceRows = grievances ?? [];
@@ -159,13 +177,16 @@ export function createReportService(supabase: SupabaseClient) {
         attendance: {
           from,
           to,
-          present: attendanceCounts.PRESENT ?? 0,
-          absent: attendanceCounts.ABSENT ?? 0,
-          late: lateOccurrences,
-          missingPunches: attendanceCounts.MISSING_PUNCH ?? 0,
-          halfDay: attendanceCounts.HALF_DAY ?? 0,
-          onLeave: attendanceCounts.LEAVE ?? 0,
-          overtimeMinutes,
+          published: Boolean(confirmedImport),
+          companyId: companyId ?? null,
+          present: stats.present,
+          absent: stats.absent,
+          late: stats.late,
+          missingPunches: stats.missPunch,
+          lop: stats.lop,
+          halfDay: stats.halfDay,
+          onLeave: stats.onLeave,
+          overtimeMinutes: 0,
           byStatus: Object.entries(attendanceCounts).map(([status, count]) => ({ status, count })),
         },
         grievances: {
@@ -180,10 +201,16 @@ export function createReportService(supabase: SupabaseClient) {
   };
 }
 
-type NameRel = { name?: string } | { name?: string }[] | null;
+type NameRel = { name?: string; company_id?: string } | { name?: string; company_id?: string }[] | null;
 
 function firstName(rel: NameRel): string | null {
   if (!rel) return null;
   if (Array.isArray(rel)) return rel[0]?.name ?? null;
   return rel.name ?? null;
+}
+
+function nestedCompanyId(rel: NameRel): string | null {
+  if (!rel) return null;
+  const one = Array.isArray(rel) ? rel[0] : rel;
+  return one?.company_id ?? null;
 }

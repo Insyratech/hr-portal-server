@@ -1,6 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { API_ERROR_CODES } from '../../shared/constants/error-codes';
 import { PERMISSIONS } from '../../shared/constants/permissions';
+import { isHrDomainOwner } from '../../shared/domain-owners';
 import { AppError } from '../../shared/errors/app-error';
 import type { RequestUser } from '../../shared/types/request-user';
 import { writeAuditLog } from '../audit/write-audit-log';
@@ -26,11 +27,11 @@ function first<T>(value: T | T[] | null | undefined): T | null {
 }
 
 function canManage(user: RequestUser): boolean {
-  return user.permissions.includes(PERMISSIONS.GRIEVANCES_MANAGE);
+  return isHrDomainOwner(user) && user.permissions.includes(PERMISSIONS.GRIEVANCES_MANAGE);
 }
 
 function canSkip(user: RequestUser): boolean {
-  return user.permissions.includes(PERMISSIONS.SYSTEM_MANAGE);
+  return canManage(user);
 }
 
 async function notifyUser(
@@ -54,10 +55,7 @@ async function notifyManagers(
   const staff = await loadApproverStaff(supabase);
   for (const person of staff) {
     await notifyUser(supabase, { userId: person.userId, ...input });
-    const reviewPath =
-      person.role === 'SUPER_ADMIN'
-        ? `/super-admin/grievances?id=${input.referenceId}`
-        : `/admin/grievances?id=${input.referenceId}`;
+    const reviewPath = `/hr/grievances?id=${input.referenceId}`;
     await sendPortalMail({
       to: [person.email],
       subject: input.title,
@@ -71,11 +69,8 @@ async function notifyManagers(
 }
 
 function reviewPathForRoles(roles: string[], grievanceId: string): string {
-  if (roles.includes('SUPER_ADMIN')) {
-    return `/super-admin/grievances?id=${grievanceId}`;
-  }
-  if (roles.includes('ADMIN')) {
-    return `/admin/grievances?id=${grievanceId}`;
+  if (roles.includes('HR_MANAGER')) {
+    return `/hr/grievances?id=${grievanceId}`;
   }
   return `/grievance?id=${grievanceId}`;
 }
@@ -200,7 +195,7 @@ export function createGrievanceService(supabase: SupabaseClient) {
       const { data: roles, error: roleError } = await supabase
         .from('roles')
         .select('id, code')
-        .in('code', ['ADMIN', 'SUPER_ADMIN']);
+        .eq('code', 'HR_MANAGER');
       if (roleError) {
         throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, `Failed to load handlers. ${roleError.message}`, 500);
       }
@@ -228,8 +223,7 @@ export function createGrievanceService(supabase: SupabaseClient) {
       for (const row of links ?? []) {
         const employeeId = row.employee_id as string;
         const code = roleById.get(row.role_id as string);
-        if (!code || seen.has(employeeId)) continue;
-        if (code !== 'ADMIN' && code !== 'SUPER_ADMIN') continue;
+        if (!code || seen.has(employeeId) || code !== 'HR_MANAGER') continue;
         seen.add(employeeId);
         items.push({
           employeeId,
@@ -468,7 +462,7 @@ export function createGrievanceService(supabase: SupabaseClient) {
         title: 'Grievance assigned',
         message: `You were assigned as investigator for “${existing.subject}”.`,
         referenceId: id,
-        cta: 'Open the case to investigate, reply to the employee, or escalate to Admin or Super Admin.',
+        cta: 'Open the case to investigate or reply to the employee.',
       });
 
       return this.get(actor, id);
@@ -482,7 +476,7 @@ export function createGrievanceService(supabase: SupabaseClient) {
         throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot change grievance status.', 403);
       }
       if (!manage && (to === 'RESOLVED' || to === 'CLOSED')) {
-        throw new AppError(API_ERROR_CODES.FORBIDDEN, 'Only Admin or Super Admin can resolve or close a grievance.', 403);
+        throw new AppError(API_ERROR_CODES.FORBIDDEN, 'Only HR Manager can resolve or close a grievance.', 403);
       }
       try {
         assertTransition({ from: existing.status, to, allowSkip: canSkip(actor) });

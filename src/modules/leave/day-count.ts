@@ -19,13 +19,67 @@ export function weekdayCode(date: Date): string {
   return WEEKDAYS[date.getUTCDay()];
 }
 
+export const WEEK_PATTERNS = ['SUNDAY_OFF', 'WEEKEND_OFF', 'SECOND_FOURTH_SATURDAY'] as const;
+export type WeekPattern = (typeof WEEK_PATTERNS)[number];
+
+export function isWeekPattern(value: string): value is WeekPattern {
+  return (WEEK_PATTERNS as readonly string[]).includes(value);
+}
+
+/** 1 = first Saturday of the month, 2 = second, and so on. */
+export function saturdayOrdinalInMonth(isoDate: string): number {
+  return Math.ceil(parseIsoDate(isoDate).getUTCDate() / 7);
+}
+
+export function isWeekOffByPattern(isoDate: string, pattern: WeekPattern): boolean {
+  const code = weekdayCode(parseIsoDate(isoDate));
+  if (pattern === 'SUNDAY_OFF') {
+    return code === 'SUN';
+  }
+  if (pattern === 'WEEKEND_OFF') {
+    return code === 'SAT' || code === 'SUN';
+  }
+  if (code === 'SUN') {
+    return true;
+  }
+  if (code === 'SAT') {
+    const ordinal = saturdayOrdinalInMonth(isoDate);
+    return ordinal === 2 || ordinal === 4;
+  }
+  return false;
+}
+
+export type WorkWeekRecord = {
+  employeeId: string;
+  pattern: WeekPattern;
+  effectiveFrom: string;
+  effectiveTo: string | null;
+};
+
+export function patternOnDate(rows: WorkWeekRecord[], employeeId: string, isoDate: string): WeekPattern | null {
+  const current = rows
+    .filter(
+      (row) =>
+        row.employeeId === employeeId &&
+        row.effectiveFrom <= isoDate &&
+        (!row.effectiveTo || row.effectiveTo >= isoDate),
+    )
+    .sort((a, b) => (a.effectiveFrom < b.effectiveFrom ? 1 : -1))[0];
+  return current?.pattern ?? null;
+}
+
+/** True when the date is a working day. Personal week pattern wins over org workingDays. */
 export function isWorkingDate(
   isoDate: string,
   workingDays: string[],
   holidayDates: string[],
+  weekPattern?: WeekPattern | null,
 ): boolean {
   if (holidayDates.includes(isoDate)) {
     return false;
+  }
+  if (weekPattern) {
+    return !isWeekOffByPattern(isoDate, weekPattern);
   }
   return workingDays.includes(weekdayCode(parseIsoDate(isoDate)));
 }
@@ -47,14 +101,22 @@ export function countLeaveQuantity(input: {
   duration: 'full' | 'half';
   workingDays: string[];
   holidayDates: string[];
+  weekPatternForDate?: (isoDate: string) => WeekPattern | null;
 }): number {
+  const working = (isoDate: string) =>
+    isWorkingDate(
+      isoDate,
+      input.workingDays,
+      input.holidayDates,
+      input.weekPatternForDate ? input.weekPatternForDate(isoDate) : null,
+    );
   if (input.duration === 'half') {
-    return isWorkingDate(input.startDate, input.workingDays, input.holidayDates) ? 0.5 : 0;
+    return working(input.startDate) ? 0.5 : 0;
   }
 
   let quantity = 0;
   for (const isoDate of eachIsoDate(input.startDate, input.endDate)) {
-    if (isWorkingDate(isoDate, input.workingDays, input.holidayDates)) {
+    if (working(isoDate)) {
       quantity += 1;
     }
   }

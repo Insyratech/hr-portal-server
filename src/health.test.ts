@@ -7,7 +7,7 @@ import { API_ERROR_CODES } from './shared/constants/error-codes';
 import { AppError } from './shared/errors/app-error';
 import type { FastifyInstance } from 'fastify';
 
-describe('Phase 6 API', () => {
+describe('Phase 8 API', () => {
   let app: FastifyInstance | undefined;
 
   afterEach(async () => {
@@ -17,21 +17,33 @@ describe('Phase 6 API', () => {
     }
   });
 
-  it('GET /health returns phase 6', async () => {
+  it('GET /health returns phase 8', async () => {
     app = await buildApp(loadEnv({ NODE_ENV: 'test' }));
     const response = await app.inject({ method: 'GET', url: '/health' });
     expect(response.statusCode).toBe(200);
-    expect(response.json().data.phase).toBe(6);
+    expect(response.json().data.phase).toBe(8);
   });
 
   it('POST job routes reject missing cron secret', async () => {
     app = await buildApp(loadEnv({ NODE_ENV: 'test', CRON_SECRET: 'test-cron' }));
-    const response = await app.inject({
+    const leave = await app.inject({
       method: 'POST',
-      url: '/api/v1/jobs/attendance/finalize',
+      url: '/api/v1/jobs/reminders/daily',
       payload: {},
     });
-    expect(response.statusCode).toBe(401);
+    expect(leave.statusCode).toBe(401);
+    const work = await app.inject({
+      method: 'POST',
+      url: '/api/v1/jobs/work/daily-reminders',
+      payload: {},
+    });
+    expect(work.statusCode).toBe(401);
+    const purge = await app.inject({
+      method: 'POST',
+      url: '/api/v1/jobs/work/retention-purge',
+      payload: {},
+    });
+    expect(purge.statusCode).toBe(401);
   });
 
   it('GET /api/v1/me without a token returns 401', async () => {

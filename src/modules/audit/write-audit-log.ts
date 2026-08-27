@@ -1,6 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { API_ERROR_CODES } from '../../shared/constants/error-codes';
 import { AppError } from '../../shared/errors/app-error';
+import { maskAuditValues } from './mask-audit-values';
 
 export type AuditInput = {
   actorId: string | null;
@@ -19,8 +20,8 @@ export async function writeAuditLog(supabase: SupabaseClient, input: AuditInput)
     action: input.action,
     entity_type: input.entityType,
     entity_id: input.entityId,
-    old_values: input.oldValues ?? null,
-    new_values: input.newValues ?? null,
+    old_values: maskAuditValues(input.oldValues ?? null),
+    new_values: maskAuditValues(input.newValues ?? null),
     ip_address: input.ipAddress ?? null,
     user_agent: input.userAgent ?? null,
   });

@@ -8,6 +8,7 @@ import { validateApplication } from './policy-engine';
 import type { LeaveDuration, LeaveTypeFlags } from './types';
 import {
   canApprove,
+  canSeeAllApplications,
   insertNotification,
   loadActivePolicy,
   loadHolidayDates,
@@ -16,8 +17,12 @@ import {
   notifyApprovers,
   writeLeaveAudit,
 } from './support';
+import { listWorkWeekRows } from '../attendance/work-week';
+import { patternOnDate } from './day-count';
 import { loadStaffById, notifyStaff } from '../notifications/notify-staff';
 import { portalUrl, sendPortalMail } from '../notifications/mail';
+import { syncEmployeeWorkDays } from '../work/daily';
+import { assertHandoverColleagueFree, employeeIdsOnLeave } from './handover-availability';
 
 type ApplicationRow = {
   id: string;
@@ -168,14 +173,14 @@ async function resetApprovals(
         approver_role: 'HANDOVER',
         status: handoverAccepted ? 'APPROVED' : 'PENDING',
       },
-      { application_id: applicationId, step_order: 2, approver_role: 'ADMIN', status: 'PENDING' },
+      { application_id: applicationId, step_order: 2, approver_role: 'HR_MANAGER', status: 'PENDING' },
     ]);
     return;
   }
   await supabase.from('leave_approvals').insert({
     application_id: applicationId,
     step_order: 1,
-    approver_role: 'ADMIN',
+    approver_role: 'HR_MANAGER',
     status: 'PENDING',
   });
 }
@@ -218,7 +223,7 @@ export function createLeaveApplicationService(supabase: SupabaseClient) {
     },
 
     async listApplications(actor: RequestUser, status?: string) {
-      const canSeeAll = canApprove(actor);
+      const canSeeAll = canSeeAllApplications(actor);
 
       const fetchScoped = async (columns: string) => {
         if (canSeeAll) {
@@ -313,7 +318,7 @@ export function createLeaveApplicationService(supabase: SupabaseClient) {
       if (
         mapped.employeeId !== actor.employeeId &&
         mapped.handoverEmployeeId !== actor.employeeId &&
-        !canApprove(actor)
+        !canSeeAllApplications(actor)
       ) {
         throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot view this application.', 403);
       }
@@ -368,6 +373,8 @@ export function createLeaveApplicationService(supabase: SupabaseClient) {
       const policy = await loadActivePolicy(supabase, input.leaveTypeId);
       const workingDays = await loadWorkingDays(supabase);
       const holidayDates = await loadHolidayDates(supabase);
+      const workWeeks = await listWorkWeekRows(supabase, actor.employeeId);
+      const weekPatternForDate = (isoDate: string) => patternOnDate(workWeeks, actor.employeeId, isoDate);
       const period = currentPeriod();
 
       const { data: allocation } = await supabase
@@ -407,6 +414,7 @@ export function createLeaveApplicationService(supabase: SupabaseClient) {
         overlapping: (overlaps ?? []).length > 0,
         workingDays,
         holidayDates,
+        weekPatternForDate,
       });
 
       if (!result.valid) {
@@ -428,6 +436,7 @@ export function createLeaveApplicationService(supabase: SupabaseClient) {
           throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Handover colleague was not found.', 400);
         }
         handoverPerson = loaded.data as { id: string; full_name: string; email: string | null; user_id: string | null };
+        await assertHandoverColleagueFree(supabase, handoverPerson.id, input.startDate, input.endDate);
       }
 
       const status = result.requiresApproval || result.requiresHandover ? 'PENDING' : 'APPROVED';
@@ -489,6 +498,7 @@ export function createLeaveApplicationService(supabase: SupabaseClient) {
           paragraphs: ['Your leave request was auto-approved. Sign in to review the dates.'],
           ctaLabel: 'View leave',
         });
+        await syncEmployeeWorkDays(supabase, actor.employeeId, input.startDate, input.endDate);
       }
 
       const created = await this.getApplication(actor, createdId);
@@ -538,6 +548,8 @@ export function createLeaveApplicationService(supabase: SupabaseClient) {
       const policy = await loadActivePolicy(supabase, input.leaveTypeId);
       const workingDays = await loadWorkingDays(supabase);
       const holidayDates = await loadHolidayDates(supabase);
+      const workWeeks = await listWorkWeekRows(supabase, actor.employeeId);
+      const weekPatternForDate = (isoDate: string) => patternOnDate(workWeeks, actor.employeeId, isoDate);
       const period = currentPeriod();
 
       const { data: allocation } = await supabase
@@ -582,6 +594,7 @@ export function createLeaveApplicationService(supabase: SupabaseClient) {
         overlapping: (overlaps ?? []).length > 0,
         workingDays,
         holidayDates,
+        weekPatternForDate,
       });
 
       if (!result.valid) {
@@ -603,6 +616,7 @@ export function createLeaveApplicationService(supabase: SupabaseClient) {
           throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Handover colleague was not found.', 400);
         }
         handoverPerson = loaded.data as { id: string; full_name: string; email: string | null; user_id: string | null };
+        await assertHandoverColleagueFree(supabase, handoverPerson.id, input.startDate, input.endDate);
       }
 
       const { error: updateError } = await supabase
@@ -726,6 +740,9 @@ export function createLeaveApplicationService(supabase: SupabaseClient) {
 
       const updated = await this.getApplication(actor, id);
       await writeLeaveAudit(supabase, actor.employeeId, `leave.${action}`, id, updated, meta);
+      if (action === 'approve' || action === 'cancel') {
+        await syncEmployeeWorkDays(supabase, existing.employeeId, existing.startDate, existing.endDate);
+      }
 
       const verb = ACTION_LABEL[action];
       const applicant = await loadStaffById(supabase, existing.employeeId);
@@ -856,7 +873,7 @@ export function createLeaveApplicationService(supabase: SupabaseClient) {
       return this.getApplication(actor, id);
     },
 
-    async listColleagues(actor: RequestUser) {
+    async listColleagues(actor: RequestUser, startDate?: string, endDate?: string) {
       const { data, error } = await supabase
         .from('employees')
         .select('id, full_name')
@@ -864,7 +881,20 @@ export function createLeaveApplicationService(supabase: SupabaseClient) {
         .neq('id', actor.employeeId)
         .order('full_name');
       if (error) throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load colleagues.', 500);
-      return (data ?? []).map((row) => ({ id: row.id as string, fullName: row.full_name as string }));
+      const rangeStart = startDate?.slice(0, 10);
+      const rangeEnd = (endDate || startDate)?.slice(0, 10);
+      const busy =
+        rangeStart && rangeEnd ? await employeeIdsOnLeave(supabase, rangeStart, rangeEnd) : new Map<string, { startDate: string; endDate: string }>();
+      return (data ?? []).map((row) => {
+        const id = row.id as string;
+        const clash = busy.get(id);
+        return {
+          id,
+          fullName: row.full_name as string,
+          available: !clash,
+          leaveDates: clash ? `${clash.startDate} – ${clash.endDate}` : null,
+        };
+      });
     },
   };
 }

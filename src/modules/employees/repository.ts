@@ -14,14 +14,17 @@ type EmployeeRow = {
   date_of_birth: string | null;
   department_id: string | null;
   designation_id: string | null;
+  company_id: string | null;
   joining_date: string;
   employment_type: EmployeeRecord['employmentType'];
   manager_id: string | null;
   status: EmployeeStatus;
+  deleted_at: string | null;
   created_at: string;
   updated_at: string;
   departments: { name: string } | { name: string }[] | null;
   designations: { name: string } | { name: string }[] | null;
+  companies: { name: string } | { name: string }[] | null;
   employee_roles: { roles: { code: string } | { code: string }[] | null }[] | null;
 };
 
@@ -70,31 +73,35 @@ function mapEmployee(row: EmployeeRow): EmployeeRecord {
     dateOfBirth: row.date_of_birth,
     departmentId: row.department_id,
     designationId: row.designation_id,
+    companyId: row.company_id,
     joiningDate: row.joining_date,
     employmentType: row.employment_type,
     managerId: row.manager_id,
     status: row.status,
+    deletedAt: row.deleted_at ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     departmentName: firstName(row.departments),
     designationName: firstName(row.designations),
+    companyName: firstName(row.companies),
     roleCodes: roleCodes(row.employee_roles),
   };
 }
 
 const EMPLOYEE_SELECT = `
   id, user_id, employee_code, full_name, email, phone, notification_email, date_of_birth,
-  department_id, designation_id, joining_date, employment_type, manager_id, status,
-  created_at, updated_at,
+  department_id, designation_id, company_id, joining_date, employment_type, manager_id, status,
+  deleted_at, created_at, updated_at,
   departments (name),
   designations (name),
+  companies (name),
   employee_roles (roles (code))
 `;
 
 export function createEmployeeRepository(supabase: SupabaseClient) {
   return {
     async list(filters: { query?: string; status?: EmployeeStatus }): Promise<EmployeeRecord[]> {
-      let request = supabase.from('employees').select(EMPLOYEE_SELECT).order('full_name');
+      let request = supabase.from('employees').select(EMPLOYEE_SELECT).is('deleted_at', null).order('full_name');
 
       if (filters.status) {
         request = request.eq('status', filters.status);
@@ -132,6 +139,7 @@ export function createEmployeeRepository(supabase: SupabaseClient) {
         .from('employees')
         .select(EMPLOYEE_SELECT)
         .eq('email', email)
+        .is('deleted_at', null)
         .maybeSingle();
 
       if (error) {
@@ -146,6 +154,7 @@ export function createEmployeeRepository(supabase: SupabaseClient) {
         .from('employees')
         .select(EMPLOYEE_SELECT)
         .eq('employee_code', employeeCode)
+        .is('deleted_at', null)
         .maybeSingle();
 
       if (error) {
@@ -164,6 +173,7 @@ export function createEmployeeRepository(supabase: SupabaseClient) {
       dateOfBirth: string | null;
       departmentId: string | null;
       designationId: string | null;
+      companyId: string | null;
       joiningDate: string;
       employmentType: string;
       managerId: string | null;
@@ -180,6 +190,7 @@ export function createEmployeeRepository(supabase: SupabaseClient) {
           date_of_birth: row.dateOfBirth,
           department_id: row.departmentId,
           designation_id: row.designationId,
+          company_id: row.companyId,
           joining_date: row.joiningDate,
           employment_type: row.employmentType,
           manager_id: row.managerId,
@@ -246,6 +257,32 @@ export function createEmployeeRepository(supabase: SupabaseClient) {
         throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load role.', 500);
       }
       return (data?.code as string | undefined) ?? null;
+    },
+
+    async findActiveCompany(id: string): Promise<{ id: string; name: string } | null> {
+      const { data, error } = await supabase
+        .from('companies')
+        .select('id, name, status')
+        .eq('id', id)
+        .maybeSingle();
+      if (error) {
+        throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load company.', 500);
+      }
+      if (!data || data.status !== 'active') {
+        return null;
+      }
+      return { id: data.id as string, name: data.name as string };
+    },
+
+    async findActiveShift(id: string): Promise<{ id: string; name: string } | null> {
+      const { data, error } = await supabase.from('shifts').select('id, name, active').eq('id', id).maybeSingle();
+      if (error) {
+        throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load shift.', 500);
+      }
+      if (!data || data.active === false) {
+        return null;
+      }
+      return { id: data.id as string, name: data.name as string };
     },
   };
 }

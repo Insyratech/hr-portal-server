@@ -6,16 +6,22 @@ import { isSupabaseConfigured, type Env } from './config/env';
 import { registerJobRoutes } from './jobs/routes';
 import { registerAttendanceRoutes } from './modules/attendance/routes';
 import { registerAuthRoutes } from './modules/auth/routes';
+import { registerCompanyRoutes } from './modules/companies/routes';
+import { registerDirectoryEditRequestRoutes } from './modules/employees/edit-request-routes';
 import { registerEmployeeRoutes } from './modules/employees/routes';
 import { registerGrievanceRoutes } from './modules/grievances/routes';
 import { registerLeaveRoutes } from './modules/leave/routes';
 import { registerNotificationRoutes } from './modules/notifications/routes';
 import { registerOrganizationRoutes } from './modules/organization/routes';
 import { registerPolicyRoutes } from './modules/policies/routes';
+import { registerWorkPermissionRoutes } from './modules/work-permissions/routes';
+import { registerWorkRoutes } from './modules/work/routes';
+import { registerPayrollRoutes } from './modules/payroll/routes';
 import { registerReportRoutes } from './modules/reports/routes';
 import { authPlugin } from './plugins/auth';
 import { errorHandlerPlugin } from './plugins/error-handler';
 import { supabasePlugin } from './plugins/supabase';
+import { uploadRateLimitPlugin } from './plugins/upload-rate-limit';
 
 const HEALTH_RESPONSE = Type.Object({
   success: Type.Literal(true),
@@ -41,6 +47,7 @@ export async function buildApp(env: Env): Promise<FastifyInstance> {
   await app.register(errorHandlerPlugin);
   await app.register(supabasePlugin, env);
   await app.register(authPlugin, env);
+  await app.register(uploadRateLimitPlugin);
 
   app.get(
     '/health',
@@ -56,7 +63,7 @@ export async function buildApp(env: Env): Promise<FastifyInstance> {
       data: {
         status: 'ok' as const,
         service: 'hr-portal-api',
-        phase: 6,
+        phase: 8,
         supabaseConfigured: isSupabaseConfigured(env),
       },
       meta: {},
@@ -76,12 +83,17 @@ export async function buildApp(env: Env): Promise<FastifyInstance> {
 
   await registerAuthRoutes(app);
   await registerEmployeeRoutes(app);
+  await registerDirectoryEditRequestRoutes(app);
+  await registerCompanyRoutes(app);
   await registerOrganizationRoutes(app);
   await registerLeaveRoutes(app);
+  await registerWorkPermissionRoutes(app);
+  await registerWorkRoutes(app);
   await registerAttendanceRoutes(app);
   await registerGrievanceRoutes(app);
   await registerPolicyRoutes(app);
   await registerNotificationRoutes(app);
+  await registerPayrollRoutes(app);
   await registerReportRoutes(app);
   await registerJobRoutes(app, env);
 

@@ -1,10 +1,14 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { API_ERROR_CODES } from '../../shared/constants/error-codes';
 import { PERMISSIONS } from '../../shared/constants/permissions';
+import { assertHrDomainOwner } from '../../shared/domain-owners';
 import { AppError } from '../../shared/errors/app-error';
 import type { RequestUser } from '../../shared/types/request-user';
+import { canWriteDirectoryShiftAssignments } from '../employees/access';
+import { assertCanStaffDirectoryTarget } from '../employees/staff-target';
 import { writeAuditLog } from '../audit/write-audit-log';
 import { loadStaffById, notifyStaff } from '../notifications/notify-staff';
+import { addUtcDays, formatIsoDate, parseIsoDate } from '../leave/day-count';
 import { mapShift, type ShiftRow } from './support';
 
 type RequestMeta = { ipAddress?: string | null; userAgent?: string | null };
@@ -31,6 +35,7 @@ export function createShiftService(supabase: SupabaseClient) {
       },
       meta: RequestMeta,
     ) {
+      assertHrDomainOwner(actor, 'manage shifts');
       if (!actor.permissions.includes(PERMISSIONS.SHIFTS_MANAGE)) {
         throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot manage shifts.', 403);
       }
@@ -64,6 +69,7 @@ export function createShiftService(supabase: SupabaseClient) {
     },
 
     async update(actor: RequestUser, id: string, input: Record<string, unknown>, meta: RequestMeta) {
+      assertHrDomainOwner(actor, 'manage shifts');
       if (!actor.permissions.includes(PERMISSIONS.SHIFTS_MANAGE)) {
         throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot manage shifts.', 403);
       }
@@ -95,30 +101,59 @@ export function createShiftService(supabase: SupabaseClient) {
     },
 
     async assign(actor: RequestUser, input: { employeeId: string; shiftId: string; effectiveFrom?: string }, meta: RequestMeta) {
-      if (!actor.permissions.includes(PERMISSIONS.SHIFTS_MANAGE)) {
+      assertHrDomainOwner(actor, 'assign shifts');
+      if (!canWriteDirectoryShiftAssignments(actor)) {
         throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot assign shifts.', 403);
       }
-      const effectiveFrom = input.effectiveFrom ?? new Date().toISOString().slice(0, 10);
-      const { data, error } = await supabase
+      await assertCanStaffDirectoryTarget(supabase, actor, input.employeeId);
+      const effectiveFrom = (input.effectiveFrom ?? new Date().toISOString().slice(0, 10)).slice(0, 10);
+      const { data: existing } = await supabase
         .from('shift_assignments')
-        .insert({
-          employee_id: input.employeeId,
-          shift_id: input.shiftId,
-          effective_from: effectiveFrom,
-        })
-        .select('id, employee_id, shift_id, effective_from')
-        .single();
-      if (error || !data) {
-        if (error?.code === '23505') {
-          throw new AppError(API_ERROR_CODES.CONFLICT, 'A shift assignment already exists for this effective date.', 409);
+        .select('id, employee_id, shift_id, effective_from, effective_to')
+        .eq('employee_id', input.employeeId)
+        .eq('effective_from', effectiveFrom)
+        .maybeSingle();
+
+      let data: { id: string; employee_id: string; shift_id: string; effective_from: string };
+      if (existing) {
+        const { data: updated, error } = await supabase
+          .from('shift_assignments')
+          .update({ shift_id: input.shiftId })
+          .eq('id', existing.id)
+          .select('id, employee_id, shift_id, effective_from')
+          .single();
+        if (error || !updated) {
+          throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to update shift.', 500);
         }
-        throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to assign shift.', 500);
+        data = updated as typeof data;
+      } else {
+        const closeTo = formatIsoDate(addUtcDays(parseIsoDate(effectiveFrom), -1));
+        await supabase
+          .from('shift_assignments')
+          .update({ effective_to: closeTo })
+          .eq('employee_id', input.employeeId)
+          .is('effective_to', null)
+          .lt('effective_from', effectiveFrom);
+        const { data: inserted, error } = await supabase
+          .from('shift_assignments')
+          .insert({
+            employee_id: input.employeeId,
+            shift_id: input.shiftId,
+            effective_from: effectiveFrom,
+          })
+          .select('id, employee_id, shift_id, effective_from')
+          .single();
+        if (error || !inserted) {
+          throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, error?.message ?? 'Failed to assign shift.', 500);
+        }
+        data = inserted as typeof data;
       }
+
       await writeAuditLog(supabase, {
         actorId: actor.employeeId,
-        action: 'shift.assign',
+        action: existing ? 'shift.update' : 'shift.assign',
         entityType: 'shift_assignment',
-        entityId: data.id as string,
+        entityId: data.id,
         newValues: data as Record<string, unknown>,
         ...meta,
       });

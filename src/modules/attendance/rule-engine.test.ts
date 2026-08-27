@@ -37,6 +37,22 @@ describe('deriveAttendance', () => {
     });
     expect(result.workedMinutes).toBe(540);
     expect(result.status).toBe('PRESENT');
+    expect(result.lateMinutes).toBe(0);
+  });
+
+  it('does not mark flexible hours as late against the window start', () => {
+    const result = deriveAttendance({
+      isoDate: '2026-07-01',
+      workingDays,
+      holidayDates: [],
+      onApprovedLeave: false,
+      shift: flexible,
+      actualIn: combineDateAndTime('2026-07-01', '08:56'),
+      actualOut: combineDateAndTime('2026-07-01', '18:18'),
+    });
+    expect(result.status).toBe('PRESENT');
+    expect(result.lateMinutes).toBe(0);
+    expect(result.earlyExitMinutes).toBe(0);
   });
 
   it('marks fixed shift late beyond grace as LATE', () => {
@@ -104,6 +120,59 @@ describe('deriveAttendance', () => {
         actualOut: null,
       }).status,
     ).toBe('WEEK_OFF');
+  });
+
+  it('treats unchecked Sunday as weekly off when Mon–Sat are working days', () => {
+    const monSat = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
+    expect(
+      deriveAttendance({
+        isoDate: '2026-08-23',
+        workingDays: monSat,
+        holidayDates: [],
+        onApprovedLeave: false,
+        shift: morning,
+        actualIn: null,
+        actualOut: null,
+      }).status,
+    ).toBe('WEEK_OFF');
+    expect(
+      deriveAttendance({
+        isoDate: '2026-08-22',
+        workingDays: monSat,
+        holidayDates: [],
+        onApprovedLeave: false,
+        shift: morning,
+        actualIn: null,
+        actualOut: null,
+      }).status,
+    ).toBe('ABSENT');
+  });
+
+  it('marks 2nd Saturday as week off for the 2nd/4th Saturday pattern', () => {
+    expect(
+      deriveAttendance({
+        isoDate: '2026-08-08',
+        workingDays: ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'],
+        holidayDates: [],
+        weekPattern: 'SECOND_FOURTH_SATURDAY',
+        onApprovedLeave: false,
+        shift: morning,
+        actualIn: null,
+        actualOut: null,
+      }).status,
+    ).toBe('WEEK_OFF');
+    expect(
+      deriveAttendance({
+        isoDate: '2026-08-15',
+        workingDays: ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'],
+        holidayDates: [],
+        weekPattern: 'SECOND_FOURTH_SATURDAY',
+        onApprovedLeave: false,
+        shift: morning,
+        actualIn: null,
+        actualOut: null,
+      }).status,
+    ).toBe('ABSENT');
   });
 
   it('marks no punches on a working day as ABSENT', () => {

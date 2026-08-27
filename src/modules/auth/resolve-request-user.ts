@@ -18,6 +18,7 @@ type EmployeeAuthRow = {
   full_name: string;
   email: string;
   status: string;
+  deleted_at?: string | null;
   employee_roles: EmployeeRoleRow[] | null;
 };
 
@@ -42,6 +43,7 @@ export async function resolveRequestUser(
       full_name,
       email,
       status,
+      deleted_at,
       employee_roles (
         roles (
           code,
@@ -64,7 +66,7 @@ export async function resolveRequestUser(
     throw new AppError(API_ERROR_CODES.FORBIDDEN, 'No employee profile is linked to this account.', 403);
   }
 
-  if (row.status !== 'active') {
+  if (row.status !== 'active' || row.deleted_at) {
     throw new AppError(API_ERROR_CODES.FORBIDDEN, 'This employee account is inactive.', 403);
   }
 

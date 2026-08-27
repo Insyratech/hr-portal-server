@@ -1,13 +1,17 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { API_ERROR_CODES } from '../../shared/constants/error-codes';
+import { PERMISSIONS } from '../../shared/constants/permissions';
+import { assertHrDomainOwner } from '../../shared/domain-owners';
 import { AppError } from '../../shared/errors/app-error';
 import type { RequestUser } from '../../shared/types/request-user';
+import { canWriteDirectoryAllocations } from '../employees/access';
+import { assertCanStaffDirectoryTarget } from '../employees/staff-target';
 import { writeAuditLog } from '../audit/write-audit-log';
 import { listActiveStaff, loadStaffById, notifyStaff } from '../notifications/notify-staff';
 import { currentPeriod } from './balance';
 import { parsePolicyRules, serializePolicyRules } from './parse-rules';
 import type { PolicyRules } from './types';
-import { canManageAllocations, canManagePolicies, canManageTypes } from './support';
+import { canManagePolicies, canManageTypes } from './support';
 
 export function createLeaveCatalogService(supabase: SupabaseClient) {
   return {
@@ -31,6 +35,7 @@ export function createLeaveCatalogService(supabase: SupabaseClient) {
           requires_attachment: input.requiresAttachment ?? false,
           allow_half_day: input.allowHalfDay ?? true,
           allow_multiple_days: input.allowMultipleDays ?? true,
+          paid: input.paid ?? true,
         })
         .select('*')
         .single();
@@ -72,6 +77,7 @@ export function createLeaveCatalogService(supabase: SupabaseClient) {
       if (input.requiresAttachment !== undefined) patch.requires_attachment = input.requiresAttachment;
       if (input.allowHalfDay !== undefined) patch.allow_half_day = input.allowHalfDay;
       if (input.allowMultipleDays !== undefined) patch.allow_multiple_days = input.allowMultipleDays;
+      if (input.paid !== undefined) patch.paid = input.paid;
       const { data, error } = await supabase.from('leave_types').update(patch).eq('id', id).select('*').maybeSingle();
       if (error) throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to update leave type.', 500);
       if (!data) throw new AppError(API_ERROR_CODES.NOT_FOUND, 'Leave type not found.', 404);
@@ -203,9 +209,10 @@ export function createLeaveCatalogService(supabase: SupabaseClient) {
       input: { name: string; date: string; type?: string; region?: string; optional?: boolean },
       meta: RequestMeta,
     ) {
-      if (!actor.permissions.includes('system.manage')) {
+      if (!actor.permissions.includes(PERMISSIONS.SYSTEM_MANAGE)) {
         throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot manage holidays.', 403);
       }
+      assertHrDomainOwner(actor, 'manage holidays');
       const { data, error } = await supabase
         .from('holidays')
         .insert({
@@ -263,9 +270,10 @@ export function createLeaveCatalogService(supabase: SupabaseClient) {
       input: { name?: string; date?: string; type?: string; region?: string; optional?: boolean },
       meta: RequestMeta,
     ) {
-      if (!actor.permissions.includes('system.manage')) {
+      if (!actor.permissions.includes(PERMISSIONS.SYSTEM_MANAGE)) {
         throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot manage holidays.', 403);
       }
+      assertHrDomainOwner(actor, 'manage holidays');
       const patch: Record<string, unknown> = {};
       if (input.name !== undefined) patch.name = input.name;
       if (input.date !== undefined) patch.holiday_date = input.date;
@@ -314,7 +322,7 @@ export function createLeaveCatalogService(supabase: SupabaseClient) {
     },
 
     async listAllocations(actor: RequestUser, filters?: { employeeId?: string }) {
-      if (!canManageAllocations(actor)) {
+      if (!canWriteDirectoryAllocations(actor) && !actor.permissions.includes(PERMISSIONS.USERS_VIEW)) {
         throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot view leave allocations.', 403);
       }
       let query = supabase
@@ -334,9 +342,10 @@ export function createLeaveCatalogService(supabase: SupabaseClient) {
       input: { employeeId: string; leaveTypeId: string; allocated: number; period?: string },
       meta: RequestMeta,
     ) {
-      if (!canManageAllocations(actor)) {
+      if (!canWriteDirectoryAllocations(actor)) {
         throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot manage leave allocations.', 403);
       }
+      await assertCanStaffDirectoryTarget(supabase, actor, input.employeeId);
       const period = input.period ?? currentPeriod();
       const { data, error } = await supabase
         .from('leave_allocations')
@@ -402,11 +411,12 @@ export function createLeaveCatalogService(supabase: SupabaseClient) {
     },
 
     async setAllocated(actor: RequestUser, id: string, allocated: number, meta: RequestMeta) {
-      if (!canManageAllocations(actor)) {
+      if (!canWriteDirectoryAllocations(actor)) {
         throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot manage leave allocations.', 403);
       }
       const { data: allocation, error } = await supabase.from('leave_allocations').select('*').eq('id', id).maybeSingle();
       if (error || !allocation) throw new AppError(API_ERROR_CODES.NOT_FOUND, 'Allocation not found.', 404);
+      await assertCanStaffDirectoryTarget(supabase, actor, allocation.employee_id as string);
       const current = Number(allocation.allocated);
       const used = Number(allocation.used);
       if (allocated < used) {
@@ -469,11 +479,12 @@ export function createLeaveCatalogService(supabase: SupabaseClient) {
     },
 
     async deleteAllocation(actor: RequestUser, id: string, meta: RequestMeta) {
-      if (!canManageAllocations(actor)) {
+      if (!canWriteDirectoryAllocations(actor)) {
         throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot manage leave allocations.', 403);
       }
       const { data: allocation, error } = await supabase.from('leave_allocations').select('*').eq('id', id).maybeSingle();
       if (error || !allocation) throw new AppError(API_ERROR_CODES.NOT_FOUND, 'Allocation not found.', 404);
+      await assertCanStaffDirectoryTarget(supabase, actor, allocation.employee_id as string);
       if (Number(allocation.used) > 0) {
         throw new AppError(API_ERROR_CODES.CONFLICT, 'This leave type has been used and cannot be removed.', 409);
       }
@@ -518,11 +529,12 @@ export function createLeaveCatalogService(supabase: SupabaseClient) {
     },
 
     async adjustAllocation(actor: RequestUser, id: string, adjustedDelta: number, meta: RequestMeta) {
-      if (!canManageAllocations(actor)) {
+      if (!canWriteDirectoryAllocations(actor)) {
         throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot manage leave allocations.', 403);
       }
       const { data: allocation, error } = await supabase.from('leave_allocations').select('*').eq('id', id).maybeSingle();
       if (error || !allocation) throw new AppError(API_ERROR_CODES.NOT_FOUND, 'Allocation not found.', 404);
+      await assertCanStaffDirectoryTarget(supabase, actor, allocation.employee_id as string);
       await supabase.from('leave_ledger').insert({
         employee_id: allocation.employee_id,
         leave_type_id: allocation.leave_type_id,
@@ -560,6 +572,7 @@ function mapType(row: Record<string, unknown>) {
     requiresAttachment: Boolean(row.requires_attachment),
     allowHalfDay: Boolean(row.allow_half_day),
     allowMultipleDays: Boolean(row.allow_multiple_days),
+    paid: row.paid === undefined ? true : Boolean(row.paid),
   };
 }
 

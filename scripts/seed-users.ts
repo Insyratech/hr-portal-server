@@ -5,9 +5,20 @@ import { assertEmployeesTable } from './assert-schema';
 
 const ROLE_IDS = {
   SUPER_ADMIN: '00000000-0000-4000-8000-000000000001',
-  ADMIN: '00000000-0000-4000-8000-000000000002',
+  GENERAL_MANAGER: '00000000-0000-4000-8000-000000000002',
   EMPLOYEE: '00000000-0000-4000-8000-000000000003',
+  HR_MANAGER: '00000000-0000-4000-8000-000000000004',
+  CSO: '00000000-0000-4000-8000-000000000005',
+  FINANCE_MANAGER: '00000000-0000-4000-8000-000000000006',
 } as const;
+
+type SeedSpec = {
+  email: string;
+  employeeCode: string;
+  fullName: string;
+  roleId: string;
+  optional?: boolean;
+};
 
 async function ensureAuthUser(
   supabase: ReturnType<typeof createClient>,
@@ -90,6 +101,12 @@ async function upsertEmployee(
   }
 }
 
+function truthy(value: string | undefined): boolean {
+  if (!value) return false;
+  const normalized = value.trim().toLowerCase();
+  return normalized === '1' || normalized === 'true' || normalized === 'yes';
+}
+
 async function main(): Promise<void> {
   const env = loadEnv();
   const password = process.env.SEED_PASSWORD ?? '';
@@ -104,7 +121,9 @@ async function main(): Promise<void> {
 
   await assertEmployeesTable(supabase);
 
-  const seeds = [
+  const includeOptional = truthy(process.env.SEED_OPTIONAL_ROLES ?? 'true');
+
+  const seeds: SeedSpec[] = [
     {
       email: process.env.SEED_SUPER_ADMIN_EMAIL ?? 'superadmin@example.com',
       employeeCode: 'SA-001',
@@ -112,10 +131,17 @@ async function main(): Promise<void> {
       roleId: ROLE_IDS.SUPER_ADMIN,
     },
     {
-      email: process.env.SEED_ADMIN_EMAIL ?? 'admin@example.com',
-      employeeCode: 'AD-001',
-      fullName: 'Admin User',
-      roleId: ROLE_IDS.ADMIN,
+      // Legacy SEED_ADMIN_EMAIL → General Manager (ex-ADMIN).
+      email: process.env.SEED_GM_EMAIL ?? process.env.SEED_ADMIN_EMAIL ?? 'gm@example.com',
+      employeeCode: 'GM-001',
+      fullName: 'General Manager',
+      roleId: ROLE_IDS.GENERAL_MANAGER,
+    },
+    {
+      email: process.env.SEED_HR_EMAIL ?? 'hr@example.com',
+      employeeCode: 'HR-001',
+      fullName: 'HR Manager',
+      roleId: ROLE_IDS.HR_MANAGER,
     },
     {
       email: process.env.SEED_EMPLOYEE_EMAIL ?? 'employee@example.com',
@@ -123,16 +149,38 @@ async function main(): Promise<void> {
       fullName: 'Employee User',
       roleId: ROLE_IDS.EMPLOYEE,
     },
+    {
+      email: process.env.SEED_CSO_EMAIL ?? 'cso@example.com',
+      employeeCode: 'CSO-001',
+      fullName: 'CSO User',
+      roleId: ROLE_IDS.CSO,
+      optional: true,
+    },
+    {
+      email: process.env.SEED_FINANCE_EMAIL ?? 'finance@example.com',
+      employeeCode: 'FIN-001',
+      fullName: 'Finance Manager',
+      roleId: ROLE_IDS.FINANCE_MANAGER,
+      optional: true,
+    },
   ];
 
-  for (const seed of seeds) {
+  const active = seeds.filter((seed) => !seed.optional || includeOptional);
+
+  for (const seed of active) {
     const userId = await ensureAuthUser(supabase, seed.email, password);
     await upsertEmployee(supabase, { ...seed, userId });
-    console.log(`Seeded ${seed.email}`);
+    console.log(`Seeded ${seed.email} (${seed.fullName})`);
   }
 
   const flexibleShiftId = '00000000-0000-4000-8000-000000000401';
-  const { data: employees } = await supabase.from('employees').select('id').in('email', seeds.map((s) => s.email));
+  const { data: employees } = await supabase
+    .from('employees')
+    .select('id')
+    .in(
+      'email',
+      active.map((s) => s.email),
+    );
   for (const employee of employees ?? []) {
     const { data: existing } = await supabase
       .from('shift_assignments')

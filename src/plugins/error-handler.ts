@@ -44,7 +44,9 @@ export const errorHandlerPlugin = fp(async (app: FastifyInstance) => {
             ? API_ERROR_CODES.FORBIDDEN
             : statusCode === 404
               ? API_ERROR_CODES.NOT_FOUND
-              : API_ERROR_CODES.INTERNAL_ERROR,
+              : statusCode === 429
+                ? API_ERROR_CODES.RATE_LIMITED
+                : API_ERROR_CODES.INTERNAL_ERROR,
         message,
       );
     },
