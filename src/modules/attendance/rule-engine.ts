@@ -58,44 +58,45 @@ export function deriveAttendance(input: DeriveAttendanceInput): DeriveAttendance
   }
 
   if (!input.shift) {
-    return empty;
+    return { ...empty, status: 'NO_SHIFT' };
   }
 
-  const { scheduledIn, scheduledOut } = scheduledBounds(input.isoDate, input.shift);
-  const base = {
-    ...empty,
-    scheduledIn,
-    scheduledOut,
-  };
-
   if (input.actualIn && !input.actualOut) {
-    return { ...base, status: 'MISSING_PUNCH' };
+    return {
+      ...empty,
+      ...(input.shift.flexible
+        ? { scheduledIn: null, scheduledOut: null }
+        : scheduledBounds(input.isoDate, input.shift)),
+      status: 'MISSING_PUNCH',
+    };
   }
 
   if (!input.actualIn && !input.actualOut) {
-    return { ...base, status: 'ABSENT' };
+    return {
+      ...empty,
+      ...(input.shift.flexible
+        ? { scheduledIn: null, scheduledOut: null }
+        : scheduledBounds(input.isoDate, input.shift)),
+      status: 'ABSENT',
+    };
   }
 
   if (!input.actualIn || !input.actualOut) {
-    return { ...base, status: 'MISSING_PUNCH' };
+    return {
+      ...empty,
+      ...(input.shift.flexible
+        ? { scheduledIn: null, scheduledOut: null }
+        : scheduledBounds(input.isoDate, input.shift)),
+      status: 'MISSING_PUNCH',
+    };
   }
 
   const workedMinutes = minutesBetween(input.actualIn, input.actualOut);
-  const graceEnd = new Date(scheduledIn.getTime() + input.shift.gracePeriodMinutes * 60_000);
-  let lateMinutes = Math.max(0, minutesBetween(graceEnd, input.actualIn));
-  const earlyCutoff = new Date(scheduledOut.getTime() - input.shift.earlyExitThresholdMinutes * 60_000);
-  let earlyExitMinutes =
-    input.actualOut.getTime() < earlyCutoff.getTime()
-      ? minutesBetween(input.actualOut, scheduledOut)
-      : 0;
-  const overtimeMinutes = Math.max(0, workedMinutes - input.shift.minimumDurationMinutes);
   const halfThreshold = Math.floor(input.shift.minimumDurationMinutes / 2);
-
-  let status: DeriveAttendanceResult['status'] = 'PRESENT';
+  const overtimeMinutes = Math.max(0, workedMinutes - input.shift.minimumDurationMinutes);
 
   if (input.shift.flexible) {
-    lateMinutes = 0;
-    earlyExitMinutes = 0;
+    let status: DeriveAttendanceResult['status'] = 'PRESENT';
     if (workedMinutes >= input.shift.minimumDurationMinutes) {
       status = 'PRESENT';
     } else if (workedMinutes >= halfThreshold) {
@@ -103,7 +104,30 @@ export function deriveAttendance(input: DeriveAttendanceInput): DeriveAttendance
     } else {
       status = 'ABSENT';
     }
-  } else if (workedMinutes < halfThreshold) {
+    return {
+      status,
+      workedMinutes,
+      lateMinutes: 0,
+      earlyExitMinutes: 0,
+      overtimeMinutes,
+      scheduledIn: null,
+      scheduledOut: null,
+    };
+  }
+
+  const { scheduledIn, scheduledOut } = scheduledBounds(input.isoDate, input.shift);
+
+  const graceEnd = new Date(scheduledIn.getTime() + input.shift.gracePeriodMinutes * 60_000);
+  let lateMinutes = Math.max(0, minutesBetween(graceEnd, input.actualIn));
+  const earlyCutoff = new Date(scheduledOut.getTime() - input.shift.earlyExitThresholdMinutes * 60_000);
+  let earlyExitMinutes =
+    input.actualOut.getTime() < earlyCutoff.getTime()
+      ? minutesBetween(input.actualOut, scheduledOut)
+      : 0;
+
+  let status: DeriveAttendanceResult['status'] = 'PRESENT';
+
+  if (workedMinutes < halfThreshold) {
     status = 'ABSENT';
   } else if (workedMinutes < input.shift.minimumDurationMinutes || earlyExitMinutes > 0) {
     status = 'HALF_DAY';

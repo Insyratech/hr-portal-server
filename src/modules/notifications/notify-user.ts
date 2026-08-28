@@ -12,7 +12,7 @@ export async function notifyUser(
   },
 ): Promise<void> {
   if (!input.userId) return;
-  await supabase.from('notifications').insert({
+  const { error } = await supabase.from('notifications').insert({
     user_id: input.userId,
     type: input.type,
     title: input.title,
@@ -20,4 +20,7 @@ export async function notifyUser(
     reference_type: input.referenceType,
     reference_id: input.referenceId,
   });
+  if (error) {
+    throw error;
+  }
 }

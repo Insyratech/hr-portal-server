@@ -1,4 +1,5 @@
-const TIME_RE = /\b([01]?\d|2[0-3]):([0-5]\d)\b/g;
+const TIME_RE = /\b([01]?\d|2[0-3]):([0-5]\d)(?::[0-5]\d)?\b/g;
+const AMPM_TIME_RE = /\b(\d{1,2}):([0-5]\d)(?::[0-5]\d)?\s*(am|pm)\b/gi;
 const USER_ID_RE = /user\s*id/i;
 const NAME_RE = /^name\b/i;
 
@@ -22,11 +23,14 @@ export type BiometricParseResult = {
 
 function cellText(value: unknown): string {
   if (value == null || value === '') return '';
-  if (typeof value === 'number' && value > 0 && value < 1) {
-    const total = Math.round(value * 24 * 60);
-    const hours = Math.floor(total / 60);
-    const minutes = total % 60;
-    return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+    const fractional = value >= 1 ? value % 1 : value;
+    if (fractional > 0) {
+      const total = Math.round(fractional * 24 * 60);
+      const hours = Math.floor(total / 60) % 24;
+      const minutes = total % 60;
+      return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+    }
   }
   return String(value).trim();
 }
@@ -34,6 +38,22 @@ function cellText(value: unknown): string {
 export function extractTimes(value: unknown): string[] {
   const text = cellText(value);
   if (!text) return [];
+
+  if (/\b(am|pm)\b/i.test(text)) {
+    const ampmTimes: string[] = [];
+    AMPM_TIME_RE.lastIndex = 0;
+    let ampmMatch: RegExpExecArray | null;
+    while ((ampmMatch = AMPM_TIME_RE.exec(text))) {
+      let hours = Number(ampmMatch[1]);
+      const minutes = ampmMatch[2];
+      const meridiem = ampmMatch[3].toLowerCase();
+      if (meridiem === 'pm' && hours < 12) hours += 12;
+      if (meridiem === 'am' && hours === 12) hours = 0;
+      ampmTimes.push(`${String(hours).padStart(2, '0')}:${minutes}`);
+    }
+    if (ampmTimes.length > 0) return ampmTimes;
+  }
+
   const times: string[] = [];
   TIME_RE.lastIndex = 0;
   let match: RegExpExecArray | null;

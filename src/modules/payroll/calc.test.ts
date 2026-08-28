@@ -1,6 +1,31 @@
 import { describe, expect, it } from 'vitest';
 import { calculateSlipMoney, leaveCodeBucket } from './calc';
 
+describe('mergeCompensation', () => {
+  it('overrides only adjustable monthly fields', async () => {
+    const { mergeCompensation } = await import('./calc');
+    const base = {
+      basic: 10000,
+      da: 1000,
+      hra: 500,
+      fuel: 200,
+      incentives: 0,
+      other: 0,
+      professionalTax: 200,
+      tds: 0,
+      employeeWelfare: 0,
+      kpi: 0,
+      otherDeductions: 0,
+    };
+    const merged = mergeCompensation(base, { incentives: 500, other: 100, tds: 50 });
+    expect(merged.basic).toBe(10000);
+    expect(merged.incentives).toBe(500);
+    expect(merged.other).toBe(100);
+    expect(merged.tds).toBe(50);
+    expect(merged.professionalTax).toBe(200);
+  });
+});
+
 describe('calculateSlipMoney', () => {
   it('matches 3 LOP on 4 calendar days with CTC 6620 → LOP 4965, net 1655', () => {
     const result = calculateSlipMoney({

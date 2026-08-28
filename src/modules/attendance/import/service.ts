@@ -6,7 +6,7 @@ import { AppError } from '../../../shared/errors/app-error';
 import type { RequestUser } from '../../../shared/types/request-user';
 import { writeAuditLog } from '../../audit/write-audit-log';
 import { portalUrl } from '../../notifications/mail';
-import { loadStaffById, notifyStaff } from '../../notifications/notify-staff';
+import { listActiveStaff, notifyStaff } from '../../notifications/notify-staff';
 import { combineDateAndTime, deriveAttendance } from '../rule-engine';
 import { toShiftDefinition, type ShiftRow } from '../support';
 import { loadHolidayDates, loadWorkingDays } from '../../leave/support';
@@ -14,6 +14,7 @@ import { listWorkWeekRows } from '../work-week';
 import { patternOnDate } from '../../leave/day-count';
 import { MONTHLY_QUOTA_MINUTES, remainingLabel, remainingMinutes, quotaUsed } from '../../work-permissions/quota';
 import { firstAndLast, parseBiometricGrid } from './parser';
+import { buildEmployeeLookup, matchEmployee } from './employee-match';
 import { lopFromAction, proposeLop, untouchedFlagCount, type HrAction, type LeaveOverlay } from './lop-proposal';
 import { datesInPeriod, parsePeriod } from './period';
 import { decodeBase64File, gridFromXlsx, bufferForStorage } from './workbook';
@@ -33,28 +34,6 @@ type EmployeeRow = {
 function firstRel<T>(value: T | T[] | null | undefined): T | null {
   if (!value) return null;
   return Array.isArray(value) ? (value[0] ?? null) : value;
-}
-
-function normalizeCode(value: string): string {
-  return value.trim().toLowerCase();
-}
-
-/** Portal codes are often ID2025009 while the device writes 2025009. */
-function employeeCodeKeys(value: string): string[] {
-  const n = normalizeCode(value);
-  const withoutId = n.replace(/^id/, '');
-  const withId = n.startsWith('id') ? n : `id${n}`;
-  return [...new Set([n, withoutId, withId].filter(Boolean))];
-}
-
-function namesMatch(fileName: string, fullName: string): boolean {
-  const file = fileName.trim().toLowerCase().replace(/\s+/g, ' ');
-  const full = fullName.trim().toLowerCase().replace(/\s+/g, ' ');
-  if (!file || !full) return true;
-  if (file === full) return true;
-  const fullParts = full.split(' ');
-  if (fullParts[0] === file.split(' ')[0]) return true;
-  return fullParts.includes(file);
 }
 
 type AssignmentRow = {
@@ -264,30 +243,22 @@ export function createAttendanceImportService(supabase: SupabaseClient) {
         .eq('status', 'active');
       if (empError) throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load employees.', 500);
 
-      const byCode = new Map<string, EmployeeRow>();
-      for (const row of (employees ?? []) as EmployeeRow[]) {
-        for (const key of employeeCodeKeys(row.employee_code)) {
-          if (!byCode.has(key)) byCode.set(key, row);
-        }
-      }
+      const employeeList = (employees ?? []) as EmployeeRow[];
+      const lookup = buildEmployeeLookup(employeeList);
       const dates = datesInPeriod(period.key);
       const punches = new Map<string, { inTime: string | null; outTime: string | null; name: string; warnings: string[] }>();
+      const employeesInFile = new Set<string>();
 
       const rowInserts: Record<string, unknown>[] = [];
 
       for (const day of parsed.days) {
-        const emp = employeeCodeKeys(day.employeeCode).map((key) => byCode.get(key)).find(Boolean);
+        const matched = matchEmployee(day.employeeCode, day.name, lookup);
+        const emp = matched.employee;
         const { inTime, outTime } = firstAndLast(day.times);
         const iso = `${period.key}-${String(day.day).padStart(2, '0')}`;
         if (!dates.includes(iso)) continue;
-        const warnings: string[] = [];
-        let matchStatus = 'MATCHED';
-        if (!emp) {
-          matchStatus = 'UNMATCHED';
-        } else if (day.name && !namesMatch(day.name, emp.full_name)) {
-          matchStatus = 'NAME_MISMATCH';
-          warnings.push(`File name “${day.name}” does not match ${emp.full_name}.`);
-        }
+        const warnings = [...matched.warnings];
+        const matchStatus = matched.status;
         rowInserts.push({
           import_id: created.id,
           employee_code: day.employeeCode,
@@ -300,6 +271,7 @@ export function createAttendanceImportService(supabase: SupabaseClient) {
           match_status: matchStatus,
         });
         if (emp) {
+          employeesInFile.add(emp.id);
           punches.set(`${emp.id}:${iso}`, { inTime, outTime, name: day.name, warnings });
         }
       }
@@ -348,7 +320,8 @@ export function createAttendanceImportService(supabase: SupabaseClient) {
       const assignments = (assignmentRows ?? []) as AssignmentRow[];
 
       const reviewInserts: Record<string, unknown>[] = [];
-      for (const emp of (employees ?? []) as EmployeeRow[]) {
+      for (const emp of employeeList) {
+        if (!employeesInFile.has(emp.id)) continue;
         for (const iso of dates) {
           const shift = shiftOnDate(assignments, emp.id, iso);
           const punch = punches.get(`${emp.id}:${iso}`);
@@ -555,19 +528,16 @@ export function createAttendanceImportService(supabase: SupabaseClient) {
       });
 
       const publishedPeriod = parsePeriod(bundle.import.period);
-      const employeeIds = [...new Set((reviews ?? []).map((row) => row.employee_id as string))];
-      const recipients = (
-        await Promise.all(employeeIds.map((employeeId) => loadStaffById(supabase, employeeId)))
-      ).filter((person): person is NonNullable<typeof person> => person != null);
+      const recipients = await listActiveStaff(supabase);
       await notifyStaff(supabase, recipients, {
         type: 'attendance',
-        title: `${publishedPeriod.monthName} attendance`,
+        title: `${publishedPeriod.monthName} attendance published`,
         message: `Your ${publishedPeriod.monthName} attendance is published. Open Attendance to review in and out times.`,
         referenceType: 'attendance_import',
         referenceId: publishedPeriod.key,
         eyebrow: 'Attendance',
         paragraphs: [
-          `HR published attendance for ${publishedPeriod.label}.`,
+          `Attendance for ${publishedPeriod.label} has been published.`,
           'Open Attendance in the portal to see your in and out times for the month.',
         ],
         ctaLabel: 'Open attendance',
@@ -774,7 +744,9 @@ function mapCard(
   const mapped = days.map(mapDay);
   const permissionTaken = mapped.reduce((sum, day) => sum + (day.permissionMinutes > 0 ? day.permissionMinutes : 0), 0);
   const remaining = remainingMinutes(quotaUsedMinutes);
-  const workingDaysCount = mapped.filter((day) => day.status !== 'WEEK_OFF' && day.status !== 'HOLIDAY').length;
+  const workingDaysCount = mapped.filter(
+    (day) => day.status !== 'WEEK_OFF' && day.status !== 'HOLIDAY' && day.status !== 'NO_SHIFT',
+  ).length;
   const finalLop = mapped.reduce((sum, day) => sum + (day.finalLop ?? 0), 0);
   const openFlags = untouchedFlagCount(mapped.map((day) => ({ needsHrDecision: day.needsHrDecision, hrAction: day.hrAction })));
   const shiftName = mapped.find((day) => day.shiftName)?.shiftName ?? null;

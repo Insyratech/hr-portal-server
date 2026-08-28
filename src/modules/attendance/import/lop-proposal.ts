@@ -82,6 +82,17 @@ export function proposeLop(input: {
     };
   }
 
+  if (status === 'NO_SHIFT') {
+    return {
+      proposedLop: null,
+      finalLop: null,
+      hrAction: null,
+      needsHrDecision: true,
+      skippedFromLop: true,
+      permissionCovered: false,
+    };
+  }
+
   if (status === 'LATE' && !startCovered) {
     return {
       proposedLop: null,

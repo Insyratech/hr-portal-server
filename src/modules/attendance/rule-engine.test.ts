@@ -38,6 +38,22 @@ describe('deriveAttendance', () => {
     expect(result.workedMinutes).toBe(540);
     expect(result.status).toBe('PRESENT');
     expect(result.lateMinutes).toBe(0);
+    expect(result.scheduledIn).toBeNull();
+    expect(result.scheduledOut).toBeNull();
+  });
+
+  it('accepts flexible start at 11:00 when nine hours are worked', () => {
+    const result = deriveAttendance({
+      isoDate: '2026-08-21',
+      workingDays,
+      holidayDates: [],
+      onApprovedLeave: false,
+      shift: flexible,
+      actualIn: combineDateAndTime('2026-08-21', '11:00'),
+      actualOut: combineDateAndTime('2026-08-21', '20:00'),
+    });
+    expect(result.status).toBe('PRESENT');
+    expect(result.lateMinutes).toBe(0);
   });
 
   it('does not mark flexible hours as late against the window start', () => {
@@ -53,6 +69,22 @@ describe('deriveAttendance', () => {
     expect(result.status).toBe('PRESENT');
     expect(result.lateMinutes).toBe(0);
     expect(result.earlyExitMinutes).toBe(0);
+    expect(result.scheduledIn).toBeNull();
+    expect(result.scheduledOut).toBeNull();
+  });
+
+  it('accepts flexible start at 11:00 when nine hours are worked', () => {
+    const result = deriveAttendance({
+      isoDate: '2026-08-21',
+      workingDays,
+      holidayDates: [],
+      onApprovedLeave: false,
+      shift: flexible,
+      actualIn: combineDateAndTime('2026-08-21', '11:00'),
+      actualOut: combineDateAndTime('2026-08-21', '20:00'),
+    });
+    expect(result.status).toBe('PRESENT');
+    expect(result.lateMinutes).toBe(0);
   });
 
   it('marks fixed shift late beyond grace as LATE', () => {
@@ -187,5 +219,19 @@ describe('deriveAttendance', () => {
         actualOut: null,
       }).status,
     ).toBe('ABSENT');
+  });
+
+  it('marks missing shift assignment as NO_SHIFT instead of ABSENT', () => {
+    expect(
+      deriveAttendance({
+        isoDate: '2026-08-21',
+        workingDays,
+        holidayDates: [],
+        onApprovedLeave: false,
+        shift: null,
+        actualIn: null,
+        actualOut: null,
+      }).status,
+    ).toBe('NO_SHIFT');
   });
 });

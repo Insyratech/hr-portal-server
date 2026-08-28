@@ -28,6 +28,35 @@ export type LeaveParticulars = {
   totalLop: number;
 };
 
+export const PAYROLL_ADJUSTABLE_KEYS = [
+  'incentives',
+  'other',
+  'professionalTax',
+  'tds',
+  'employeeWelfare',
+  'kpi',
+  'otherDeductions',
+] as const satisfies readonly (keyof CompensationParts)[];
+
+export type PayrollAdjustableKey = (typeof PAYROLL_ADJUSTABLE_KEYS)[number];
+
+export function mergeCompensation(
+  base: CompensationParts,
+  override?: Partial<Pick<CompensationParts, PayrollAdjustableKey>>,
+): CompensationParts {
+  if (!override) return base;
+  return {
+    ...base,
+    incentives: override.incentives ?? base.incentives,
+    other: override.other ?? base.other,
+    professionalTax: override.professionalTax ?? base.professionalTax,
+    tds: override.tds ?? base.tds,
+    employeeWelfare: override.employeeWelfare ?? base.employeeWelfare,
+    kpi: override.kpi ?? base.kpi,
+    otherDeductions: override.otherDeductions ?? base.otherDeductions,
+  };
+}
+
 export function roundMoney(value: number): number {
   return Math.round(value * 100) / 100;
 }

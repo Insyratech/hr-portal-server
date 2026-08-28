@@ -45,6 +45,15 @@ describe('parseBiometricGrid', () => {
     expect(extractTimes('09:00\n18:05')).toEqual(['09:00', '18:05']);
   });
 
+  it('reads 12-hour times with am/pm', () => {
+    expect(extractTimes('08:56 AM\n06:18 PM')).toEqual(['08:56', '18:18']);
+  });
+
+  it('reads excel serial datetime numbers as clock times', () => {
+    const serial = 45839 + 8 / 24 + 56 / 1440;
+    expect(extractTimes(serial)).toEqual(['08:56']);
+  });
+
   it('parses a 31-day grid with multiline cells and flags a missing UserID', () => {
     const result = parseBiometricGrid(biometricMonthGrid({ includeMissingUserId: true }));
     expect(result.exceptions.some((item) => item.reason === 'Missing UserID.')).toBe(true);

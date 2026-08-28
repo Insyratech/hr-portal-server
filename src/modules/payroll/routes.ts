@@ -6,7 +6,18 @@ import { AppError } from '../../shared/errors/app-error';
 import { ok } from '../../shared/http/ok';
 import { requireAuth, requirePermission } from '../../plugins/permissions';
 import { requireSupabase } from '../leave/support';
-import { createPayrollService } from './service';
+import { createPayrollService, type PayrollAdjustment } from './service';
+
+const compensationAdjustment = Type.Object({
+  employeeId: Type.String({ minLength: 1 }),
+  incentives: Type.Optional(Type.Number()),
+  other: Type.Optional(Type.Number()),
+  professionalTax: Type.Optional(Type.Number()),
+  tds: Type.Optional(Type.Number()),
+  employeeWelfare: Type.Optional(Type.Number()),
+  kpi: Type.Optional(Type.Number()),
+  otherDeductions: Type.Optional(Type.Number()),
+});
 
 function metaOf(request: { ip: string; headers: { 'user-agent'?: string } }) {
   return { ipAddress: request.ip, userAgent: request.headers['user-agent'] ?? null };
@@ -41,15 +52,33 @@ export async function registerPayrollRoutes(app: FastifyInstance): Promise<void>
     },
   );
 
+  app.get(
+    '/api/v1/payroll/preview',
+    {
+      preHandler: [requirePermission(PERMISSIONS.PAYROLL_MANAGE)],
+      schema: { querystring: Type.Object({ importId: Type.String({ minLength: 1 }) }) },
+    },
+    async (request) => {
+      if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
+      const { importId } = request.query as { importId: string };
+      return ok(await createPayrollService(requireSupabase(app.supabase)).preview(request.user, importId));
+    },
+  );
+
   app.post(
     '/api/v1/payroll/calculate',
     {
       preHandler: [requirePermission(PERMISSIONS.PAYROLL_MANAGE)],
-      schema: { body: Type.Object({ importId: Type.String({ minLength: 1 }) }) },
+      schema: {
+        body: Type.Object({
+          importId: Type.String({ minLength: 1 }),
+          adjustments: Type.Optional(Type.Array(compensationAdjustment)),
+        }),
+      },
     },
     async (request) => {
       if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
-      const body = request.body as { importId: string };
+      const body = request.body as { importId: string; adjustments?: PayrollAdjustment[] };
       return ok(await createPayrollService(requireSupabase(app.supabase)).calculate(request.user, body, metaOf(request)));
     },
   );

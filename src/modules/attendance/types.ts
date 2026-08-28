@@ -9,7 +9,8 @@ export type AttendanceStatus =
   | 'LEAVE'
   | 'HOLIDAY'
   | 'WEEK_OFF'
-  | 'MISSING_PUNCH';
+  | 'MISSING_PUNCH'
+  | 'NO_SHIFT';
 
 export type ShiftDefinition = {
   startTime: string;

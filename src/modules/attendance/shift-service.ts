@@ -8,8 +8,8 @@ import { canWriteDirectoryShiftAssignments } from '../employees/access';
 import { assertCanStaffDirectoryTarget } from '../employees/staff-target';
 import { writeAuditLog } from '../audit/write-audit-log';
 import { loadStaffById, notifyStaff } from '../notifications/notify-staff';
-import { addUtcDays, formatIsoDate, parseIsoDate } from '../leave/day-count';
-import { mapShift, type ShiftRow } from './support';
+import { rowsToClose } from './shift-assignment-utils';
+import { mapShift, normalizeFlexibleShiftFields, FLEXIBLE_SHIFT_END, FLEXIBLE_SHIFT_START, type ShiftRow } from './support';
 
 type RequestMeta = { ipAddress?: string | null; userAgent?: string | null };
 
@@ -39,17 +39,27 @@ export function createShiftService(supabase: SupabaseClient) {
       if (!actor.permissions.includes(PERMISSIONS.SHIFTS_MANAGE)) {
         throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot manage shifts.', 403);
       }
+      const payload = normalizeFlexibleShiftFields({
+        name: input.name,
+        startTime: input.startTime,
+        endTime: input.endTime,
+        minimumDurationMinutes: input.minimumDurationMinutes,
+        gracePeriodMinutes: input.gracePeriodMinutes ?? 0,
+        lateThresholdMinutes: input.lateThresholdMinutes ?? 0,
+        earlyExitThresholdMinutes: input.earlyExitThresholdMinutes ?? 0,
+        flexible: input.flexible ?? false,
+      });
       const { data, error } = await supabase
         .from('shifts')
         .insert({
-          name: input.name,
-          start_time: input.startTime,
-          end_time: input.endTime,
-          minimum_duration_minutes: input.minimumDurationMinutes,
-          grace_period_minutes: input.gracePeriodMinutes ?? 0,
-          late_threshold_minutes: input.lateThresholdMinutes ?? 0,
-          early_exit_threshold_minutes: input.earlyExitThresholdMinutes ?? 0,
-          flexible: input.flexible ?? false,
+          name: payload.name,
+          start_time: payload.startTime,
+          end_time: payload.endTime,
+          minimum_duration_minutes: payload.minimumDurationMinutes,
+          grace_period_minutes: payload.gracePeriodMinutes ?? 0,
+          late_threshold_minutes: payload.lateThresholdMinutes ?? 0,
+          early_exit_threshold_minutes: payload.earlyExitThresholdMinutes ?? 0,
+          flexible: payload.flexible ?? false,
         })
         .select('*')
         .single();
@@ -86,6 +96,14 @@ export function createShiftService(supabase: SupabaseClient) {
       if (input.flexible !== undefined) patch.flexible = input.flexible;
       if (input.active !== undefined) patch.active = input.active;
 
+      if (patch.flexible === true) {
+        patch.start_time = FLEXIBLE_SHIFT_START;
+        patch.end_time = FLEXIBLE_SHIFT_END;
+        patch.grace_period_minutes = 0;
+        patch.late_threshold_minutes = 0;
+        patch.early_exit_threshold_minutes = 0;
+      }
+
       const { data, error } = await supabase.from('shifts').update(patch).eq('id', id).select('*').maybeSingle();
       if (error) throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to update shift.', 500);
       if (!data) throw new AppError(API_ERROR_CODES.NOT_FOUND, 'Shift not found.', 404);
@@ -107,6 +125,7 @@ export function createShiftService(supabase: SupabaseClient) {
       }
       await assertCanStaffDirectoryTarget(supabase, actor, input.employeeId);
       const effectiveFrom = (input.effectiveFrom ?? new Date().toISOString().slice(0, 10)).slice(0, 10);
+
       const { data: existing } = await supabase
         .from('shift_assignments')
         .select('id, employee_id, shift_id, effective_from, effective_to')
@@ -114,11 +133,30 @@ export function createShiftService(supabase: SupabaseClient) {
         .eq('effective_from', effectiveFrom)
         .maybeSingle();
 
+      const { data: openRows, error: openError } = await supabase
+        .from('shift_assignments')
+        .select('id, effective_from')
+        .eq('employee_id', input.employeeId)
+        .is('effective_to', null);
+      if (openError) {
+        throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load shift assignments.', 500);
+      }
+
+      for (const close of rowsToClose(openRows ?? [], effectiveFrom, existing?.id as string | undefined)) {
+        const { error } = await supabase
+          .from('shift_assignments')
+          .update({ effective_to: close.effectiveTo })
+          .eq('id', close.id);
+        if (error) {
+          throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to close the previous shift.', 500);
+        }
+      }
+
       let data: { id: string; employee_id: string; shift_id: string; effective_from: string };
       if (existing) {
         const { data: updated, error } = await supabase
           .from('shift_assignments')
-          .update({ shift_id: input.shiftId })
+          .update({ shift_id: input.shiftId, effective_to: null })
           .eq('id', existing.id)
           .select('id, employee_id, shift_id, effective_from')
           .single();
@@ -127,13 +165,6 @@ export function createShiftService(supabase: SupabaseClient) {
         }
         data = updated as typeof data;
       } else {
-        const closeTo = formatIsoDate(addUtcDays(parseIsoDate(effectiveFrom), -1));
-        await supabase
-          .from('shift_assignments')
-          .update({ effective_to: closeTo })
-          .eq('employee_id', input.employeeId)
-          .is('effective_to', null)
-          .lt('effective_from', effectiveFrom);
         const { data: inserted, error } = await supabase
           .from('shift_assignments')
           .insert({
