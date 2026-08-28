@@ -4,6 +4,8 @@ import { PERMISSIONS, ROLE_CODES } from '../../shared/constants/permissions';
 import { AppError } from '../../shared/errors/app-error';
 import type { RequestUser } from '../../shared/types/request-user';
 import { writeAuditLog } from '../audit/write-audit-log';
+import { portalUrl } from '../notifications/mail';
+import { listStaffByRole, notifyStaff } from '../notifications/notify-staff';
 
 const MAX_BODY_LENGTH = 2000;
 
@@ -78,6 +80,41 @@ export async function listProjectStatusUpdates(
   }));
 }
 
+async function notifyCsoOfProjectUpdate(
+  supabase: SupabaseClient,
+  input: {
+    projectId: string;
+    projectName: string;
+    projectCode: string;
+    leadName: string;
+    body: string;
+  },
+): Promise<void> {
+  const csoStaff = await listStaffByRole(supabase, ROLE_CODES.CSO);
+  if (csoStaff.length === 0) return;
+
+  const preview = input.body.length > 240 ? `${input.body.slice(0, 237)}…` : input.body;
+  await notifyStaff(supabase, csoStaff, {
+    type: 'work',
+    title: 'Project status update',
+    message: `${input.leadName} posted an update on ${input.projectName} (${input.projectCode}).`,
+    referenceType: 'project',
+    referenceId: input.projectId,
+    eyebrow: 'Projects',
+    paragraphs: [
+      `${input.leadName} shared a status update on ${input.projectName}.`,
+      preview,
+    ],
+    details: [
+      { label: 'Project', value: input.projectName },
+      { label: 'Code', value: input.projectCode },
+      { label: 'Lead', value: input.leadName },
+    ],
+    ctaLabel: 'View updates',
+    ctaHref: portalUrl(`/cso/work/projects?updatesProjectId=${encodeURIComponent(input.projectId)}`),
+  });
+}
+
 export function createProjectUpdatesService(supabase: SupabaseClient) {
   return {
     async list(actor: RequestUser, projectId: string) {
@@ -140,6 +177,14 @@ export function createProjectUpdatesService(supabase: SupabaseClient) {
         entityId: projectId,
         newValues: { updateId: data.id, bodyLength: body.length },
         ...meta,
+      });
+
+      await notifyCsoOfProjectUpdate(supabase, {
+        projectId,
+        projectName: project.name as string,
+        projectCode: project.code as string,
+        leadName: actor.fullName || 'Project lead',
+        body,
       });
 
       return {
