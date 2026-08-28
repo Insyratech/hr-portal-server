@@ -240,7 +240,18 @@ export async function registerLeaveRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
-  app.get('/api/v1/leave-allocations', { preHandler: [requirePermission(PERMISSIONS.LEAVE_ALLOCATIONS_MANAGE, PERMISSIONS.USERS_VIEW)] }, async (request) => {
+  app.get(
+    '/api/v1/leave-allocations',
+    {
+      preHandler: [
+        requirePermission(
+          PERMISSIONS.LEAVE_ALLOCATIONS_MANAGE,
+          PERMISSIONS.USERS_VIEW,
+          PERMISSIONS.LEAVE_VIEW,
+        ),
+      ],
+    },
+    async (request) => {
     if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
     const query = request.query as { employeeId?: string };
     return ok(
@@ -293,13 +304,13 @@ export async function registerLeaveRoutes(app: FastifyInstance): Promise<void> {
     return ok(await createLeaveCatalogService(requireSupabase(app.supabase)).listHolidays());
   });
 
-  app.post('/api/v1/holidays', { preHandler: [requirePermission(PERMISSIONS.SYSTEM_MANAGE)] }, async (request) => {
+  app.post('/api/v1/holidays', { preHandler: [requirePermission(PERMISSIONS.HOLIDAYS_MANAGE)] }, async (request) => {
     if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
     const body = request.body as { name: string; date: string; type?: string; region?: string; optional?: boolean };
     return ok(await createLeaveCatalogService(requireSupabase(app.supabase)).createHoliday(request.user, body, metaOf(request)));
   });
 
-  app.patch('/api/v1/holidays/:id', { preHandler: [requirePermission(PERMISSIONS.SYSTEM_MANAGE)] }, async (request) => {
+  app.patch('/api/v1/holidays/:id', { preHandler: [requirePermission(PERMISSIONS.HOLIDAYS_MANAGE)] }, async (request) => {
     if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
     const { id } = request.params as { id: string };
     const body = request.body as { name?: string; date?: string; type?: string; region?: string; optional?: boolean };

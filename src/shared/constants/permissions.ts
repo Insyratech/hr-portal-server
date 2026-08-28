@@ -8,6 +8,7 @@ export const PERMISSIONS = {
   LEAVE_APPROVE: 'leave.approve',
   LEAVE_APPLY: 'leave.apply',
   LEAVE_VIEW: 'leave.view',
+  HOLIDAYS_MANAGE: 'holidays.manage',
   ATTENDANCE_MANAGE: 'attendance.manage',
   ATTENDANCE_VIEW: 'attendance.view',
   ATTENDANCE_CORRECT: 'attendance.correct',

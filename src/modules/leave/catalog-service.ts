@@ -1,13 +1,14 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { API_ERROR_CODES } from '../../shared/constants/error-codes';
 import { PERMISSIONS } from '../../shared/constants/permissions';
-import { assertHrDomainOwner } from '../../shared/domain-owners';
+import { assertGmDomainOwner } from '../../shared/domain-owners';
 import { AppError } from '../../shared/errors/app-error';
 import type { RequestUser } from '../../shared/types/request-user';
 import { canWriteDirectoryAllocations } from '../employees/access';
 import { assertCanStaffDirectoryTarget } from '../employees/staff-target';
 import { writeAuditLog } from '../audit/write-audit-log';
 import { listActiveStaff, loadStaffById, notifyStaff } from '../notifications/notify-staff';
+import { portalUrl } from '../notifications/mail';
 import { currentPeriod } from './balance';
 import { parsePolicyRules, serializePolicyRules } from './parse-rules';
 import type { PolicyRules } from './types';
@@ -209,10 +210,10 @@ export function createLeaveCatalogService(supabase: SupabaseClient) {
       input: { name: string; date: string; type?: string; region?: string; optional?: boolean },
       meta: RequestMeta,
     ) {
-      if (!actor.permissions.includes(PERMISSIONS.SYSTEM_MANAGE)) {
+      if (!actor.permissions.includes(PERMISSIONS.HOLIDAYS_MANAGE)) {
         throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot manage holidays.', 403);
       }
-      assertHrDomainOwner(actor, 'manage holidays');
+      assertGmDomainOwner(actor, 'manage holidays');
       const { data, error } = await supabase
         .from('holidays')
         .insert({
@@ -259,7 +260,8 @@ export function createLeaveCatalogService(supabase: SupabaseClient) {
           { label: 'Holiday', value: createdHoliday.name },
           { label: 'Date', value: createdHoliday.date },
         ],
-        ctaLabel: 'Open HR Portal',
+        ctaLabel: 'Open holiday calendar',
+        ctaHref: portalUrl('/gm/holidays'),
       });
       return createdHoliday;
     },
@@ -270,10 +272,10 @@ export function createLeaveCatalogService(supabase: SupabaseClient) {
       input: { name?: string; date?: string; type?: string; region?: string; optional?: boolean },
       meta: RequestMeta,
     ) {
-      if (!actor.permissions.includes(PERMISSIONS.SYSTEM_MANAGE)) {
+      if (!actor.permissions.includes(PERMISSIONS.HOLIDAYS_MANAGE)) {
         throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot manage holidays.', 403);
       }
-      assertHrDomainOwner(actor, 'manage holidays');
+      assertGmDomainOwner(actor, 'manage holidays');
       const patch: Record<string, unknown> = {};
       if (input.name !== undefined) patch.name = input.name;
       if (input.date !== undefined) patch.holiday_date = input.date;
@@ -316,22 +318,41 @@ export function createLeaveCatalogService(supabase: SupabaseClient) {
           { label: 'Holiday', value: updatedHoliday.name },
           { label: 'Date', value: updatedHoliday.date },
         ],
-        ctaLabel: 'Open HR Portal',
+        ctaLabel: 'Open holiday calendar',
+        ctaHref: portalUrl('/gm/holidays'),
       });
       return updatedHoliday;
     },
 
     async listAllocations(actor: RequestUser, filters?: { employeeId?: string }) {
-      if (!canWriteDirectoryAllocations(actor) && !actor.permissions.includes(PERMISSIONS.USERS_VIEW)) {
+      const canManageAll =
+        canWriteDirectoryAllocations(actor) || actor.permissions.includes(PERMISSIONS.USERS_VIEW);
+      const canReadOwn = actor.permissions.includes(PERMISSIONS.LEAVE_VIEW);
+
+      if (!canManageAll && !canReadOwn) {
         throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot view leave allocations.', 403);
       }
+
       let query = supabase
         .from('leave_allocations')
         .select('*, employees (full_name), leave_types (code, name)')
         .order('period', { ascending: false });
-      if (filters?.employeeId) {
-        query = query.eq('employee_id', filters.employeeId);
+
+      if (canManageAll) {
+        if (filters?.employeeId) {
+          query = query.eq('employee_id', filters.employeeId);
+        }
+      } else {
+        if (filters?.employeeId && filters.employeeId !== actor.employeeId) {
+          throw new AppError(
+            API_ERROR_CODES.FORBIDDEN,
+            'You can only view your own leave allocations.',
+            403,
+          );
+        }
+        query = query.eq('employee_id', actor.employeeId);
       }
+
       const { data, error } = await query;
       if (error) throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load allocations.', 500);
       return (data ?? []).map(mapAllocation);
