@@ -1,4 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { sendPushToUser } from '../mobile/push';
 
 export async function notifyUser(
   supabase: SupabaseClient,
@@ -23,4 +24,13 @@ export async function notifyUser(
   if (error) {
     throw error;
   }
+
+  void sendPushToUser(supabase, input.userId, {
+    title: input.title,
+    body: input.message,
+    referenceType: input.referenceType,
+    referenceId: input.referenceId,
+  }).catch(() => {
+    /* Push delivery must not block in-app notifications. */
+  });
 }

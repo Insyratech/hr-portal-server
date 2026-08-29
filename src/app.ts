@@ -12,6 +12,8 @@ import { registerEmployeeRoutes } from './modules/employees/routes';
 import { registerGrievanceRoutes } from './modules/grievances/routes';
 import { registerLeaveRoutes } from './modules/leave/routes';
 import { registerNotificationRoutes } from './modules/notifications/routes';
+import { registerMobileRoutes } from './modules/mobile/routes';
+import { registerMobileAuthRoutes } from './modules/mobile/auth-routes';
 import { registerOrganizationRoutes } from './modules/organization/routes';
 import { registerPolicyRoutes } from './modules/policies/routes';
 import { registerWorkPermissionRoutes } from './modules/work-permissions/routes';
@@ -93,6 +95,8 @@ export async function buildApp(env: Env): Promise<FastifyInstance> {
   await registerGrievanceRoutes(app);
   await registerPolicyRoutes(app);
   await registerNotificationRoutes(app);
+  await registerMobileRoutes(app);
+  await registerMobileAuthRoutes(app);
   await registerPayrollRoutes(app);
   await registerReportRoutes(app);
   await registerJobRoutes(app, env);
