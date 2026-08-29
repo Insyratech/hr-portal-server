@@ -1,5 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { sendPushToUser } from '../mobile/push';
+import { sendWebPushToUser } from '../web-push/send';
 
 export async function notifyUser(
   supabase: SupabaseClient,
@@ -25,7 +25,7 @@ export async function notifyUser(
     throw error;
   }
 
-  void sendPushToUser(supabase, input.userId, {
+  void sendWebPushToUser(supabase, input.userId, {
     title: input.title,
     body: input.message,
     referenceType: input.referenceType,

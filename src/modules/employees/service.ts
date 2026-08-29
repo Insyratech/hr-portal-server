@@ -4,7 +4,7 @@ import { PERMISSIONS, ROLE_CODES, ROLE_IDS } from '../../shared/constants/permis
 import { AppError } from '../../shared/errors/app-error';
 import type { RequestUser } from '../../shared/types/request-user';
 import { writeAuditLog } from '../audit/write-audit-log';
-import { createMobileAuthService } from '../mobile/auth-service';
+import { createWebPushService } from '../web-push/service';
 import { portalLoginUrl, sendPortalMail } from '../notifications/mail';
 import { notifyUser } from '../notifications/notify-user';
 import {
@@ -539,7 +539,7 @@ export function createEmployeeService(supabase: SupabaseClient, employees: Emplo
         userAgent: meta.userAgent,
       });
       if (status === 'inactive' && existing.userId) {
-        await createMobileAuthService(supabase).revokeAllForUser(existing.userId);
+        await createWebPushService(supabase).revokeAllForUser(existing.userId);
       }
       return updated;
     },

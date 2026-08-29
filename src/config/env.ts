@@ -13,14 +13,9 @@ export type Env = {
   BREVO_API_KEY: string;
   BREVO_SENDER_EMAIL: string;
   BREVO_SENDER_NAME: string;
-  FIREBASE_PROJECT_ID: string;
-  FIREBASE_CLIENT_EMAIL: string;
-  FIREBASE_PRIVATE_KEY: string;
-  APNS_KEY_ID: string;
-  APNS_TEAM_ID: string;
-  APNS_BUNDLE_ID: string;
-  APNS_PRIVATE_KEY: string;
-  APNS_USE_SANDBOX: boolean;
+  VAPID_PUBLIC_KEY: string;
+  VAPID_PRIVATE_KEY: string;
+  VAPID_SUBJECT: string;
 };
 
 function readHost(source: NodeJS.ProcessEnv): string {
@@ -56,14 +51,9 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     BREVO_API_KEY: source.BREVO_API_KEY ?? '',
     BREVO_SENDER_EMAIL: source.BREVO_SENDER_EMAIL ?? '',
     BREVO_SENDER_NAME: source.BREVO_SENDER_NAME ?? 'HR Portal',
-    FIREBASE_PROJECT_ID: source.FIREBASE_PROJECT_ID ?? '',
-    FIREBASE_CLIENT_EMAIL: source.FIREBASE_CLIENT_EMAIL ?? '',
-    FIREBASE_PRIVATE_KEY: source.FIREBASE_PRIVATE_KEY ?? '',
-    APNS_KEY_ID: source.APNS_KEY_ID ?? '',
-    APNS_TEAM_ID: source.APNS_TEAM_ID ?? '',
-    APNS_BUNDLE_ID: source.APNS_BUNDLE_ID ?? 'com.insyratech.hrportal',
-    APNS_PRIVATE_KEY: source.APNS_PRIVATE_KEY ?? '',
-    APNS_USE_SANDBOX: source.APNS_USE_SANDBOX === 'true',
+    VAPID_PUBLIC_KEY: source.VAPID_PUBLIC_KEY ?? '',
+    VAPID_PRIVATE_KEY: source.VAPID_PRIVATE_KEY ?? '',
+    VAPID_SUBJECT: source.VAPID_SUBJECT ?? '',
   };
 }
 
@@ -73,4 +63,12 @@ export function isSupabaseConfigured(env: Env): boolean {
 
 export function isAuthConfigured(env: Env): boolean {
   return isSupabaseConfigured(env) && env.SUPABASE_JWT_SECRET.length > 0;
+}
+
+export function isWebPushConfigured(env: Env): boolean {
+  return (
+    env.VAPID_PUBLIC_KEY.length > 0 &&
+    env.VAPID_PRIVATE_KEY.length > 0 &&
+    env.VAPID_SUBJECT.length > 0
+  );
 }
