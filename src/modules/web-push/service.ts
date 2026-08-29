@@ -8,33 +8,38 @@ export function createWebPushService(supabase: SupabaseClient) {
   return {
     async subscribe(
       userId: string,
+      actorEmployeeId: string,
       input: WebPushSubscribeInput,
       meta: RequestMeta,
     ): Promise<{ subscribed: true }> {
       const now = new Date().toISOString();
-      const { error } = await supabase.from('web_push_subscriptions').upsert(
-        {
-          user_id: userId,
-          endpoint: input.endpoint,
-          p256dh: input.keys.p256dh,
-          auth: input.keys.auth,
-          user_agent: meta.userAgent ?? null,
-          revoked_at: null,
-          updated_at: now,
-        },
-        { onConflict: 'endpoint' },
-      );
+      const { data, error } = await supabase
+        .from('web_push_subscriptions')
+        .upsert(
+          {
+            user_id: userId,
+            endpoint: input.endpoint,
+            p256dh: input.keys.p256dh,
+            auth: input.keys.auth,
+            user_agent: meta.userAgent ?? null,
+            revoked_at: null,
+            updated_at: now,
+          },
+          { onConflict: 'endpoint' },
+        )
+        .select('id')
+        .single();
 
-      if (error) {
-        throw error;
+      if (error || !data?.id) {
+        throw error ?? new Error('Failed to save web push subscription.');
       }
 
       await writeAuditLog(supabase, {
-        actorId: null,
+        actorId: actorEmployeeId,
         action: 'web.push.subscribe',
         entityType: 'web_push_subscription',
-        entityId: input.endpoint,
-        newValues: { userId },
+        entityId: data.id,
+        newValues: { userId, endpoint: input.endpoint },
         ipAddress: meta.ipAddress,
         userAgent: meta.userAgent,
       });
@@ -42,7 +47,12 @@ export function createWebPushService(supabase: SupabaseClient) {
       return { subscribed: true };
     },
 
-    async revoke(userId: string, endpoint: string, meta: RequestMeta): Promise<{ revoked: boolean }> {
+    async revoke(
+      userId: string,
+      actorEmployeeId: string,
+      endpoint: string,
+      meta: RequestMeta,
+    ): Promise<{ revoked: boolean }> {
       const now = new Date().toISOString();
       const { data, error } = await supabase
         .from('web_push_subscriptions')
@@ -57,13 +67,13 @@ export function createWebPushService(supabase: SupabaseClient) {
         throw error;
       }
 
-      if (data) {
+      if (data?.id) {
         await writeAuditLog(supabase, {
-          actorId: null,
+          actorId: actorEmployeeId,
           action: 'web.push.revoke',
           entityType: 'web_push_subscription',
-          entityId: endpoint,
-          newValues: { userId },
+          entityId: data.id,
+          newValues: { userId, endpoint },
           ipAddress: meta.ipAddress,
           userAgent: meta.userAgent,
         });

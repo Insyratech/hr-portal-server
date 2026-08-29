@@ -43,6 +43,7 @@ export async function registerWebPushRoutes(app: FastifyInstance): Promise<void>
       const body = request.body as WebPushSubscribeInput;
       const result = await createWebPushService(supabase).subscribe(
         request.user.authUserId,
+        request.user.employeeId,
         body,
         requestMeta(request),
       );
@@ -65,6 +66,7 @@ export async function registerWebPushRoutes(app: FastifyInstance): Promise<void>
       const { endpoint } = request.body as { endpoint: string };
       const result = await createWebPushService(supabase).revoke(
         request.user.authUserId,
+        request.user.employeeId,
         endpoint,
         requestMeta(request),
       );
