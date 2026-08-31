@@ -35,7 +35,7 @@ function leaveApprovalPath(roles: string[], id: string): string {
   return `/leave?applicationId=${encodeURIComponent(id)}`;
 }
 
-function isCsoPriorityReview(title: string): boolean {
+function isLeadPriorityReview(title: string): boolean {
   return /submitted for approval|resubmitted for approval/i.test(title);
 }
 
@@ -134,7 +134,10 @@ export function pathForNotificationPush(input: NotificationPathInput): string {
       return '/work/weekly-update';
     }
     if (referenceType === 'weekly_priority' || referenceType === 'weekly_plan') {
-      if (cso && isCsoPriorityReview(title)) {
+      if (isLeadPriorityReview(title) && id) {
+        return `/work/priorities/review?employeeId=${encodeURIComponent(id)}`;
+      }
+      if (cso && isLeadPriorityReview(title)) {
         return id ? `/cso/work/priorities?employeeId=${encodeURIComponent(id)}` : '/cso/work/priorities';
       }
       return '/work/priorities';

@@ -220,7 +220,7 @@ export function createDailyWorkService(supabase: SupabaseClient) {
       if (!skipsWorkApprovalLoop(actor.roles)) {
         const gate = dailyPrioritiesGate(priorities);
         if (!gate.ok) {
-          throw new AppError(API_ERROR_CODES.CONFLICT, gate.reason ?? 'Waiting for CSO approval on priorities.', 409);
+          throw new AppError(API_ERROR_CODES.CONFLICT, gate.reason ?? 'Waiting for project lead approval on priorities.', 409);
         }
       }
       const byId = new Map(priorities.map((item) => [item.id, item]));

@@ -166,6 +166,30 @@ export async function registerWorkRoutes(app: FastifyInstance): Promise<void> {
   );
 
   app.get(
+    '/api/v1/work/priorities/lead-queue',
+    { preHandler: [requirePermission(PERMISSIONS.WORK_OWN)] },
+    async (request) => {
+      if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
+      const query = request.query as { date?: string };
+      return ok(
+        await createWorkBoardService(requireSupabase(app.supabase)).getLeadPrioritiesQueue(request.user, query),
+      );
+    },
+  );
+
+  app.get(
+    '/api/v1/work/priorities/lead-approved',
+    { preHandler: [requirePermission(PERMISSIONS.WORK_OWN)] },
+    async (request) => {
+      if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
+      const query = request.query as { date?: string };
+      return ok(
+        await createWorkBoardService(requireSupabase(app.supabase)).getLeadApprovedPriorities(request.user, query),
+      );
+    },
+  );
+
+  app.get(
     '/api/v1/work/analytics',
     { preHandler: [requirePermission(PERMISSIONS.WORK_OWN, PERMISSIONS.WORK_VIEW, PERMISSIONS.WORK_ASSIGN)] },
     async (request) => {
@@ -573,7 +597,7 @@ export async function registerWorkRoutes(app: FastifyInstance): Promise<void> {
   app.post(
     '/api/v1/work/priorities/approve-all',
     {
-      preHandler: [requirePermission(PERMISSIONS.WORK_VIEW, PERMISSIONS.WORK_ASSIGN)],
+      preHandler: [requirePermission(PERMISSIONS.WORK_OWN, PERMISSIONS.WORK_VIEW, PERMISSIONS.WORK_ASSIGN)],
       schema: {
         body: Type.Object({
           employeeId: Type.String({ minLength: 1 }),
@@ -597,7 +621,7 @@ export async function registerWorkRoutes(app: FastifyInstance): Promise<void> {
   app.post(
     '/api/v1/work/priorities/:id/approve',
     {
-      preHandler: [requirePermission(PERMISSIONS.WORK_VIEW, PERMISSIONS.WORK_ASSIGN)],
+      preHandler: [requirePermission(PERMISSIONS.WORK_OWN, PERMISSIONS.WORK_VIEW, PERMISSIONS.WORK_ASSIGN)],
       schema: { params: Type.Object({ id: Type.String({ minLength: 1 }) }) },
     },
     async (request) => {
@@ -612,7 +636,7 @@ export async function registerWorkRoutes(app: FastifyInstance): Promise<void> {
   app.post(
     '/api/v1/work/priorities/:id/request-resubmit',
     {
-      preHandler: [requirePermission(PERMISSIONS.WORK_VIEW, PERMISSIONS.WORK_ASSIGN)],
+      preHandler: [requirePermission(PERMISSIONS.WORK_OWN, PERMISSIONS.WORK_VIEW, PERMISSIONS.WORK_ASSIGN)],
       schema: {
         params: Type.Object({ id: Type.String({ minLength: 1 }) }),
         body: Type.Object({ comment: Type.String({ minLength: 1 }) }),

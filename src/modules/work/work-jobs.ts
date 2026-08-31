@@ -94,7 +94,7 @@ function inWorkReminderLoop(roles: string[] | undefined): boolean {
   return !skipsWorkApprovalLoop(roles ?? []);
 }
 
-/** True when the employee has already submitted at least one priority for CSO review this week. */
+/** True when the employee has already submitted at least one priority for project lead review this week. */
 async function hasSubmittedPrioritiesForApproval(supabase: SupabaseClient, planId: string): Promise<boolean> {
   const { data } = await supabase
     .from('weekly_priorities')
@@ -241,13 +241,13 @@ export async function runMondayPriorityReminders(
     await notifyStaff(supabase, person, {
       type: 'work_week_priorities',
       title: 'Submit this week’s priorities',
-      message: `Plan your week (${week.start} – ${week.end}) and submit for CSO approval before end of Monday.`,
+      message: `Plan your week (${week.start} – ${week.end}) and submit for project lead approval before end of Monday.`,
       referenceType: 'weekly_plan',
       referenceId: planId,
       eyebrow: 'Work & Priorities',
       paragraphs: [
         'Add at least one work goal (R&D project or regular work). Skill development is optional.',
-        'Submit everything together for CSO approval before end of Monday. If you are on leave today, submit when you are back.',
+        'Submit everything together for project lead approval before end of Monday. If you are on leave today, submit when you are back.',
         'Daily updates unlock after every priority line is approved.',
       ],
       details: [

@@ -27,7 +27,7 @@ export const MIN_WORK_GOAL_MESSAGE =
 
 const WEEK_WORK_GOAL_APPROVAL = new Set(['DRAFT', 'RESUBMIT_REQUESTED', 'SUBMITTED', 'APPROVED']);
 
-/** True when the week already has a live work goal (draft, with CSO, or approved). */
+/** True when the week already has a live work goal (draft, with lead, or approved). */
 export function weekHasWorkGoal(
   priorities: { type: string; status: string; approvalStatus: string }[],
 ): boolean {
@@ -39,7 +39,7 @@ export function weekHasWorkGoal(
   );
 }
 
-/** Skill lines may submit only after a work goal is in the CSO loop or already approved. */
+/** Skill lines may submit only after a work goal is with the project lead or already approved. */
 export function weekAllowsSkillSubmit(
   priorities: { type: string; status: string; approvalStatus: string }[],
 ): boolean {
@@ -60,11 +60,11 @@ export function dailyPrioritiesGate(
   if (active.length === 0) {
     return {
       ok: false,
-      reason: 'Set your priorities and submit them for CSO approval before today’s update.',
+      reason: 'Set your priorities and submit them for project lead approval before today’s update.',
     };
   }
   if (active.some((row) => row.approvalStatus !== 'APPROVED')) {
-    return { ok: false, reason: 'Waiting for CSO approval on priorities.' };
+    return { ok: false, reason: 'Waiting for project lead approval on priorities.' };
   }
   return { ok: true, reason: null };
 }
@@ -82,7 +82,7 @@ export function approvalLabel(status: string): string {
     case 'DRAFT':
       return 'Draft';
     case 'SUBMITTED':
-      return 'Awaiting CSO';
+      return 'Awaiting project lead';
     case 'APPROVED':
       return 'Approved';
     case 'RESUBMIT_REQUESTED':
@@ -113,7 +113,7 @@ export function planApprovalLabel(summary: PlanApprovalSummary): string {
     case 'draft':
       return 'Not submitted';
     case 'awaiting':
-      return 'Awaiting CSO';
+      return 'Awaiting project lead';
     case 'needs_resubmit':
       return 'Needs resubmit';
     case 'approved':

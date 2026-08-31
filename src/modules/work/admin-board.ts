@@ -21,6 +21,7 @@ import { dayContext } from './day-context';
 import { completionPct } from './overview';
 import { tallyToday } from './tally';
 import { weekBounds } from './week-bounds';
+import { canActorApprovePriority, isProjectLead, loadLeadProjectIds } from './priority-approval';
 
 export type WorkBoardFilters = {
   date?: string;
@@ -267,9 +268,21 @@ export function createWorkBoardService(supabase: SupabaseClient) {
     async listPriorityDesk(
       actor: RequestUser,
       approvalStatus: 'SUBMITTED' | 'APPROVED',
-      filters?: { date?: string },
+      filters?: { date?: string; scope?: 'lead' },
     ) {
-      if (
+      const leadScope = filters?.scope === 'lead';
+      if (leadScope) {
+        if (!actor.permissions.includes(PERMISSIONS.WORK_OWN)) {
+          throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot view the priorities queue.', 403);
+        }
+        const leadsAProject = await isProjectLead(supabase, actor.employeeId);
+        if (!leadsAProject) {
+          const date = isoOrToday(filters?.date);
+          const workingDays = await loadWorkingDays(supabase);
+          const week = weekBounds(date, workingDays);
+          return { week, items: [] as Array<PrioritiesQueueItem | PrioritiesApprovedItem> };
+        }
+      } else if (
         !actor.permissions.includes(PERMISSIONS.WORK_VIEW) &&
         !actor.permissions.includes(PERMISSIONS.WORK_ASSIGN)
       ) {
@@ -307,7 +320,19 @@ export function createWorkBoardService(supabase: SupabaseClient) {
           };
         })
         .filter((person) => !skipsWorkApprovalLoop(rolesByEmployee.get(person.id) ?? []));
-      const ids = people.map((row) => row.id);
+
+      let scopedPeople = people;
+      if (leadScope) {
+        const leadProjectIds = await loadLeadProjectIds(supabase, actor.employeeId);
+        const { data: memberRows } = await supabase
+          .from('project_members')
+          .select('employee_id')
+          .in('project_id', leadProjectIds);
+        const memberIds = new Set((memberRows ?? []).map((row) => row.employee_id as string));
+        scopedPeople = people.filter((person) => memberIds.has(person.id));
+      }
+
+      const ids = scopedPeople.map((row) => row.id);
       if (ids.length === 0) {
         return { week, items: [] as Array<PrioritiesQueueItem | PrioritiesApprovedItem> };
       }
@@ -327,7 +352,7 @@ export function createWorkBoardService(supabase: SupabaseClient) {
 
       const { data: priorityRows, error: priorityError } = await supabase
         .from('weekly_priorities')
-        .select('id, employee_id, status, approval_status, priority_type')
+        .select('id, employee_id, status, approval_status, priority_type, project_id')
         .in('plan_id', planIds)
         .eq('approval_status', approvalStatus);
       if (priorityError) {
@@ -344,6 +369,15 @@ export function createWorkBoardService(supabase: SupabaseClient) {
       const tallyByEmployee = new Map<string, Tally>();
       for (const row of priorityRows ?? []) {
         if (!isActivePriorityForGate(row.status as string)) continue;
+        if (leadScope) {
+          const canApprove = await canActorApprovePriority(supabase, actor.employeeId, {
+            id: row.id as string,
+            employee_id: row.employee_id as string,
+            project_id: (row.project_id as string | null) ?? null,
+            priority_type: row.priority_type as string,
+          });
+          if (!canApprove) continue;
+        }
         const employeeId = row.employee_id as string;
         const next = tallyByEmployee.get(employeeId) ?? {
           workGoalCount: 0,
@@ -356,7 +390,7 @@ export function createWorkBoardService(supabase: SupabaseClient) {
         tallyByEmployee.set(employeeId, next);
       }
 
-      const personById = new Map(people.map((person) => [person.id, person]));
+      const personById = new Map(scopedPeople.map((person) => [person.id, person]));
       const items = [...tallyByEmployee.entries()]
         .map(([employeeId, tally]) => {
           const person = personById.get(employeeId);
@@ -390,6 +424,18 @@ export function createWorkBoardService(supabase: SupabaseClient) {
     /** Employees with ≥1 APPROVED priority in the planning week containing `date`. */
     async getApprovedPriorities(actor: RequestUser, filters?: { date?: string }) {
       const result = await this.listPriorityDesk(actor, 'APPROVED', filters);
+      return { week: result.week, items: result.items as PrioritiesApprovedItem[] };
+    },
+
+    /** Project leads: employees with ≥1 SUBMITTED priority they can approve. */
+    async getLeadPrioritiesQueue(actor: RequestUser, filters?: { date?: string }) {
+      const result = await this.listPriorityDesk(actor, 'SUBMITTED', { ...filters, scope: 'lead' });
+      return { week: result.week, items: result.items as PrioritiesQueueItem[] };
+    },
+
+    /** Project leads: employees with ≥1 APPROVED priority they approved or can view on their team. */
+    async getLeadApprovedPriorities(actor: RequestUser, filters?: { date?: string }) {
+      const result = await this.listPriorityDesk(actor, 'APPROVED', { ...filters, scope: 'lead' });
       return { week: result.week, items: result.items as PrioritiesApprovedItem[] };
     },
   };

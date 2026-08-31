@@ -1,12 +1,12 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { API_ERROR_CODES } from '../../shared/constants/error-codes';
-import { PERMISSIONS, ROLE_CODES } from '../../shared/constants/permissions';
-import { assertCsoDomainOwner, isCsoDomainOwner } from '../../shared/domain-owners';
+import { PERMISSIONS } from '../../shared/constants/permissions';
+import { isCsoDomainOwner } from '../../shared/domain-owners';
 import { AppError } from '../../shared/errors/app-error';
 import type { RequestUser } from '../../shared/types/request-user';
 import { writeAuditLog } from '../audit/write-audit-log';
 import { portalUrl } from '../notifications/mail';
-import { listStaffByRole, loadStaffById, notifyStaff } from '../notifications/notify-staff';
+import { loadStaffById, notifyStaff } from '../notifications/notify-staff';
 import { formatIsoDate } from '../leave/day-count';
 import { loadWorkingDays } from '../leave/support';
 import { weekBounds, nextWeekStart } from './week-bounds';
@@ -14,6 +14,17 @@ import { ensureWeeklyPlan } from './plans';
 import { canViewOthersWork } from './access';
 import { notifyProjectLeadAssigned } from './lead-desk';
 import { notifyNewLeadOfPendingLeave } from '../leave/project-lead-approval';
+import {
+  assertCanApprovePriority,
+  assertHasPriorityApprovers,
+  canActorApprovePriority,
+  canViewEmployeeAsPriorityApprover,
+  collectApproverIdsForPriorities,
+  leadPriorityReviewHref,
+  loadStaffContactsByIds,
+  notifyPriorityApprovers,
+  type PriorityForApproval,
+} from './priority-approval';
 import {
   canEditPriorityContent,
   canEditPriorityExecution,
@@ -155,7 +166,16 @@ function resolveTypeFields(input: {
   return { projectId: null, regularSubtype: null, regularSubtypeLabel: null };
 }
 
-function mapPriority(row: PriorityRow) {
+function priorityForApproval(row: PriorityRow): PriorityForApproval {
+  return {
+    id: row.id,
+    employee_id: row.employee_id,
+    project_id: row.project_id,
+    priority_type: row.priority_type,
+  };
+}
+
+function mapPriority(row: PriorityRow, options?: { canApprove?: boolean }) {
   const project = firstRel(row.projects);
   return {
     id: row.id,
@@ -184,6 +204,7 @@ function mapPriority(row: PriorityRow) {
     resubmitRequestedAt: row.resubmit_requested_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    ...(options?.canApprove !== undefined ? { canApprove: options.canApprove } : {}),
   };
 }
 
@@ -211,14 +232,39 @@ export function createWorkService(supabase: SupabaseClient) {
     return ensureWeeklyPlan(supabase, employeeId, start, end);
   }
 
-  async function loadPriorities(planId: string) {
+  async function loadPriorityRows(planId: string): Promise<PriorityRow[]> {
     const { data, error } = await supabase
       .from('weekly_priorities')
       .select('*, projects ( name, code )')
       .eq('plan_id', planId)
       .order('created_at');
     if (error) throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load priorities.', 500);
-    return ((data ?? []) as PriorityRow[]).map(mapPriority);
+    return (data ?? []) as PriorityRow[];
+  }
+
+  async function loadPriorities(planId: string) {
+    return (await loadPriorityRows(planId)).map((row) => mapPriority(row));
+  }
+
+  async function loadPrioritiesForViewer(actor: RequestUser, employeeId: string, planId: string) {
+    const rows = await loadPriorityRows(planId);
+    if (employeeId === actor.employeeId) {
+      return rows.map((row) => mapPriority(row));
+    }
+    const viewingAsApprover = await canViewEmployeeAsPriorityApprover(
+      supabase,
+      actor.employeeId,
+      employeeId,
+    );
+    if (!viewingAsApprover) {
+      return rows.map((row) => mapPriority(row));
+    }
+    const mapped = [];
+    for (const row of rows) {
+      const canApprove = await canActorApprovePriority(supabase, actor.employeeId, priorityForApproval(row));
+      mapped.push(mapPriority(row, { canApprove }));
+    }
+    return mapped;
   }
 
   async function assertProjectAccess(employeeId: string, projectId: string, actor: RequestUser): Promise<void> {
@@ -386,13 +432,16 @@ export function createWorkService(supabase: SupabaseClient) {
     async getWeek(actor: RequestUser, input: { employeeId?: string; date?: string }) {
       const employeeId = input.employeeId ?? actor.employeeId;
       if (employeeId !== actor.employeeId && !canViewOthers(actor)) {
-        throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot view another person’s week.', 403);
+        const canLead = await canViewEmployeeAsPriorityApprover(supabase, actor.employeeId, employeeId);
+        if (!canLead) {
+          throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot view another person’s week.', 403);
+        }
       }
       const isoDate = input.date && /^\d{4}-\d{2}-\d{2}$/.test(input.date) ? input.date : formatIsoDate(new Date());
       const workingDays = await loadWorkingDays(supabase);
       const week = weekBounds(isoDate, workingDays);
       const planId = await ensurePlan(employeeId, week.start, week.end);
-      const priorities = await loadPriorities(planId);
+      const priorities = await loadPrioritiesForViewer(actor, employeeId, planId);
       const projects = canManageProjects(actor) || canAssign(actor)
         ? await listAllProjects()
         : await listMemberProjects(employeeId);
@@ -924,15 +973,15 @@ export function createWorkService(supabase: SupabaseClient) {
         throw new AppError(
           API_ERROR_CODES.CONFLICT,
           approval === 'SUBMITTED'
-            ? 'This priority is waiting for CSO review. You can edit it only if CSO asks for a resubmit.'
-            : 'Approved priorities stay fixed. Ask CSO to request a resubmit if something must change.',
+            ? 'This priority is waiting for project lead review. You can edit it only if they ask for a resubmit.'
+            : 'Approved priorities stay fixed. Ask your project lead to request a resubmit if something must change.',
           409,
         );
       }
       if (input.status !== undefined && !canEditPriorityExecution(approval)) {
         throw new AppError(
           API_ERROR_CODES.CONFLICT,
-          'Update progress only after CSO has approved this priority.',
+          'Update progress only after your project lead has approved this priority.',
           409,
         );
       }
@@ -1015,7 +1064,7 @@ export function createWorkService(supabase: SupabaseClient) {
       if (!canEditPriorityExecution(existing.approval_status ?? 'DRAFT')) {
         throw new AppError(
           API_ERROR_CODES.CONFLICT,
-          'Carry forward only after CSO has approved this priority.',
+          'Carry forward only after your project lead has approved this priority.',
           409,
         );
       }
@@ -1115,7 +1164,7 @@ export function createWorkService(supabase: SupabaseClient) {
         throw new AppError(
           API_ERROR_CODES.CONFLICT,
           approval === 'SUBMITTED'
-            ? 'This priority is already waiting for CSO review.'
+            ? 'This priority is already waiting for project lead review.'
             : 'This priority is already approved.',
           409,
         );
@@ -1127,6 +1176,7 @@ export function createWorkService(supabase: SupabaseClient) {
           throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, MIN_WORK_GOAL_MESSAGE, 400);
         }
       }
+      await assertHasPriorityApprovers(supabase, priorityForApproval(existing));
       const { data, error } = await supabase
         .from('weekly_priorities')
         .update({
@@ -1161,12 +1211,10 @@ export function createWorkService(supabase: SupabaseClient) {
       }
 
       const employee = await loadStaffById(supabase, existing.employee_id);
-      const csoStaff = await listStaffByRole(supabase, ROLE_CODES.CSO);
-      const reviewHref = portalUrl(
-        `/cso/work/priorities?employeeId=${encodeURIComponent(existing.employee_id)}`,
-      );
+      const reviewHref = leadPriorityReviewHref(existing.employee_id);
+      const priorityRef = priorityForApproval(existing);
       if (wasResubmit) {
-        await notifyStaff(supabase, csoStaff, {
+        await notifyPriorityApprovers(supabase, priorityRef, {
           type: 'work',
           title: 'Priority resubmitted for approval',
           message: `${employee?.fullName ?? 'An employee'} resubmitted “${mapped.title}” after your comment.`,
@@ -1185,10 +1233,10 @@ export function createWorkService(supabase: SupabaseClient) {
           ctaHref: reviewHref,
         });
       } else {
-        await notifyStaff(supabase, csoStaff, {
+        await notifyPriorityApprovers(supabase, priorityRef, {
           type: 'work',
           title: 'Priority submitted for approval',
-          message: `${employee?.fullName ?? 'An employee'} submitted “${mapped.title}” for CSO approval.`,
+          message: `${employee?.fullName ?? 'An employee'} submitted “${mapped.title}” for your approval.`,
           referenceType: 'weekly_priority',
           referenceId: existing.employee_id,
           eyebrow: 'Work',
@@ -1220,7 +1268,7 @@ export function createWorkService(supabase: SupabaseClient) {
       if (pending.length === 0) {
         throw new AppError(
           API_ERROR_CODES.VALIDATION_ERROR,
-          'No draft priorities to submit. Add week goals first, or wait if everything is already with CSO.',
+          'No draft priorities to submit. Add week goals first, or wait if everything is already with your project lead.',
           400,
         );
       }
@@ -1237,7 +1285,6 @@ export function createWorkService(supabase: SupabaseClient) {
         submitted.push(await this.submitPriorityForApproval(actor, item.id, meta, { notify: false }));
       }
       const employee = await loadStaffById(supabase, actor.employeeId);
-      const csoStaff = await listStaffByRole(supabase, ROLE_CODES.CSO);
       const titles = submitted.map((row) => row.title).join('; ');
       const allResubmits = resubmitCount === pending.length;
       const mixedResubmits = resubmitCount > 0 && !allResubmits;
@@ -1248,27 +1295,39 @@ export function createWorkService(supabase: SupabaseClient) {
           : 'Weekly priorities submitted for approval';
       const notifyMessage = allResubmits
         ? `${employee?.fullName ?? 'An employee'} resubmitted ${submitted.length} priorit${submitted.length === 1 ? 'y' : 'ies'} after your comment.`
-        : `${employee?.fullName ?? 'An employee'} submitted ${submitted.length} priorit${submitted.length === 1 ? 'y' : 'ies'} for CSO approval.`;
-      await notifyStaff(supabase, csoStaff, {
-        type: 'work',
-        title: notifyTitle,
-        message: notifyMessage,
-        referenceType: 'weekly_plan',
-        referenceId: actor.employeeId,
-        eyebrow: 'Work',
-        paragraphs: [
-          allResubmits
-            ? `${employee?.fullName ?? 'An employee'} updated and resubmitted ${submitted.length} weekly priorit${submitted.length === 1 ? 'y' : 'ies'} for your review.`
-            : `${employee?.fullName ?? 'An employee'} submitted ${submitted.length} weekly priorit${submitted.length === 1 ? 'y' : 'ies'} for your review.`,
-          titles,
-        ],
-        details: [
-          { label: 'Employee', value: employee?.fullName ?? actor.employeeId },
-          { label: 'Count', value: String(submitted.length) },
-        ],
-        ctaLabel: 'Review priorities',
-        ctaHref: portalUrl(`/cso/work/priorities?employeeId=${encodeURIComponent(actor.employeeId)}`),
-      });
+        : `${employee?.fullName ?? 'An employee'} submitted ${submitted.length} priorit${submitted.length === 1 ? 'y' : 'ies'} for your approval.`;
+      const leadIds = await collectApproverIdsForPriorities(
+        supabase,
+        submitted.map((row) => ({
+          id: row.id,
+          employee_id: row.employeeId,
+          project_id: row.projectId,
+          priority_type: row.type,
+        })),
+      );
+      const leads = await loadStaffContactsByIds(supabase, leadIds);
+      if (leads.length > 0) {
+        await notifyStaff(supabase, leads, {
+          type: 'work',
+          title: notifyTitle,
+          message: notifyMessage,
+          referenceType: 'weekly_plan',
+          referenceId: actor.employeeId,
+          eyebrow: 'Work',
+          paragraphs: [
+            allResubmits
+              ? `${employee?.fullName ?? 'An employee'} updated and resubmitted ${submitted.length} weekly priorit${submitted.length === 1 ? 'y' : 'ies'} for your review.`
+              : `${employee?.fullName ?? 'An employee'} submitted ${submitted.length} weekly priorit${submitted.length === 1 ? 'y' : 'ies'} for your review.`,
+            titles,
+          ],
+          details: [
+            { label: 'Employee', value: employee?.fullName ?? actor.employeeId },
+            { label: 'Count', value: String(submitted.length) },
+          ],
+          ctaLabel: 'Review priorities',
+          ctaHref: leadPriorityReviewHref(actor.employeeId),
+        });
+      }
       return { submitted, week: await this.getWeek(actor, {}) };
     },
 
@@ -1278,11 +1337,15 @@ export function createWorkService(supabase: SupabaseClient) {
       meta: RequestMeta,
       options?: { notify?: boolean },
     ) {
-      assertCsoDomainOwner(actor, 'approve weekly priorities');
-      if (!actor.permissions.includes(PERMISSIONS.WORK_VIEW) && !actor.permissions.includes(PERMISSIONS.WORK_ASSIGN)) {
+      const existing = await loadPriority(id);
+      await assertCanApprovePriority(supabase, actor, priorityForApproval(existing), 'approve weekly priorities');
+      if (
+        !actor.permissions.includes(PERMISSIONS.WORK_OWN) &&
+        !actor.permissions.includes(PERMISSIONS.WORK_VIEW) &&
+        !actor.permissions.includes(PERMISSIONS.WORK_ASSIGN)
+      ) {
         throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot approve priorities.', 403);
       }
-      const existing = await loadPriority(id);
       if ((existing.approval_status ?? 'DRAFT') !== 'SUBMITTED') {
         throw new AppError(
           API_ERROR_CODES.CONFLICT,
@@ -1323,15 +1386,17 @@ export function createWorkService(supabase: SupabaseClient) {
         return mapped;
       }
       const employee = await loadStaffById(supabase, existing.employee_id);
+      const approver = await loadStaffById(supabase, actor.employeeId);
+      const approverName = approver?.fullName ?? 'Your project lead';
       await notifyStaff(supabase, employee, {
         type: 'work',
         title: 'Priority approved',
-        message: `CSO approved “${mapped.title}”. You can use it in today’s work update once every priority for the week is approved.`,
+        message: `${approverName} approved “${mapped.title}”. You can use it in today’s work update once every priority for the week is approved.`,
         referenceType: 'weekly_priority',
         referenceId: id,
         eyebrow: 'Work',
         paragraphs: [
-          `Your priority “${mapped.title}” was approved.`,
+          `Your priority “${mapped.title}” was approved by ${approverName}.`,
           'When every priority for this week is approved, you can start today’s work update.',
         ],
         details: [{ label: 'Priority', value: mapped.title }],
@@ -1346,8 +1411,11 @@ export function createWorkService(supabase: SupabaseClient) {
       input: { employeeId: string; date?: string },
       meta: RequestMeta,
     ) {
-      assertCsoDomainOwner(actor, 'approve weekly priorities');
-      if (!actor.permissions.includes(PERMISSIONS.WORK_VIEW) && !actor.permissions.includes(PERMISSIONS.WORK_ASSIGN)) {
+      if (
+        !actor.permissions.includes(PERMISSIONS.WORK_OWN) &&
+        !actor.permissions.includes(PERMISSIONS.WORK_VIEW) &&
+        !actor.permissions.includes(PERMISSIONS.WORK_ASSIGN)
+      ) {
         throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot approve priorities.', 403);
       }
       const employeeId = input.employeeId.trim();
@@ -1359,7 +1427,8 @@ export function createWorkService(supabase: SupabaseClient) {
         (row) =>
           row.status !== 'CANCELLED' &&
           row.status !== 'CARRIED_FORWARD' &&
-          row.approvalStatus === 'SUBMITTED',
+          row.approvalStatus === 'SUBMITTED' &&
+          row.canApprove !== false,
       );
       if (pending.length === 0) {
         throw new AppError(
@@ -1373,6 +1442,8 @@ export function createWorkService(supabase: SupabaseClient) {
         approved.push(await this.approvePriority(actor, item.id, meta, { notify: false }));
       }
       const employee = await loadStaffById(supabase, employeeId);
+      const approver = await loadStaffById(supabase, actor.employeeId);
+      const approverName = approver?.fullName ?? 'Your project lead';
       const titles = approved.map((row) => row.title).join('; ');
       await notifyStaff(supabase, employee, {
         type: 'work',
@@ -1382,15 +1453,15 @@ export function createWorkService(supabase: SupabaseClient) {
             : `${approved.length} priorities approved`,
         message:
           approved.length === 1
-            ? `CSO approved “${approved[0].title}”. You can use it in today’s work update once every priority for the week is approved.`
-            : `CSO approved ${approved.length} of your weekly priorities.`,
+            ? `${approverName} approved “${approved[0].title}”. You can use it in today’s work update once every priority for the week is approved.`
+            : `${approverName} approved ${approved.length} of your weekly priorities.`,
         referenceType: 'weekly_plan',
         referenceId: employeeId,
         eyebrow: 'Work',
         paragraphs: [
           approved.length === 1
-            ? `Your priority “${approved[0].title}” was approved.`
-            : `CSO approved ${approved.length} priorities for this week.`,
+            ? `Your priority “${approved[0].title}” was approved by ${approverName}.`
+            : `${approverName} approved ${approved.length} priorities for this week.`,
           titles,
           'When every priority for this week is approved, you can start today’s work update.',
         ],
@@ -1404,15 +1475,19 @@ export function createWorkService(supabase: SupabaseClient) {
     },
 
     async requestPriorityResubmit(actor: RequestUser, id: string, comment: string, meta: RequestMeta) {
-      assertCsoDomainOwner(actor, 'request priority resubmits');
-      if (!actor.permissions.includes(PERMISSIONS.WORK_VIEW) && !actor.permissions.includes(PERMISSIONS.WORK_ASSIGN)) {
-        throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot request a resubmit.', 403);
-      }
       const note = comment.trim();
       if (!note) {
         throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Add a short comment so the employee knows what to change.', 400);
       }
       const existing = await loadPriority(id);
+      await assertCanApprovePriority(supabase, actor, priorityForApproval(existing), 'request priority resubmits');
+      if (
+        !actor.permissions.includes(PERMISSIONS.WORK_OWN) &&
+        !actor.permissions.includes(PERMISSIONS.WORK_VIEW) &&
+        !actor.permissions.includes(PERMISSIONS.WORK_ASSIGN)
+      ) {
+        throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot request a resubmit.', 403);
+      }
       if ((existing.approval_status ?? 'DRAFT') !== 'SUBMITTED') {
         throw new AppError(
           API_ERROR_CODES.CONFLICT,
@@ -1451,21 +1526,23 @@ export function createWorkService(supabase: SupabaseClient) {
         ...meta,
       });
       const employee = await loadStaffById(supabase, existing.employee_id);
+      const approver = await loadStaffById(supabase, actor.employeeId);
+      const approverName = approver?.fullName ?? 'Your project lead';
       await notifyStaff(supabase, employee, {
         type: 'work',
         title: 'Please resubmit this priority',
-        message: `CSO asked you to update “${mapped.title}”: ${note}`,
+        message: `${approverName} asked you to update “${mapped.title}”: ${note}`,
         referenceType: 'weekly_priority',
         referenceId: id,
         eyebrow: 'Work',
         paragraphs: [
-          `CSO reviewed “${mapped.title}” and asked for a resubmit.`,
+          `${approverName} reviewed “${mapped.title}” and asked for a resubmit.`,
           note,
           'Edit the priority, then submit it again for approval.',
         ],
         details: [
           { label: 'Priority', value: mapped.title },
-          { label: 'CSO comment', value: note },
+          { label: 'Lead comment', value: note },
         ],
         ctaLabel: 'Update priorities',
         ctaHref: portalUrl('/work/priorities'),

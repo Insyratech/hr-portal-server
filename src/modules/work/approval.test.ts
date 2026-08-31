@@ -24,7 +24,7 @@ describe('work priority approval helpers', () => {
     expect(dailyPrioritiesGate([])).toMatchObject({ ok: false });
     expect(
       dailyPrioritiesGate([{ status: 'NOT_STARTED', approvalStatus: 'SUBMITTED' }]),
-    ).toMatchObject({ ok: false, reason: expect.stringMatching(/Waiting for CSO/i) });
+    ).toMatchObject({ ok: false, reason: expect.stringMatching(/Waiting for project lead/i) });
     expect(
       dailyPrioritiesGate([
         { status: 'NOT_STARTED', approvalStatus: 'APPROVED' },
@@ -60,7 +60,7 @@ describe('work priority approval helpers', () => {
     ).toBe(true);
   });
 
-  it('lets a skill submit only when a work goal is already with CSO, approved, or sent back', () => {
+  it('lets a skill submit only when a work goal is already with the project lead, approved, or sent back', () => {
     expect(
       weekAllowsSkillSubmit([{ type: 'REGULAR', status: 'NOT_STARTED', approvalStatus: 'DRAFT' }]),
     ).toBe(false);
