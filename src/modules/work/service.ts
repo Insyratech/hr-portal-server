@@ -392,6 +392,24 @@ export function createWorkService(supabase: SupabaseClient) {
     }
   }
 
+  async function assertProjectLeadCanUsePortal(leadEmployeeId: string): Promise<void> {
+    const { data } = await supabase
+      .from('employees')
+      .select('id, status, deleted_at, user_id, full_name')
+      .eq('id', leadEmployeeId)
+      .maybeSingle();
+    if (!data || data.status !== 'active' || data.deleted_at) {
+      throw new AppError(API_ERROR_CODES.NOT_FOUND, 'Employee not found.', 404);
+    }
+    if (!(data.user_id as string | null)) {
+      throw new AppError(
+        API_ERROR_CODES.VALIDATION_ERROR,
+        `${(data.full_name as string) || 'This employee'} does not have a portal login yet. Link their account before making them project lead.`,
+        400,
+      );
+    }
+  }
+
   async function listMemberProjects(memberId: string) {
     const { data, error } = await supabase
       .from('project_members')
@@ -513,6 +531,7 @@ export function createWorkService(supabase: SupabaseClient) {
       if (!leadEmployeeId) {
         throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Choose a project lead.', 400);
       }
+      await assertProjectLeadCanUsePortal(leadEmployeeId);
       const uniqueIds = [...new Set([...input.employeeIds.filter(Boolean), leadEmployeeId])];
       if (!uniqueIds.includes(leadEmployeeId)) {
         throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'The project lead must also be a member.', 400);
@@ -763,7 +782,7 @@ export function createWorkService(supabase: SupabaseClient) {
       if (!leadEmployeeId) {
         throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Choose a project lead.', 400);
       }
-      await assertActiveEmployee(leadEmployeeId);
+      await assertProjectLeadCanUsePortal(leadEmployeeId);
       const members = [...new Set([actor.employeeId, leadEmployeeId, ...(input.employeeIds ?? [])])];
       for (const employeeId of members) {
         if (employeeId === actor.employeeId || employeeId === leadEmployeeId) continue;
