@@ -25,15 +25,12 @@ export function resolvePasswordResetRedirect(): string {
   return portalPublicUrl('/reset-password');
 }
 
-/** Supabase may embed the project Site URL in action_link; force the correct redirect_to. */
-export function rewriteRecoveryActionLink(actionLink: string, redirectTo: string): string {
-  try {
-    const url = new URL(actionLink);
-    url.searchParams.set('redirect_to', redirectTo);
-    return url.toString();
-  } catch {
-    return actionLink;
-  }
+/** Direct link to the HR Portal reset page — avoids Supabase /auth/v1/verify redirect issues. */
+export function buildPasswordResetLink(redirectTo: string, hashedToken: string): string {
+  const url = new URL(redirectTo);
+  url.searchParams.set('token_hash', hashedToken);
+  url.searchParams.set('type', 'recovery');
+  return url.toString();
 }
 
 export function createPasswordResetService(supabase: SupabaseClient) {
@@ -81,11 +78,11 @@ export function createPasswordResetService(supabase: SupabaseClient) {
         email,
         options: { redirectTo },
       });
-      if (linkError || !linkData?.properties?.action_link) {
+      if (linkError || !linkData?.properties?.hashed_token) {
         throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Could not create a reset link.', 500);
       }
 
-      const resetLink = rewriteRecoveryActionLink(linkData.properties.action_link, redirectTo);
+      const resetLink = buildPasswordResetLink(redirectTo, linkData.properties.hashed_token);
       const fullName = (employee.full_name as string) || 'there';
       await sendPortalMail({
         to: [email],

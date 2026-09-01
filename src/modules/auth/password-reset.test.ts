@@ -2,11 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { API_ERROR_CODES } from '../../shared/constants/error-codes';
 import { hitRateLimit } from '../../shared/rate-limit';
 import {
+  buildPasswordResetLink,
   PASSWORD_RESET_EMAIL_MAX,
   PASSWORD_RESET_EMAIL_WINDOW_MS,
   resetPasswordResetRateLimits,
   resolvePasswordResetRedirect,
-  rewriteRecoveryActionLink,
 } from './password-reset';
 
 describe('resolvePasswordResetRedirect', () => {
@@ -15,16 +15,18 @@ describe('resolvePasswordResetRedirect', () => {
   });
 });
 
-describe('rewriteRecoveryActionLink', () => {
-  it('replaces redirect_to in the Supabase verify URL', () => {
-    const actionLink =
-      'https://example.supabase.co/auth/v1/verify?token=abc&type=recovery&redirect_to=http://localhost:3000';
-    const rewritten = rewriteRecoveryActionLink(
-      actionLink,
+describe('buildPasswordResetLink', () => {
+  it('builds a portal URL with token_hash and type=recovery', () => {
+    const link = buildPasswordResetLink(
       'https://hr-portal-client-nine.vercel.app/reset-password',
+      'abc123token',
     );
-    const url = new URL(rewritten);
-    expect(url.searchParams.get('redirect_to')).toBe('https://hr-portal-client-nine.vercel.app/reset-password');
+    const url = new URL(link);
+    expect(url.origin).toBe('https://hr-portal-client-nine.vercel.app');
+    expect(url.pathname).toBe('/reset-password');
+    expect(url.searchParams.get('token_hash')).toBe('abc123token');
+    expect(url.searchParams.get('type')).toBe('recovery');
+    expect(link).not.toContain('supabase.co');
   });
 });
 
