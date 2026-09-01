@@ -34,6 +34,7 @@ import {
   weekHasWorkGoal,
   type PriorityApprovalStatus,
 } from './approval';
+import { resolveProjectPriorityIsAdditional, projectMilestoneSubmitError, tallyMilestonePriorities } from './priority-milestone';
 
 const SOFT_CAP = 5;
 const TYPES = ['PROJECT', 'REGULAR', 'SKILL'] as const;
@@ -79,6 +80,8 @@ type PriorityRow = {
   employee_id: string;
   priority_type: string;
   project_id: string | null;
+  milestone_id: string | null;
+  is_additional: boolean;
   regular_subtype: string | null;
   regular_subtype_label: string | null;
   title: string;
@@ -99,6 +102,7 @@ type PriorityRow = {
   created_at: string;
   updated_at: string;
   projects?: { name: string; code: string } | { name: string; code: string }[] | null;
+  project_milestones?: { name: string } | { name: string }[] | null;
 };
 
 function asType<T extends readonly string[]>(value: string, allowed: T, label: string): T[number] {
@@ -177,6 +181,7 @@ function priorityForApproval(row: PriorityRow): PriorityForApproval {
 
 function mapPriority(row: PriorityRow, options?: { canApprove?: boolean }) {
   const project = firstRel(row.projects);
+  const milestone = firstRel(row.project_milestones);
   return {
     id: row.id,
     planId: row.plan_id,
@@ -185,6 +190,9 @@ function mapPriority(row: PriorityRow, options?: { canApprove?: boolean }) {
     projectId: row.project_id,
     projectName: project?.name ?? null,
     projectCode: project?.code ?? null,
+    milestoneId: row.milestone_id,
+    milestoneName: milestone?.name ?? null,
+    isAdditional: row.is_additional ?? false,
     regularSubtype: (row.regular_subtype as RegularSubtype | null) ?? null,
     regularSubtypeLabel: row.regular_subtype_label ?? null,
     title: row.title,
@@ -235,7 +243,7 @@ export function createWorkService(supabase: SupabaseClient) {
   async function loadPriorityRows(planId: string): Promise<PriorityRow[]> {
     const { data, error } = await supabase
       .from('weekly_priorities')
-      .select('*, projects ( name, code )')
+      .select('*, projects ( name, code ), project_milestones ( name )')
       .eq('plan_id', planId)
       .order('created_at');
     if (error) throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load priorities.', 500);
@@ -293,11 +301,120 @@ export function createWorkService(supabase: SupabaseClient) {
   async function loadPriority(id: string): Promise<PriorityRow> {
     const { data, error } = await supabase
       .from('weekly_priorities')
-      .select('*, projects ( name, code )')
+      .select('*, projects ( name, code ), project_milestones ( name )')
       .eq('id', id)
       .maybeSingle();
     if (error || !data) throw new AppError(API_ERROR_CODES.NOT_FOUND, 'Priority not found.', 404);
     return data as PriorityRow;
+  }
+
+  async function loadActiveMilestonesByProject(
+    projectIds: string[],
+  ): Promise<
+    Map<string, { id: string; name: string; goalName: string; targetDate: string | null }>
+  > {
+    if (projectIds.length === 0) return new Map();
+    const { data, error } = await supabase
+      .from('project_milestones')
+      .select('id, name, project_id, target_date, project_goals ( name )')
+      .in('project_id', projectIds)
+      .eq('status', 'ACTIVE');
+    if (error) {
+      throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load project milestones.', 500);
+    }
+    return new Map(
+      (data ?? []).map((row) => {
+        const goalRel = row.project_goals as { name: string } | { name: string }[] | null;
+        const goalName = Array.isArray(goalRel) ? (goalRel[0]?.name ?? '') : (goalRel?.name ?? '');
+        return [
+          row.project_id as string,
+          {
+            id: row.id as string,
+            name: row.name as string,
+            goalName,
+            targetDate: row.target_date ? String(row.target_date).slice(0, 10) : null,
+          },
+        ];
+      }),
+    );
+  }
+
+  function enrichProjectsForWeek<T extends { id: string }>(
+    projects: T[],
+    milestonesByProject: Map<
+      string,
+      { id: string; name: string; goalName: string; targetDate: string | null }
+    >,
+    priorities: ReturnType<typeof mapPriority>[],
+  ) {
+    return projects.map((project) => {
+      const active = milestonesByProject.get(project.id) ?? null;
+      const milestoneSummary = tallyMilestonePriorities(
+        priorities,
+        project.id,
+        active?.id ?? null,
+      );
+      return {
+        ...project,
+        activeMilestone: active
+          ? {
+              id: active.id,
+              name: active.name,
+              goalName: active.goalName,
+              targetDate: active.targetDate,
+            }
+          : null,
+        milestoneSummary,
+      };
+    });
+  }
+
+  async function resolveActiveProjectMilestone(
+    projectId: string,
+    milestoneId?: string | null,
+  ): Promise<string> {
+    if (milestoneId) {
+      const { data, error } = await supabase
+        .from('project_milestones')
+        .select('id, project_id, status')
+        .eq('id', milestoneId)
+        .maybeSingle();
+      if (error || !data) {
+        throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Pick a valid project milestone.', 400);
+      }
+      if ((data.project_id as string) !== projectId) {
+        throw new AppError(
+          API_ERROR_CODES.VALIDATION_ERROR,
+          'This milestone does not belong to the selected project.',
+          400,
+        );
+      }
+      if ((data.status as string) !== 'ACTIVE') {
+        throw new AppError(
+          API_ERROR_CODES.VALIDATION_ERROR,
+          'Only the active project milestone can be used for new R&D priorities.',
+          400,
+        );
+      }
+      return data.id as string;
+    }
+    const { data, error } = await supabase
+      .from('project_milestones')
+      .select('id')
+      .eq('project_id', projectId)
+      .eq('status', 'ACTIVE')
+      .maybeSingle();
+    if (error) {
+      throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load the active milestone.', 500);
+    }
+    if (!data) {
+      throw new AppError(
+        API_ERROR_CODES.VALIDATION_ERROR,
+        'No active milestone — ask your project lead.',
+        400,
+      );
+    }
+    return data.id as string;
   }
 
   function assertCanEdit(actor: RequestUser, employeeId: string): void {
@@ -372,6 +489,14 @@ export function createWorkService(supabase: SupabaseClient) {
         members,
       };
     });
+  }
+
+  async function listAllProjectsWithMembersAndMilestones(
+    priorities: ReturnType<typeof mapPriority>[] = [],
+  ) {
+    const projects = await listAllProjectsWithMembers();
+    const milestonesByProject = await loadActiveMilestonesByProject(projects.map((row) => row.id));
+    return enrichProjectsForWeek(projects, milestonesByProject, priorities);
   }
 
   async function assertActiveProject(projectId: string): Promise<void> {
@@ -460,9 +585,12 @@ export function createWorkService(supabase: SupabaseClient) {
       const week = weekBounds(isoDate, workingDays);
       const planId = await ensurePlan(employeeId, week.start, week.end);
       const priorities = await loadPrioritiesForViewer(actor, employeeId, planId);
-      const projects = canManageProjects(actor) || canAssign(actor)
-        ? await listAllProjects()
-        : await listMemberProjects(employeeId);
+      const baseProjects =
+        canManageProjects(actor) || canAssign(actor)
+          ? await listAllProjectsWithMembers()
+          : await listMemberProjects(employeeId);
+      const milestonesByProject = await loadActiveMilestonesByProject(baseProjects.map((row) => row.id));
+      const projects = enrichProjectsForWeek(baseProjects, milestonesByProject, priorities);
       const { data: feedbackRows } = await supabase
         .from('week_feedback')
         .select('id, feedback_type, comment, actor_id, created_at')
@@ -499,13 +627,15 @@ export function createWorkService(supabase: SupabaseClient) {
 
     async listProjects(actor: RequestUser, employeeId?: string) {
       if (canManageProjects(actor) || canAssign(actor)) {
-        return listAllProjectsWithMembers();
+        return listAllProjectsWithMembersAndMilestones();
       }
       const memberId = employeeId ?? actor.employeeId;
       if (memberId !== actor.employeeId) {
         throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot list another person’s projects.', 403);
       }
-      return listMemberProjects(memberId);
+      const baseProjects = await listMemberProjects(memberId);
+      const milestonesByProject = await loadActiveMilestonesByProject(baseProjects.map((row) => row.id));
+      return enrichProjectsForWeek(baseProjects, milestonesByProject, []);
     },
 
     async getProjectMembers(actor: RequestUser, projectId: string) {
@@ -863,6 +993,7 @@ export function createWorkService(supabase: SupabaseClient) {
         employeeId?: string;
         type: string;
         projectId?: string | null;
+        milestoneId?: string | null;
         regularSubtype?: string | null;
         regularSubtypeLabel?: string | null;
         title: string;
@@ -905,10 +1036,16 @@ export function createWorkService(supabase: SupabaseClient) {
         await assertProjectAccess(employeeId, fields.projectId, actor);
       }
 
+      let milestoneId: string | null = null;
+      if (type === 'PROJECT' && fields.projectId) {
+        milestoneId = await resolveActiveProjectMilestone(fields.projectId, input.milestoneId);
+      }
+
       const workingDays = await loadWorkingDays(supabase);
       const week = weekBounds(formatIsoDate(new Date()), workingDays);
       const planId = await ensurePlan(employeeId, week.start, week.end);
       const existing = await loadPriorities(planId);
+      const isAdditional = resolveProjectPriorityIsAdditional(existing, type, milestoneId);
 
       const { data, error } = await supabase
         .from('weekly_priorities')
@@ -917,6 +1054,8 @@ export function createWorkService(supabase: SupabaseClient) {
           employee_id: employeeId,
           priority_type: type,
           project_id: fields.projectId,
+          milestone_id: milestoneId,
+          is_additional: isAdditional,
           regular_subtype: fields.regularSubtype,
           regular_subtype_label: fields.regularSubtypeLabel,
           title,
@@ -927,7 +1066,7 @@ export function createWorkService(supabase: SupabaseClient) {
           assigned_by: null,
           approval_status: 'DRAFT',
         })
-        .select('*, projects ( name, code )')
+        .select('*, projects ( name, code ), project_milestones ( name )')
         .single();
       if (error || !data) throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to save this priority.', 500);
       const mapped = mapPriority(data as PriorityRow);
@@ -1107,11 +1246,15 @@ export function createWorkService(supabase: SupabaseClient) {
       if (already) throw new AppError(API_ERROR_CODES.CONFLICT, 'This priority is already on next week’s plan.', 409);
 
       const reason = incompleteReason ? asType(incompleteReason, INCOMPLETE_REASONS, 'reason') : existing.incomplete_reason;
+      let carryMilestoneId: string | null = null;
+      if (existing.priority_type === 'PROJECT' && existing.project_id) {
+        carryMilestoneId = await resolveActiveProjectMilestone(existing.project_id);
+      }
       const { data: updated, error: updateError } = await supabase
         .from('weekly_priorities')
         .update({ status: 'CARRIED_FORWARD', incomplete_reason: reason })
         .eq('id', id)
-        .select('*, projects ( name, code )')
+        .select('*, projects ( name, code ), project_milestones ( name )')
         .single();
       if (updateError || !updated) throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to mark this as carried forward.', 500);
 
@@ -1122,6 +1265,8 @@ export function createWorkService(supabase: SupabaseClient) {
           employee_id: existing.employee_id,
           priority_type: existing.priority_type,
           project_id: existing.project_id,
+          milestone_id: carryMilestoneId,
+          is_additional: false,
           regular_subtype: existing.regular_subtype,
           regular_subtype_label: existing.regular_subtype_label,
           title: existing.title,
@@ -1133,7 +1278,7 @@ export function createWorkService(supabase: SupabaseClient) {
           carried_from_id: id,
           approval_status: 'DRAFT',
         })
-        .select('*, projects ( name, code )')
+        .select('*, projects ( name, code ), project_milestones ( name )')
         .single();
       if (createError || !created) throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to copy this priority to next week.', 500);
 
@@ -1195,6 +1340,31 @@ export function createWorkService(supabase: SupabaseClient) {
           throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, MIN_WORK_GOAL_MESSAGE, 400);
         }
       }
+      if (existing.priority_type === 'PROJECT' && existing.project_id) {
+        const milestoneId = existing.milestone_id as string | null;
+        let milestoneRow: { project_id: string; status: string } | null = null;
+        if (milestoneId) {
+          const { data } = await supabase
+            .from('project_milestones')
+            .select('project_id, status')
+            .eq('id', milestoneId)
+            .maybeSingle();
+          milestoneRow = data
+            ? { project_id: data.project_id as string, status: data.status as string }
+            : null;
+        }
+        const milestoneError = projectMilestoneSubmitError(
+          existing.priority_type,
+          existing.project_id as string | null,
+          milestoneId,
+          milestoneRow
+            ? { projectId: milestoneRow.project_id, status: milestoneRow.status }
+            : null,
+        );
+        if (milestoneError) {
+          throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, milestoneError, 400);
+        }
+      }
       await assertHasPriorityApprovers(supabase, priorityForApproval(existing));
       const { data, error } = await supabase
         .from('weekly_priorities')
@@ -1247,6 +1417,8 @@ export function createWorkService(supabase: SupabaseClient) {
           details: [
             { label: 'Employee', value: employee?.fullName ?? existing.employee_id },
             { label: 'Priority', value: mapped.title },
+            ...(mapped.milestoneName ? [{ label: 'Milestone', value: mapped.milestoneName }] : []),
+            ...(mapped.isAdditional ? [{ label: 'Type', value: 'Mid-week addition' }] : []),
           ],
           ctaLabel: 'Review priorities',
           ctaHref: reviewHref,
@@ -1265,6 +1437,8 @@ export function createWorkService(supabase: SupabaseClient) {
           details: [
             { label: 'Employee', value: employee?.fullName ?? existing.employee_id },
             { label: 'Priority', value: mapped.title },
+            ...(mapped.milestoneName ? [{ label: 'Milestone', value: mapped.milestoneName }] : []),
+            ...(mapped.isAdditional ? [{ label: 'Type', value: 'Mid-week addition' }] : []),
           ],
           ctaLabel: 'Review priorities',
           ctaHref: reviewHref,

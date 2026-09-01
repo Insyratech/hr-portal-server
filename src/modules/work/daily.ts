@@ -26,6 +26,9 @@ type PriorityLite = {
   type: string;
   projectId: string | null;
   projectName: string | null;
+  milestoneId: string | null;
+  milestoneName: string | null;
+  isAdditional: boolean;
   status: string;
   approvalStatus: string;
 };
@@ -113,7 +116,9 @@ async function loadWeekPriorities(
   if (!plan?.id) return { week, priorities: [] };
   const { data, error } = await supabase
     .from('weekly_priorities')
-    .select('id, title, priority_type, project_id, status, approval_status, projects ( name )')
+    .select(
+      'id, title, priority_type, project_id, milestone_id, is_additional, status, approval_status, projects ( name ), project_milestones ( name )',
+    )
     .eq('plan_id', plan.id)
     .order('created_at');
   if (error) throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load this week’s priorities.', 500);
@@ -122,12 +127,19 @@ async function loadWeekPriorities(
     if (SKIP_PRIORITY.has(row.status as string)) continue;
     const project = row.projects as { name?: string } | { name?: string }[] | null;
     const name = Array.isArray(project) ? project[0]?.name : project?.name;
+    const milestoneRel = row.project_milestones as { name?: string } | { name?: string }[] | null;
+    const milestoneName = Array.isArray(milestoneRel)
+      ? (milestoneRel[0]?.name ?? null)
+      : (milestoneRel?.name ?? null);
     priorities.push({
       id: row.id as string,
       title: row.title as string,
       type: row.priority_type as string,
       projectId: (row.project_id as string | null) ?? null,
       projectName: name ?? null,
+      milestoneId: (row.milestone_id as string | null) ?? null,
+      milestoneName,
+      isAdditional: Boolean(row.is_additional),
       status: row.status as string,
       approvalStatus: (row.approval_status as string) ?? 'DRAFT',
     });

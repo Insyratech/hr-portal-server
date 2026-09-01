@@ -16,6 +16,7 @@ import { createWorkService } from './service';
 import { createWorkSettingsService } from './settings';
 import { createWeeklyUpdatesService } from './weekly-updates';
 import { createWeeklyPptDeskService } from './weekly-ppt-desk';
+import { createProjectGoalsMilestonesService } from './goals-milestones';
 
 function metaOf(request: { ip: string; headers: { 'user-agent'?: string } }) {
   return { ipAddress: request.ip, userAgent: request.headers['user-agent'] ?? null };
@@ -25,6 +26,7 @@ const priorityBody = Type.Object({
   employeeId: Type.Optional(Type.String({ minLength: 1 })),
   type: Type.String({ minLength: 1 }),
   projectId: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  milestoneId: Type.Optional(Type.Union([Type.String(), Type.Null()])),
   regularSubtype: Type.Optional(Type.Union([Type.String(), Type.Null()])),
   regularSubtypeLabel: Type.Optional(Type.Union([Type.String(), Type.Null()])),
   title: Type.String({ minLength: 1 }),
@@ -530,6 +532,7 @@ export async function registerWorkRoutes(app: FastifyInstance): Promise<void> {
         employeeId?: string;
         type: string;
         projectId?: string | null;
+        milestoneId?: string | null;
         regularSubtype?: string | null;
         regularSubtypeLabel?: string | null;
         title: string;
@@ -751,6 +754,354 @@ export async function registerWorkRoutes(app: FastifyInstance): Promise<void> {
           request.user,
           body,
           metaOf(request),
+        ),
+      );
+    },
+  );
+
+  app.get(
+    '/api/v1/work/projects/:id/goals',
+    {
+      preHandler: [
+        requirePermission(PERMISSIONS.WORK_OWN, PERMISSIONS.WORK_VIEW, PERMISSIONS.PROJECTS_MANAGE),
+      ],
+      schema: { params: Type.Object({ id: Type.String({ minLength: 1 }) }) },
+    },
+    async (request) => {
+      if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
+      const { id } = request.params as { id: string };
+      return ok(
+        await createProjectGoalsMilestonesService(requireSupabase(app.supabase)).listProjectGoals(
+          request.user,
+          id,
+        ),
+      );
+    },
+  );
+
+  app.get(
+    '/api/v1/work/projects/:id/milestones',
+    {
+      preHandler: [
+        requirePermission(PERMISSIONS.WORK_OWN, PERMISSIONS.WORK_VIEW, PERMISSIONS.PROJECTS_MANAGE),
+      ],
+      schema: { params: Type.Object({ id: Type.String({ minLength: 1 }) }) },
+    },
+    async (request) => {
+      if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
+      const { id } = request.params as { id: string };
+      return ok(
+        await createProjectGoalsMilestonesService(requireSupabase(app.supabase)).listProjectMilestones(
+          request.user,
+          id,
+        ),
+      );
+    },
+  );
+
+  app.get(
+    '/api/v1/work/projects/:projectId/plan',
+    {
+      preHandler: [
+        requirePermission(PERMISSIONS.WORK_OWN, PERMISSIONS.WORK_VIEW, PERMISSIONS.PROJECTS_MANAGE),
+      ],
+      schema: { params: Type.Object({ projectId: Type.String({ minLength: 1 }) }) },
+    },
+    async (request) => {
+      if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
+      const { projectId } = request.params as { projectId: string };
+      return ok(
+        await createProjectGoalsMilestonesService(requireSupabase(app.supabase)).listProjectPlan(
+          request.user,
+          projectId,
+        ),
+      );
+    },
+  );
+
+  app.post(
+    '/api/v1/work/projects/:projectId/goals',
+    {
+      preHandler: [requirePermission(PERMISSIONS.WORK_OWN)],
+      schema: {
+        params: Type.Object({ projectId: Type.String({ minLength: 1 }) }),
+        body: Type.Object({
+          name: Type.String({ minLength: 1 }),
+          description: Type.Optional(Type.String()),
+          isPrimary: Type.Optional(Type.Boolean()),
+          sequence: Type.Optional(Type.Integer({ minimum: 1 })),
+        }),
+      },
+    },
+    async (request) => {
+      if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
+      const { projectId } = request.params as { projectId: string };
+      const body = request.body as {
+        name: string;
+        description?: string;
+        isPrimary?: boolean;
+        sequence?: number;
+      };
+      return ok(
+        await createProjectGoalsMilestonesService(requireSupabase(app.supabase)).createGoal(
+          request.user,
+          projectId,
+          body,
+          metaOf(request),
+        ),
+      );
+    },
+  );
+
+  app.patch(
+    '/api/v1/work/goals/:goalId',
+    {
+      preHandler: [requirePermission(PERMISSIONS.WORK_OWN)],
+      schema: {
+        params: Type.Object({ goalId: Type.String({ minLength: 1 }) }),
+        body: Type.Object({
+          name: Type.Optional(Type.String({ minLength: 1 })),
+          description: Type.Optional(Type.String()),
+          isPrimary: Type.Optional(Type.Boolean()),
+          sequence: Type.Optional(Type.Integer({ minimum: 1 })),
+        }),
+      },
+    },
+    async (request) => {
+      if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
+      const { goalId } = request.params as { goalId: string };
+      const body = request.body as {
+        name?: string;
+        description?: string;
+        isPrimary?: boolean;
+        sequence?: number;
+      };
+      return ok(
+        await createProjectGoalsMilestonesService(requireSupabase(app.supabase)).updateGoal(
+          request.user,
+          goalId,
+          body,
+          metaOf(request),
+        ),
+      );
+    },
+  );
+
+  app.delete(
+    '/api/v1/work/goals/:goalId',
+    {
+      preHandler: [requirePermission(PERMISSIONS.WORK_OWN)],
+      schema: { params: Type.Object({ goalId: Type.String({ minLength: 1 }) }) },
+    },
+    async (request) => {
+      if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
+      const { goalId } = request.params as { goalId: string };
+      return ok(
+        await createProjectGoalsMilestonesService(requireSupabase(app.supabase)).deleteGoal(
+          request.user,
+          goalId,
+          metaOf(request),
+        ),
+      );
+    },
+  );
+
+  app.post(
+    '/api/v1/work/goals/:goalId/milestones',
+    {
+      preHandler: [requirePermission(PERMISSIONS.WORK_OWN)],
+      schema: {
+        params: Type.Object({ goalId: Type.String({ minLength: 1 }) }),
+        body: Type.Object({
+          name: Type.String({ minLength: 1 }),
+          description: Type.Optional(Type.String()),
+          startDate: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+          targetDate: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+          status: Type.Optional(Type.String()),
+          sequence: Type.Optional(Type.Integer({ minimum: 1 })),
+        }),
+      },
+    },
+    async (request) => {
+      if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
+      const { goalId } = request.params as { goalId: string };
+      const body = request.body as {
+        name: string;
+        description?: string;
+        startDate?: string | null;
+        targetDate?: string | null;
+        status?: string;
+        sequence?: number;
+      };
+      return ok(
+        await createProjectGoalsMilestonesService(requireSupabase(app.supabase)).createMilestone(
+          request.user,
+          goalId,
+          body,
+          metaOf(request),
+        ),
+      );
+    },
+  );
+
+  app.patch(
+    '/api/v1/work/milestones/:milestoneId',
+    {
+      preHandler: [requirePermission(PERMISSIONS.WORK_OWN)],
+      schema: {
+        params: Type.Object({ milestoneId: Type.String({ minLength: 1 }) }),
+        body: Type.Object({
+          name: Type.Optional(Type.String({ minLength: 1 })),
+          description: Type.Optional(Type.String()),
+          startDate: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+          targetDate: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+          status: Type.Optional(Type.String()),
+          sequence: Type.Optional(Type.Integer({ minimum: 1 })),
+          changeReason: Type.String({ minLength: 1 }),
+        }),
+      },
+    },
+    async (request) => {
+      if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
+      const { milestoneId } = request.params as { milestoneId: string };
+      const body = request.body as {
+        name?: string;
+        description?: string;
+        startDate?: string | null;
+        targetDate?: string | null;
+        status?: string;
+        sequence?: number;
+        changeReason: string;
+      };
+      return ok(
+        await createProjectGoalsMilestonesService(requireSupabase(app.supabase)).updateMilestone(
+          request.user,
+          milestoneId,
+          body,
+          metaOf(request),
+        ),
+      );
+    },
+  );
+
+  app.post(
+    '/api/v1/work/milestones/:milestoneId/activate',
+    {
+      preHandler: [requirePermission(PERMISSIONS.WORK_OWN)],
+      schema: {
+        params: Type.Object({ milestoneId: Type.String({ minLength: 1 }) }),
+        body: Type.Optional(
+          Type.Object({
+            changeReason: Type.Optional(Type.String({ minLength: 1 })),
+          }),
+        ),
+      },
+    },
+    async (request) => {
+      if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
+      const { milestoneId } = request.params as { milestoneId: string };
+      const body = (request.body ?? {}) as { changeReason?: string };
+      return ok(
+        await createProjectGoalsMilestonesService(requireSupabase(app.supabase)).activateMilestone(
+          request.user,
+          milestoneId,
+          body,
+          metaOf(request),
+        ),
+      );
+    },
+  );
+
+  app.post(
+    '/api/v1/work/milestones/:milestoneId/complete',
+    {
+      preHandler: [requirePermission(PERMISSIONS.WORK_OWN)],
+      schema: {
+        params: Type.Object({ milestoneId: Type.String({ minLength: 1 }) }),
+        body: Type.Optional(
+          Type.Object({
+            changeReason: Type.Optional(Type.String({ minLength: 1 })),
+          }),
+        ),
+      },
+    },
+    async (request) => {
+      if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
+      const { milestoneId } = request.params as { milestoneId: string };
+      const body = (request.body ?? {}) as { changeReason?: string };
+      return ok(
+        await createProjectGoalsMilestonesService(requireSupabase(app.supabase)).completeMilestone(
+          request.user,
+          milestoneId,
+          body,
+          metaOf(request),
+        ),
+      );
+    },
+  );
+
+  app.post(
+    '/api/v1/work/milestones/:milestoneId/cancel',
+    {
+      preHandler: [requirePermission(PERMISSIONS.WORK_OWN)],
+      schema: {
+        params: Type.Object({ milestoneId: Type.String({ minLength: 1 }) }),
+        body: Type.Optional(
+          Type.Object({
+            changeReason: Type.Optional(Type.String({ minLength: 1 })),
+          }),
+        ),
+      },
+    },
+    async (request) => {
+      if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
+      const { milestoneId } = request.params as { milestoneId: string };
+      const body = (request.body ?? {}) as { changeReason?: string };
+      return ok(
+        await createProjectGoalsMilestonesService(requireSupabase(app.supabase)).cancelMilestone(
+          request.user,
+          milestoneId,
+          body,
+          metaOf(request),
+        ),
+      );
+    },
+  );
+
+  app.delete(
+    '/api/v1/work/milestones/:milestoneId',
+    {
+      preHandler: [requirePermission(PERMISSIONS.WORK_OWN)],
+      schema: { params: Type.Object({ milestoneId: Type.String({ minLength: 1 }) }) },
+    },
+    async (request) => {
+      if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
+      const { milestoneId } = request.params as { milestoneId: string };
+      return ok(
+        await createProjectGoalsMilestonesService(requireSupabase(app.supabase)).deleteMilestone(
+          request.user,
+          milestoneId,
+          metaOf(request),
+        ),
+      );
+    },
+  );
+
+  app.get(
+    '/api/v1/work/milestones/:milestoneId/history',
+    {
+      preHandler: [
+        requirePermission(PERMISSIONS.WORK_OWN, PERMISSIONS.WORK_VIEW, PERMISSIONS.PROJECTS_MANAGE),
+      ],
+      schema: { params: Type.Object({ milestoneId: Type.String({ minLength: 1 }) }) },
+    },
+    async (request) => {
+      if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
+      const { milestoneId } = request.params as { milestoneId: string };
+      return ok(
+        await createProjectGoalsMilestonesService(requireSupabase(app.supabase)).getMilestoneHistory(
+          request.user,
+          milestoneId,
         ),
       );
     },

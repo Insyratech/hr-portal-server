@@ -8,6 +8,8 @@ import { loadWorkingDays } from '../leave/support';
 import { loadStaffById, notifyStaff } from '../notifications/notify-staff';
 import { portalUrl } from '../notifications/mail';
 import { listProjectStatusUpdates } from './project-updates';
+import { buildProjectReportingChain } from './project-reporting';
+import type { MilestoneStatus } from './goals-milestones';
 import { weekBounds } from './week-bounds';
 
 function canOpenLeadDesk(actor: RequestUser): boolean {
@@ -164,12 +166,17 @@ export function createLeadDeskService(supabase: SupabaseClient) {
         type: string;
         status: string;
         approvalStatus: string;
+        milestoneId: string | null;
+        milestoneName: string | null;
+        isAdditional: boolean;
       };
       let priorities: PriorityOut[] = [];
       if (planIds.length) {
         const { data: priorityRows, error: priorityError } = await supabase
           .from('weekly_priorities')
-          .select('id, plan_id, employee_id, title, priority_type, status, approval_status')
+          .select(
+            'id, plan_id, employee_id, title, priority_type, status, approval_status, milestone_id, is_additional, project_milestones ( name )',
+          )
           .in('plan_id', planIds)
           .eq('project_id', projectId)
           .order('created_at', { ascending: true });
@@ -179,6 +186,10 @@ export function createLeadDeskService(supabase: SupabaseClient) {
         priorities = (priorityRows ?? []).map((row) => {
           const employeeId =
             (row.employee_id as string | null) ?? planEmployee.get(row.plan_id as string) ?? '';
+          const milestoneRel = row.project_milestones as { name: string } | { name: string }[] | null;
+          const milestoneName = Array.isArray(milestoneRel)
+            ? (milestoneRel[0]?.name ?? null)
+            : (milestoneRel?.name ?? null);
           return {
             id: row.id as string,
             employeeId,
@@ -187,9 +198,57 @@ export function createLeadDeskService(supabase: SupabaseClient) {
             type: row.priority_type as string,
             status: row.status as string,
             approvalStatus: (row.approval_status as string) ?? 'DRAFT',
+            milestoneId: (row.milestone_id as string | null) ?? null,
+            milestoneName,
+            isAdditional: Boolean(row.is_additional),
           };
         });
       }
+
+      const prioritiesByMilestone: {
+        milestoneId: string | null;
+        milestoneName: string;
+        items: PriorityOut[];
+      }[] = [];
+      const groupMap = new Map<string, { milestoneId: string | null; milestoneName: string; items: PriorityOut[] }>();
+      for (const item of priorities) {
+        const key = item.milestoneId ?? 'none';
+        const group =
+          groupMap.get(key) ??
+          ({
+            milestoneId: item.milestoneId,
+            milestoneName: item.milestoneName ?? 'No milestone',
+            items: [],
+          } as { milestoneId: string | null; milestoneName: string; items: PriorityOut[] });
+        group.items.push(item);
+        groupMap.set(key, group);
+      }
+      prioritiesByMilestone.push(...groupMap.values());
+
+      const { data: activeMilestoneRow } = await supabase
+        .from('project_milestones')
+        .select('id, name, target_date, project_goals ( name )')
+        .eq('project_id', projectId)
+        .eq('status', 'ACTIVE')
+        .maybeSingle();
+      const activeGoalRel = activeMilestoneRow?.project_goals as
+        | { name: string }
+        | { name: string }[]
+        | null
+        | undefined;
+      const activeGoalName = Array.isArray(activeGoalRel)
+        ? (activeGoalRel[0]?.name ?? '')
+        : (activeGoalRel?.name ?? '');
+      const activeMilestone = activeMilestoneRow
+        ? {
+            id: activeMilestoneRow.id as string,
+            name: activeMilestoneRow.name as string,
+            goalName: activeGoalName,
+            targetDate: activeMilestoneRow.target_date
+              ? String(activeMilestoneRow.target_date).slice(0, 10)
+              : null,
+          }
+        : null;
 
       const { data: dayRows, error: dayError } = memberIds.length
         ? await supabase
@@ -240,6 +299,35 @@ export function createLeadDeskService(supabase: SupabaseClient) {
 
       const leadEmployeeId = project.lead_employee_id as string;
       const updates = await listProjectStatusUpdates(supabase, projectId);
+
+      const { data: goalRows } = await supabase
+        .from('project_goals')
+        .select('id, name, sequence, project_milestones ( id, name, status, sequence )')
+        .eq('project_id', projectId)
+        .order('sequence')
+        .order('created_at');
+      const reportingGoals = (goalRows ?? []).map((row) => ({
+        id: row.id as string,
+        name: row.name as string,
+        sequence: row.sequence as number,
+        milestones: ((row.project_milestones ?? []) as {
+          id: string;
+          name: string;
+          status: string;
+          sequence: number;
+        }[]).map((milestone) => ({
+          id: milestone.id,
+          name: milestone.name,
+          status: milestone.status as MilestoneStatus,
+          sequence: milestone.sequence,
+        })),
+      }));
+      const reportingChain = buildProjectReportingChain({
+        goals: reportingGoals,
+        priorities,
+        dailyEntries,
+      });
+
       return {
         project: {
           id: project.id as string,
@@ -252,9 +340,12 @@ export function createLeadDeskService(supabase: SupabaseClient) {
           members,
         },
         week: { start: week.start, end: week.end },
+        activeMilestone,
         updates,
         priorities,
+        prioritiesByMilestone,
         dailyEntries,
+        reportingChain,
       };
     },
   };
