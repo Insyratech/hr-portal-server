@@ -12,6 +12,7 @@ export function hitRateLimit(
   now = Date.now(),
   windowMs = UPLOAD_RATE_WINDOW_MS,
   max = UPLOAD_RATE_MAX,
+  limitMessage?: string,
 ): RateWindow {
   const current = store.get(key);
   if (!current || now >= current.resetAt) {
@@ -23,7 +24,7 @@ export function hitRateLimit(
   if (current.count > max) {
     throw new AppError(
       API_ERROR_CODES.RATE_LIMITED,
-      'Too many attendance uploads. Wait a few minutes and try again.',
+      limitMessage ?? 'Too many requests. Wait a few minutes and try again.',
       429,
     );
   }
