@@ -1,10 +1,10 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { loadEnv } from '../../config/env';
 import { API_ERROR_CODES } from '../../shared/constants/error-codes';
 import { isValidEmail, normalizeEmail } from '../../shared/email';
 import { AppError } from '../../shared/errors/app-error';
+import { portalPublicUrl } from '../../shared/portal-public-url';
 import { hitRateLimit, type RateWindow } from '../../shared/rate-limit';
-import { portalUrl, sendPortalMail } from '../notifications/mail';
+import { sendPortalMail } from '../notifications/mail';
 
 /** Up to 5 reset emails per address every 3 hours. */
 export const PASSWORD_RESET_EMAIL_WINDOW_MS = 3 * 60 * 60 * 1000;
@@ -20,32 +20,25 @@ const PASSWORD_RESET_LIMIT_MESSAGE =
 const emailHits = new Map<string, RateWindow>();
 const ipHits = new Map<string, RateWindow>();
 
-export function resolvePasswordResetRedirect(input?: string): string {
-  const env = loadEnv();
-  const fallback = portalUrl('/reset-password');
-  const candidate = input?.trim();
-  if (!candidate) return fallback;
+/** Server-configured reset page — never trust client redirect URLs in email links. */
+export function resolvePasswordResetRedirect(): string {
+  return portalPublicUrl('/reset-password');
+}
 
-  const allowedOrigins = new Set(
-    [env.CORS_ORIGIN, 'http://localhost:3000', 'https://hr-portal-client-nine.vercel.app']
-      .filter(Boolean)
-      .map((origin) => origin.replace(/\/$/, '')),
-  );
-
+/** Supabase may embed the project Site URL in action_link; force the correct redirect_to. */
+export function rewriteRecoveryActionLink(actionLink: string, redirectTo: string): string {
   try {
-    const url = new URL(candidate);
-    const origin = url.origin.replace(/\/$/, '');
-    if (!allowedOrigins.has(origin)) return fallback;
-    if (!url.pathname.startsWith('/reset-password')) return `${origin}/reset-password`;
+    const url = new URL(actionLink);
+    url.searchParams.set('redirect_to', redirectTo);
     return url.toString();
   } catch {
-    return fallback;
+    return actionLink;
   }
 }
 
 export function createPasswordResetService(supabase: SupabaseClient) {
   return {
-    async requestReset(input: { email: string; redirectTo?: string; ipAddress?: string | null }) {
+    async requestReset(input: { email: string; ipAddress?: string | null }) {
       const email = normalizeEmail(input.email);
       if (!isValidEmail(email)) {
         throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Enter a valid email address.', 400);
@@ -82,7 +75,7 @@ export function createPasswordResetService(supabase: SupabaseClient) {
         return { sent: true as const };
       }
 
-      const redirectTo = resolvePasswordResetRedirect(input.redirectTo);
+      const redirectTo = resolvePasswordResetRedirect();
       const { data: linkData, error: linkError } = await supabase.auth.admin.generateLink({
         type: 'recovery',
         email,
@@ -92,6 +85,7 @@ export function createPasswordResetService(supabase: SupabaseClient) {
         throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Could not create a reset link.', 500);
       }
 
+      const resetLink = rewriteRecoveryActionLink(linkData.properties.action_link, redirectTo);
       const fullName = (employee.full_name as string) || 'there';
       await sendPortalMail({
         to: [email],
@@ -103,7 +97,7 @@ export function createPasswordResetService(supabase: SupabaseClient) {
           'We received a request to reset your HR Portal password. Use the button below to choose a new one.',
           'If you did not ask for this, you can ignore this email. Your password will stay the same.',
         ],
-        cta: { label: 'Reset password', href: linkData.properties.action_link },
+        cta: { label: 'Reset password', href: resetLink },
       });
 
       return { sent: true as const };

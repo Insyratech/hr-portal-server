@@ -5,6 +5,8 @@ export type Env = {
   PORT: number;
   HOST: string;
   CORS_ORIGIN: string;
+  /** Public web app URL for emails and password-reset links (e.g. https://your-app.vercel.app). */
+  PORTAL_PUBLIC_URL: string;
   SUPABASE_URL: string;
   SUPABASE_SERVICE_ROLE_KEY: string;
   SUPABASE_JWT_SECRET: string;
@@ -44,6 +46,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     PORT: readPort(source.PORT, 3001),
     HOST: readHost(source),
     CORS_ORIGIN: source.CORS_ORIGIN ?? 'http://localhost:3000',
+    PORTAL_PUBLIC_URL: source.PORTAL_PUBLIC_URL ?? '',
     SUPABASE_URL: source.SUPABASE_URL ?? '',
     SUPABASE_SERVICE_ROLE_KEY: source.SUPABASE_SERVICE_ROLE_KEY ?? '',
     SUPABASE_JWT_SECRET: source.SUPABASE_JWT_SECRET ?? '',

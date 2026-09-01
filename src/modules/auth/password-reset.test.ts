@@ -6,16 +6,25 @@ import {
   PASSWORD_RESET_EMAIL_WINDOW_MS,
   resetPasswordResetRateLimits,
   resolvePasswordResetRedirect,
+  rewriteRecoveryActionLink,
 } from './password-reset';
 
 describe('resolvePasswordResetRedirect', () => {
-  it('falls back to portal reset path when redirect is missing', () => {
+  it('points to the reset-password page', () => {
     expect(resolvePasswordResetRedirect()).toMatch(/\/reset-password$/);
   });
+});
 
-  it('accepts allowed origins and normalizes to reset-password path', () => {
-    const url = resolvePasswordResetRedirect('http://localhost:3000/reset-password');
-    expect(url).toBe('http://localhost:3000/reset-password');
+describe('rewriteRecoveryActionLink', () => {
+  it('replaces redirect_to in the Supabase verify URL', () => {
+    const actionLink =
+      'https://example.supabase.co/auth/v1/verify?token=abc&type=recovery&redirect_to=http://localhost:3000';
+    const rewritten = rewriteRecoveryActionLink(
+      actionLink,
+      'https://hr-portal-client-nine.vercel.app/reset-password',
+    );
+    const url = new URL(rewritten);
+    expect(url.searchParams.get('redirect_to')).toBe('https://hr-portal-client-nine.vercel.app/reset-password');
   });
 });
 

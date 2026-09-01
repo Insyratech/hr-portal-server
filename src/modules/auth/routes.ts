@@ -29,15 +29,13 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
       schema: {
         body: Type.Object({
           email: Type.String({ minLength: 5, maxLength: 254 }),
-          redirectTo: Type.Optional(Type.String({ minLength: 8, maxLength: 500 })),
         }),
       },
     },
     async (request) => {
-      const body = request.body as { email: string; redirectTo?: string };
+      const body = request.body as { email: string };
       const result = await createPasswordResetService(requireSupabase(app.supabase)).requestReset({
         email: body.email,
-        redirectTo: body.redirectTo,
         ipAddress: request.ip,
       });
       return ok(result);

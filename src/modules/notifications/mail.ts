@@ -1,5 +1,6 @@
 import { loadEnv } from '../../config/env';
 import { renderPortalEmail, type PortalMailContent } from './email-layout';
+import { portalPublicUrl } from '../../shared/portal-public-url';
 
 type MailInput = {
   to: string[];
@@ -18,9 +19,7 @@ function uniqueEmails(values: Array<string | null | undefined>): string[] {
 }
 
 export function portalUrl(path = '/login'): string {
-  const origin = loadEnv().CORS_ORIGIN.replace(/\/$/, '');
-  const suffix = path.startsWith('/') ? path : `/${path}`;
-  return `${origin}${suffix}`;
+  return portalPublicUrl(path);
 }
 
 export function portalLoginUrl(): string {
