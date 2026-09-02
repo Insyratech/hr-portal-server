@@ -15,6 +15,17 @@ export function addUtcDays(date: Date, days: number): Date {
   return next;
 }
 
+/** Adds calendar months in UTC, clamping the day when the target month is shorter. */
+export function addUtcMonths(date: Date, months: number): Date {
+  const year = date.getUTCFullYear();
+  const month = date.getUTCMonth();
+  const day = date.getUTCDate();
+  const result = new Date(Date.UTC(year, month + months, 1));
+  const lastDay = new Date(Date.UTC(result.getUTCFullYear(), result.getUTCMonth() + 1, 0)).getUTCDate();
+  result.setUTCDate(Math.min(day, lastDay));
+  return result;
+}
+
 export function weekdayCode(date: Date): string {
   return WEEKDAYS[date.getUTCDay()];
 }

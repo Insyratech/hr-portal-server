@@ -48,6 +48,8 @@ export type ApplicationInput = {
   workingDays: string[];
   holidayDates: string[];
   weekPatternForDate?: (isoDate: string) => WeekPattern | null;
+  /** When false, skip the global max-advance booking window (e.g. pending edit with unchanged start date). */
+  enforceAdvanceBookingWindow?: boolean;
 };
 
 export type Violation = {

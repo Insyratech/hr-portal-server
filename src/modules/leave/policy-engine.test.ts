@@ -206,6 +206,41 @@ describe('validateApplication', () => {
     expect(lop.violations.some((item) => item.code === API_ERROR_CODES.INSUFFICIENT_LEAVE_BALANCE)).toBe(false);
   });
 
+  it('returns LEAVE_TOO_FAR_IN_ADVANCE when start date is more than one month ahead', () => {
+    const now = new Date('2026-10-03T00:00:00.000Z');
+    const result = validateApplication(
+      flags,
+      casual,
+      baseInput({ startDate: '2026-12-01', endDate: '2026-12-01', now }),
+    );
+    expect(result.violations.some((item) => item.code === API_ERROR_CODES.LEAVE_TOO_FAR_IN_ADVANCE)).toBe(true);
+  });
+
+  it('allows leave starting within one month from today', () => {
+    const now = new Date('2026-10-03T00:00:00.000Z');
+    const result = validateApplication(
+      flags,
+      { ...casual, noticePeriod: { value: 0, unit: 'hours' } },
+      baseInput({ startDate: '2026-11-03', endDate: '2026-11-03', now }),
+    );
+    expect(result.violations.some((item) => item.code === API_ERROR_CODES.LEAVE_TOO_FAR_IN_ADVANCE)).toBe(false);
+  });
+
+  it('skips advance booking window when enforceAdvanceBookingWindow is false', () => {
+    const now = new Date('2026-10-03T00:00:00.000Z');
+    const result = validateApplication(
+      flags,
+      { ...casual, noticePeriod: { value: 0, unit: 'hours' } },
+      baseInput({
+        startDate: '2027-01-15',
+        endDate: '2027-01-15',
+        now,
+        enforceAdvanceBookingWindow: false,
+      }),
+    );
+    expect(result.violations.some((item) => item.code === API_ERROR_CODES.LEAVE_TOO_FAR_IN_ADVANCE)).toBe(false);
+  });
+
   it('accepts a valid casual leave request', () => {
     const result = validateApplication(flags, casual, baseInput());
     expect(result.valid).toBe(true);

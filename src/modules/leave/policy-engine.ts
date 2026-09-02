@@ -1,4 +1,5 @@
 import { API_ERROR_CODES } from '../../shared/constants/error-codes';
+import { isLeaveStartWithinBookingWindow, leaveTooFarInAdvanceMessage } from './booking-window';
 import { countLeaveQuantity, parseIsoDate, serviceDays } from './day-count';
 import type { ApplicationInput, EngineResult, LeaveTypeFlags, PolicyRules, Violation } from './types';
 
@@ -64,6 +65,10 @@ export function validateApplication(
 
   if (input.startDate !== input.endDate && !flags.allowMultipleDays) {
     add(violations, API_ERROR_CODES.VALIDATION_ERROR, 'Multiple-day leave is not allowed for this type.');
+  }
+
+  if (input.enforceAdvanceBookingWindow !== false && !isLeaveStartWithinBookingWindow(input.startDate, input.now)) {
+    add(violations, API_ERROR_CODES.LEAVE_TOO_FAR_IN_ADVANCE, leaveTooFarInAdvanceMessage(input.now));
   }
 
   if (!isEligible({ rules, ...input })) {

@@ -715,6 +715,7 @@ export function createLeaveApplicationService(supabase: SupabaseClient) {
         workingDays,
         holidayDates,
         weekPatternForDate,
+        enforceAdvanceBookingWindow: input.startDate !== existing.startDate.slice(0, 10),
       });
 
       if (!result.valid) {
