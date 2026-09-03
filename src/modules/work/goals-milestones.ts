@@ -201,7 +201,11 @@ export function createProjectGoalsMilestonesService(supabase: SupabaseClient) {
   async function loadGoal(goalId: string) {
     const { data, error } = await supabase.from('project_goals').select('*').eq('id', goalId).maybeSingle();
     if (error || !data) {
-      throw new AppError(API_ERROR_CODES.NOT_FOUND, 'Goal not found.', 404);
+      throw new AppError(
+        API_ERROR_CODES.NOT_FOUND,
+        'Goal not found. Create a goal first — milestones must belong to a goal.',
+        404,
+      );
     }
     return data as Record<string, unknown>;
   }

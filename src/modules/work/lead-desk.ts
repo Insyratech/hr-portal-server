@@ -348,5 +348,141 @@ export function createLeadDeskService(supabase: SupabaseClient) {
         reportingChain,
       };
     },
+
+    async listLeadDailyWork(
+      actor: RequestUser,
+      input: { date?: string; from?: string; to?: string; projectId?: string },
+    ) {
+      if (!canOpenLeadDesk(actor)) {
+        throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot view project daily work.', 403);
+      }
+
+      const workingDays = await loadWorkingDays(supabase);
+      let rangeStart: string;
+      let rangeEnd: string;
+      if (
+        input.from &&
+        input.to &&
+        /^\d{4}-\d{2}-\d{2}$/.test(input.from) &&
+        /^\d{4}-\d{2}-\d{2}$/.test(input.to)
+      ) {
+        if (input.to < input.from) {
+          throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'End date must be on or after start date.', 400);
+        }
+        rangeStart = input.from;
+        rangeEnd = input.to;
+      } else {
+        const isoDate =
+          input.date && /^\d{4}-\d{2}-\d{2}$/.test(input.date) ? input.date : formatIsoDate(new Date());
+        const week = weekBounds(isoDate, workingDays);
+        rangeStart = week.start;
+        rangeEnd = week.end;
+      }
+
+      let projectQuery = supabase
+        .from('projects')
+        .select('id, name, code')
+        .eq('lead_employee_id', actor.employeeId)
+        .eq('status', 'active');
+      if (input.projectId) {
+        projectQuery = projectQuery.eq('id', input.projectId);
+      }
+      const { data: projects, error: projectError } = await projectQuery;
+      if (projectError) {
+        throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load lead projects.', 500);
+      }
+      const projectRows = projects ?? [];
+      if (projectRows.length === 0) {
+        return { range: { start: rangeStart, end: rangeEnd }, entries: [] as const };
+      }
+
+      const projectIds = projectRows.map((row) => row.id as string);
+      const projectMeta = new Map(
+        projectRows.map((row) => [
+          row.id as string,
+          { name: row.name as string, code: row.code as string },
+        ]),
+      );
+
+      const { data: memberRows, error: memberError } = await supabase
+        .from('project_members')
+        .select('project_id, employee_id')
+        .in('project_id', projectIds);
+      if (memberError) {
+        throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load project members.', 500);
+      }
+
+      const memberIds = [...new Set((memberRows ?? []).map((row) => row.employee_id as string))];
+      if (memberIds.length === 0) {
+        return { range: { start: rangeStart, end: rangeEnd }, entries: [] as const };
+      }
+
+      const names = await loadEmployeeNames(memberIds);
+      const { data: dayRows, error: dayError } = await supabase
+        .from('daily_work_days')
+        .select(
+          'work_date, employee_id, daily_work_entries ( id, category, description, project_id, priority_id )',
+        )
+        .in('employee_id', memberIds)
+        .gte('work_date', rangeStart)
+        .lte('work_date', rangeEnd)
+        .order('work_date', { ascending: false });
+      if (dayError) {
+        throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load daily work updates.', 500);
+      }
+
+      const projectIdSet = new Set(projectIds);
+      const entries: {
+        id: string;
+        date: string;
+        employeeId: string;
+        employeeName: string;
+        projectId: string;
+        projectName: string;
+        projectCode: string;
+        category: string;
+        description: string;
+        priorityId: string | null;
+      }[] = [];
+
+      for (const day of dayRows ?? []) {
+        const employeeId = day.employee_id as string;
+        const dayEntries = (day.daily_work_entries ?? []) as {
+          id: string;
+          category: string;
+          description: string;
+          project_id: string | null;
+          priority_id: string | null;
+        }[];
+        for (const entry of dayEntries) {
+          const projectId = entry.project_id;
+          if (!projectId || !projectIdSet.has(projectId)) continue;
+          if (input.projectId && projectId !== input.projectId) continue;
+          const meta = projectMeta.get(projectId);
+          if (!meta) continue;
+          entries.push({
+            id: entry.id,
+            date: String(day.work_date).slice(0, 10),
+            employeeId,
+            employeeName: names.get(employeeId) ?? 'Employee',
+            projectId,
+            projectName: meta.name,
+            projectCode: meta.code,
+            category: entry.category,
+            description: entry.description,
+            priorityId: entry.priority_id,
+          });
+        }
+      }
+
+      entries.sort((a, b) => {
+        if (a.date !== b.date) return b.date.localeCompare(a.date);
+        const byName = a.employeeName.localeCompare(b.employeeName);
+        if (byName !== 0) return byName;
+        return a.projectName.localeCompare(b.projectName);
+      });
+
+      return { range: { start: rangeStart, end: rangeEnd }, entries };
+    },
   };
 }

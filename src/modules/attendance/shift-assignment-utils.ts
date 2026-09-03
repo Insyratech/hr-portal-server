@@ -24,14 +24,14 @@ export function rowsToClose(
   effectiveFrom: string,
   keepId?: string,
 ): { id: string; effectiveTo: string }[] {
+  const targetFrom = effectiveFrom.slice(0, 10);
   const closes: { id: string; effectiveTo: string }[] = [];
   for (const row of openRows) {
     if (keepId && row.id === keepId) continue;
-    const rowFrom = row.effective_from.slice(0, 10);
-    if (rowFrom === effectiveFrom) continue;
+    const rowFrom = String(row.effective_from).slice(0, 10);
     closes.push({
       id: row.id,
-      effectiveTo: closeDateForOpenRow(effectiveFrom, rowFrom),
+      effectiveTo: closeDateForOpenRow(targetFrom, rowFrom),
     });
   }
   return closes;

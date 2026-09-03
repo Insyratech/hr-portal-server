@@ -9,14 +9,26 @@ import { listStaffByRole, notifyStaff } from '../notifications/notify-staff';
 
 const MAX_BODY_LENGTH = 2000;
 
+export const PROJECT_UPDATE_TOPICS = ['PROGRESS', 'RISK', 'BLOCKER', 'NEXT_STEPS', 'OTHER'] as const;
+export type ProjectUpdateTopic = (typeof PROJECT_UPDATE_TOPICS)[number];
+
 export type ProjectStatusUpdate = {
   id: string;
   projectId: string;
   authorId: string;
   authorName: string;
   body: string;
+  topic: ProjectUpdateTopic | null;
   createdAt: string;
 };
+
+function normalizeTopic(value: string | null | undefined): ProjectUpdateTopic | null {
+  if (!value) return null;
+  const upper = value.trim().toUpperCase();
+  return (PROJECT_UPDATE_TOPICS as readonly string[]).includes(upper)
+    ? (upper as ProjectUpdateTopic)
+    : null;
+}
 
 function canStaffReadUpdates(actor: RequestUser): boolean {
   return (
@@ -57,10 +69,35 @@ export async function listProjectStatusUpdates(
 ): Promise<ProjectStatusUpdate[]> {
   const { data, error } = await supabase
     .from('project_status_updates')
-    .select('id, project_id, author_id, body, created_at')
+    .select('id, project_id, author_id, body, topic, created_at')
     .eq('project_id', projectId)
     .order('created_at', { ascending: false });
   if (error) {
+    // Older DBs may lack topic until migration 050 runs.
+    if (/topic/i.test(error.message ?? '')) {
+      const legacy = await supabase
+        .from('project_status_updates')
+        .select('id, project_id, author_id, body, created_at')
+        .eq('project_id', projectId)
+        .order('created_at', { ascending: false });
+      if (legacy.error) {
+        throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load project status updates.', 500);
+      }
+      const rows = legacy.data ?? [];
+      if (rows.length === 0) return [];
+      const authorIds = [...new Set(rows.map((row) => row.author_id as string))];
+      const { data: employees } = await supabase.from('employees').select('id, full_name').in('id', authorIds);
+      const names = new Map((employees ?? []).map((row) => [row.id as string, row.full_name as string]));
+      return rows.map((row) => ({
+        id: row.id as string,
+        projectId: row.project_id as string,
+        authorId: row.author_id as string,
+        authorName: names.get(row.author_id as string) ?? 'Lead',
+        body: row.body as string,
+        topic: null,
+        createdAt: row.created_at as string,
+      }));
+    }
     throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load project status updates.', 500);
   }
   const rows = data ?? [];
@@ -76,6 +113,7 @@ export async function listProjectStatusUpdates(
     authorId: row.author_id as string,
     authorName: names.get(row.author_id as string) ?? 'Lead',
     body: row.body as string,
+    topic: normalizeTopic((row as { topic?: string | null }).topic),
     createdAt: row.created_at as string,
   }));
 }
@@ -126,7 +164,7 @@ export function createProjectUpdatesService(supabase: SupabaseClient) {
     async create(
       actor: RequestUser,
       projectId: string,
-      input: { body: string },
+      input: { body: string; topic?: string | null },
       meta: { ipAddress?: string | null; userAgent?: string | null },
     ) {
       const project = await loadProjectRow(supabase, projectId);
@@ -156,17 +194,40 @@ export function createProjectUpdatesService(supabase: SupabaseClient) {
           400,
         );
       }
+      const topic = normalizeTopic(input.topic);
+      if (input.topic && !topic) {
+        throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Choose a valid update topic.', 400);
+      }
+
+      const insertPayload: Record<string, unknown> = {
+        project_id: projectId,
+        author_id: actor.employeeId,
+        body,
+      };
+      if (topic) insertPayload.topic = topic;
 
       const { data, error } = await supabase
         .from('project_status_updates')
-        .insert({
-          project_id: projectId,
-          author_id: actor.employeeId,
-          body,
-        })
-        .select('id, project_id, author_id, body, created_at')
+        .insert(insertPayload)
+        .select('id, project_id, author_id, body, topic, created_at')
         .single();
-      if (error || !data) {
+
+      let saved = data;
+      if (error && /topic/i.test(error.message ?? '')) {
+        const legacy = await supabase
+          .from('project_status_updates')
+          .insert({
+            project_id: projectId,
+            author_id: actor.employeeId,
+            body,
+          })
+          .select('id, project_id, author_id, body, created_at')
+          .single();
+        if (legacy.error || !legacy.data) {
+          throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to save the status update.', 500);
+        }
+        saved = { ...legacy.data, topic: null };
+      } else if (error || !data) {
         throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to save the status update.', 500);
       }
 
@@ -175,7 +236,7 @@ export function createProjectUpdatesService(supabase: SupabaseClient) {
         action: 'project.status_update',
         entityType: 'project',
         entityId: projectId,
-        newValues: { updateId: data.id, bodyLength: body.length },
+        newValues: { updateId: saved!.id, bodyLength: body.length, topic },
         ...meta,
       });
 
@@ -188,12 +249,13 @@ export function createProjectUpdatesService(supabase: SupabaseClient) {
       });
 
       return {
-        id: data.id as string,
-        projectId: data.project_id as string,
-        authorId: data.author_id as string,
+        id: saved!.id as string,
+        projectId: saved!.project_id as string,
+        authorId: saved!.author_id as string,
         authorName: actor.fullName || 'Lead',
-        body: data.body as string,
-        createdAt: data.created_at as string,
+        body: saved!.body as string,
+        topic: normalizeTopic((saved as { topic?: string | null }).topic) ?? topic,
+        createdAt: saved!.created_at as string,
       } satisfies ProjectStatusUpdate;
     },
   };

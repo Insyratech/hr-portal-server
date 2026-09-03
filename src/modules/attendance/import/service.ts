@@ -18,6 +18,7 @@ import { buildEmployeeLookup, matchEmployee } from './employee-match';
 import { lopFromAction, proposeLop, untouchedFlagCount, type HrAction, type LeaveOverlay } from './lop-proposal';
 import { datesInPeriod, parsePeriod } from './period';
 import { decodeBase64File, gridFromXlsx, bufferForStorage } from './workbook';
+import { listApprovedShiftOverrides } from '../../shift-changes/service';
 import { ATTENDANCE_IMPORT_BUCKET, originalExcelPath } from './storage-path';
 import { isExcelFileName } from './excel-file';
 
@@ -53,6 +54,22 @@ function shiftOnDate(assignments: AssignmentRow[], employeeId: string, iso: stri
     )
     .sort((a, b) => (a.effective_from < b.effective_from ? 1 : -1))[0];
   return current ? firstRel(current.shifts) : null;
+}
+
+function shiftForDay(
+  assignments: AssignmentRow[],
+  shiftById: Map<string, ShiftRow>,
+  overrides: { employeeId: string; startDate: string; endDate: string; shiftId: string }[],
+  employeeId: string,
+  iso: string,
+): ShiftRow | null {
+  const overrideId = overrides.find(
+    (row) => row.employeeId === employeeId && row.startDate <= iso && row.endDate >= iso,
+  )?.shiftId;
+  if (overrideId) {
+    return shiftById.get(overrideId) ?? null;
+  }
+  return shiftOnDate(assignments, employeeId, iso);
 }
 
 function requireManage(actor: RequestUser): void {
@@ -318,12 +335,17 @@ export function createAttendanceImportService(supabase: SupabaseClient) {
         .from('shift_assignments')
         .select('employee_id, effective_from, effective_to, shifts (*)');
       const assignments = (assignmentRows ?? []) as AssignmentRow[];
+      const overrides = await listApprovedShiftOverrides(supabase, start, end);
+      const { data: allShifts } = await supabase.from('shifts').select('*');
+      const shiftById = new Map(
+        ((allShifts ?? []) as ShiftRow[]).map((row) => [row.id, row]),
+      );
 
       const reviewInserts: Record<string, unknown>[] = [];
       for (const emp of employeeList) {
         if (!employeesInFile.has(emp.id)) continue;
         for (const iso of dates) {
-          const shift = shiftOnDate(assignments, emp.id, iso);
+          const shift = shiftForDay(assignments, shiftById, overrides, emp.id, iso);
           const punch = punches.get(`${emp.id}:${iso}`);
           const leave = leaveOnDate(leaves ?? [], emp.id, iso);
           const permission = approvedPermission(permissions ?? [], emp.id, iso);
@@ -465,11 +487,16 @@ export function createAttendanceImportService(supabase: SupabaseClient) {
         .from('shift_assignments')
         .select('employee_id, effective_from, effective_to, shifts (*)');
       const assignments = (assignmentRows ?? []) as AssignmentRow[];
+      const periodKey = bundle.import.period as string;
+      const periodBounds = parsePeriod(periodKey);
+      const overrides = await listApprovedShiftOverrides(supabase, periodBounds.start, periodBounds.end);
+      const { data: allShifts } = await supabase.from('shifts').select('*');
+      const shiftById = new Map(((allShifts ?? []) as ShiftRow[]).map((row) => [row.id, row]));
 
       for (const row of reviews ?? []) {
         const employeeId = row.employee_id as string;
         const attendanceDate = row.attendance_date as string;
-        const shift = shiftOnDate(assignments, employeeId, attendanceDate);
+        const shift = shiftForDay(assignments, shiftById, overrides, employeeId, attendanceDate);
         const payload = {
           employee_id: employeeId,
           attendance_date: attendanceDate,

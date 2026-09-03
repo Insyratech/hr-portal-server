@@ -25,4 +25,9 @@ describe('shift assignment utils', () => {
     );
     expect(closes).toEqual([{ id: 'a', effectiveTo: '2026-08-26' }]);
   });
+
+  it('closes other open rows even when dates match if keepId is omitted', () => {
+    const closes = rowsToClose([{ id: 'stale', effective_from: '2026-09-03' }], '2026-09-03');
+    expect(closes).toEqual([{ id: 'stale', effectiveTo: '2026-09-03' }]);
+  });
 });

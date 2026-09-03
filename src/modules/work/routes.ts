@@ -325,6 +325,20 @@ export async function registerWorkRoutes(app: FastifyInstance): Promise<void> {
   );
 
   app.get(
+    '/api/v1/work/lead/daily-work',
+    {
+      preHandler: [
+        requirePermission(PERMISSIONS.WORK_OWN, PERMISSIONS.WORK_VIEW, PERMISSIONS.PROJECTS_MANAGE),
+      ],
+    },
+    async (request) => {
+      if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
+      const query = request.query as { date?: string; from?: string; to?: string; projectId?: string };
+      return ok(await createLeadDeskService(requireSupabase(app.supabase)).listLeadDailyWork(request.user, query));
+    },
+  );
+
+  app.get(
     '/api/v1/work/projects/:id/updates',
     {
       preHandler: [
@@ -349,13 +363,22 @@ export async function registerWorkRoutes(app: FastifyInstance): Promise<void> {
         params: Type.Object({ id: Type.String({ minLength: 1 }) }),
         body: Type.Object({
           body: Type.String({ minLength: 1, maxLength: 2000 }),
+          topic: Type.Optional(
+            Type.Union([
+              Type.Literal('PROGRESS'),
+              Type.Literal('RISK'),
+              Type.Literal('BLOCKER'),
+              Type.Literal('NEXT_STEPS'),
+              Type.Literal('OTHER'),
+            ]),
+          ),
         }),
       },
     },
     async (request) => {
       if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
       const { id } = request.params as { id: string };
-      const body = request.body as { body: string };
+      const body = request.body as { body: string; topic?: string };
       return ok(
         await createProjectUpdatesService(requireSupabase(app.supabase)).create(
           request.user,

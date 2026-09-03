@@ -112,6 +112,19 @@ export function pathForNotificationPush(input: NotificationPathInput): string {
     return id ? `/permission?permissionId=${encodeURIComponent(id)}` : '/permission';
   }
 
+  if (referenceType === 'shift_change_request') {
+    const leadRequest = /project lead approval/i.test(title) || /project-lead approval/i.test(message);
+    if (leadRequest && id) {
+      return `/shift-change/lead/${encodeURIComponent(id)}`;
+    }
+    if (hrManager) {
+      return id ? `/hr/shift-changes?id=${encodeURIComponent(id)}` : '/hr/shift-changes';
+    }
+    if (gm) return '/gm/shift-changes';
+    if (cso) return '/cso/shift-changes';
+    return '/shift-change';
+  }
+
   if (
     referenceType === 'daily_work_day' ||
     referenceType === 'weekly_plan' ||

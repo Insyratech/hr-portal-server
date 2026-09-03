@@ -16,6 +16,7 @@ import { registerWebPushRoutes } from './modules/web-push/routes';
 import { registerOrganizationRoutes } from './modules/organization/routes';
 import { registerPolicyRoutes } from './modules/policies/routes';
 import { registerWorkPermissionRoutes } from './modules/work-permissions/routes';
+import { registerShiftChangeRoutes } from './modules/shift-changes/routes';
 import { registerWorkRoutes } from './modules/work/routes';
 import { registerPayrollRoutes } from './modules/payroll/routes';
 import { registerReportRoutes } from './modules/reports/routes';
@@ -89,6 +90,7 @@ export async function buildApp(env: Env): Promise<FastifyInstance> {
   await registerOrganizationRoutes(app);
   await registerLeaveRoutes(app);
   await registerWorkPermissionRoutes(app);
+  await registerShiftChangeRoutes(app);
   await registerWorkRoutes(app);
   await registerAttendanceRoutes(app);
   await registerGrievanceRoutes(app);
