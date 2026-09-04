@@ -10,6 +10,7 @@ import { createWorkBoardService } from './admin-board';
 import { createWorkAnalyticsService } from './analytics';
 import { createDailyWorkService } from './daily';
 import { createLeadDeskService } from './lead-desk';
+import { createLeadPermissionsService } from './lead-permissions';
 import { createWorkOverviewService } from './overview';
 import { createProjectUpdatesService } from './project-updates';
 import { createWorkService } from './service';
@@ -335,6 +336,19 @@ export async function registerWorkRoutes(app: FastifyInstance): Promise<void> {
       if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
       const query = request.query as { date?: string; from?: string; to?: string; projectId?: string };
       return ok(await createLeadDeskService(requireSupabase(app.supabase)).listLeadDailyWork(request.user, query));
+    },
+  );
+
+  app.get(
+    '/api/v1/work/lead/permissions',
+    {
+      preHandler: [
+        requirePermission(PERMISSIONS.WORK_OWN, PERMISSIONS.WORK_VIEW, PERMISSIONS.PROJECTS_MANAGE),
+      ],
+    },
+    async (request) => {
+      if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
+      return ok(await createLeadPermissionsService(requireSupabase(app.supabase)).board(request.user));
     },
   );
 
