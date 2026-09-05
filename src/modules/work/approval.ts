@@ -129,10 +129,11 @@ export function weeklyPptGlanceStatus(input: {
   hasUpdate: boolean;
   late: boolean;
   todayIso: string;
-  saturdayIso: string;
+  /** Deadline calendar day (Sunday of the PPT week). */
+  deadlineIso: string;
 }): WeeklyPptGlanceStatus {
   if (input.hasUpdate) return input.late ? 'late' : 'on_time';
-  if (input.todayIso > input.saturdayIso) return 'missing';
+  if (input.todayIso > input.deadlineIso) return 'missing';
   return 'pending';
 }
 

@@ -28,20 +28,26 @@ export function pptWeekBounds(isoDate: string): { start: string; end: string } {
   };
 }
 
+/** @deprecated Prefer sundayOfPptWeek — PPT deadline day is Sunday. */
 export function saturdayOfPptWeek(weekStart: string): string {
   return formatIsoDate(addUtcDays(parseIsoDate(weekStart), 5));
 }
 
-/** Late when submitted at or after Saturday 18:00 IST. */
+/** Sunday of the Mon–Sun PPT week (= week end). Deadline day for weekly wrap PPT. */
+export function sundayOfPptWeek(weekStart: string): string {
+  return formatIsoDate(addUtcDays(parseIsoDate(weekStart), 6));
+}
+
+/** Late when submitted at or after Sunday 18:00 IST (deadline day evening). */
 export function isWeeklyPptLate(now: Date, weekStart: string): boolean {
-  const saturday = saturdayOfPptWeek(weekStart);
+  const sunday = sundayOfPptWeek(weekStart);
   const clock = zonedClock(now, WORK_TIMEZONE);
-  if (clock.isoDate > saturday) return true;
-  if (clock.isoDate < saturday) return false;
+  if (clock.isoDate > sunday) return true;
+  if (clock.isoDate < sunday) return false;
   return clock.hour >= 18;
 }
 
-/** Saturday 18:00 IST gate used by reminder jobs. */
+/** Sunday 18:00 IST gate used by reminder jobs. */
 export function isPastWeeklyPptReminderGate(now: Date, weekStart: string): boolean {
   return isWeeklyPptLate(now, weekStart);
 }

@@ -94,37 +94,45 @@ describe('work priority approval helpers', () => {
     ).toBe('needs_resubmit');
   });
 
-  it('labels weekly PPT glance from update + Saturday deadline', () => {
+  it('labels weekly PPT glance from update + Sunday deadline', () => {
     expect(
       weeklyPptGlanceStatus({
         hasUpdate: true,
         late: false,
         todayIso: '2026-08-26',
-        saturdayIso: '2026-08-29',
+        deadlineIso: '2026-08-30',
       }),
     ).toBe('on_time');
     expect(
       weeklyPptGlanceStatus({
         hasUpdate: true,
         late: true,
-        todayIso: '2026-08-30',
-        saturdayIso: '2026-08-29',
+        todayIso: '2026-08-31',
+        deadlineIso: '2026-08-30',
       }),
     ).toBe('late');
     expect(
       weeklyPptGlanceStatus({
         hasUpdate: false,
         late: false,
-        todayIso: '2026-08-30',
-        saturdayIso: '2026-08-29',
+        todayIso: '2026-08-31',
+        deadlineIso: '2026-08-30',
       }),
     ).toBe('missing');
     expect(
       weeklyPptGlanceStatus({
         hasUpdate: false,
         late: false,
+        todayIso: '2026-08-30',
+        deadlineIso: '2026-08-30',
+      }),
+    ).toBe('pending');
+    expect(
+      weeklyPptGlanceStatus({
+        hasUpdate: false,
+        late: false,
         todayIso: '2026-08-26',
-        saturdayIso: '2026-08-29',
+        deadlineIso: '2026-08-30',
       }),
     ).toBe('pending');
   });

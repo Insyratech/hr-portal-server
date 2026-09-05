@@ -16,7 +16,7 @@ import {
   zonedClock,
 } from './ist-clock';
 import { ensureWeeklyPlan } from './plans';
-import { isPastWeeklyPptReminderGate, pptWeekBounds, saturdayOfPptWeek } from './ppt-week';
+import { isPastWeeklyPptReminderGate, pptWeekBounds, sundayOfPptWeek } from './ppt-week';
 import { matchingReminderSlot } from './retention';
 import type { DayContext } from './types';
 import { weekBounds } from './week-bounds';
@@ -432,7 +432,7 @@ export type WeeklyPptReminderResult = {
   hour: number;
   timeZone: string;
   weekStart: string;
-  saturday: string;
+  deadlineDate: string;
   slot: 'primary' | 'second' | null;
   skipped: boolean;
   skipReason: string | null;
@@ -447,19 +447,19 @@ export async function runWeeklyPptReminders(
   const hours = await loadReminderHours(supabase);
   const slot = matchingReminderSlot(clock.hour, hours.primary, hours.second);
   const week = pptWeekBounds(clock.isoDate);
-  const saturday = saturdayOfPptWeek(week.start);
+  const deadlineDate = sundayOfPptWeek(week.start);
   const base = {
     date: clock.isoDate,
     hour: clock.hour,
     timeZone: WORK_TIMEZONE,
     weekStart: week.start,
-    saturday,
+    deadlineDate,
     slot,
     sent: 0,
   };
 
-  if (clock.isoDate !== saturday) {
-    return { ...base, skipped: true, skipReason: 'not_saturday' };
+  if (clock.isoDate !== deadlineDate) {
+    return { ...base, skipped: true, skipReason: 'not_deadline_day' };
   }
   if (!slot) {
     return { ...base, skipped: true, skipReason: 'outside_ist_hour' };
@@ -482,25 +482,25 @@ export async function runWeeklyPptReminders(
       .eq('week_start', week.start)
       .maybeSingle();
     if (existing?.id) continue;
-    if (!(await claimReminder(supabase, person.id, saturday, kind))) continue;
+    if (!(await claimReminder(supabase, person.id, deadlineDate, kind))) continue;
     const isSecond = kind === 'weekly_ppt_second';
     await notifyStaff(supabase, person, {
       type: isSecond ? 'work_weekly_ppt_second' : 'work_weekly_ppt',
       title: isSecond ? 'Reminder: upload this week’s PPT' : 'Upload this week’s work update PPT',
-      message: `Please upload your weekly wrap PPT for ${week.start} – ${week.end} (deadline Saturday 23:59 IST).`,
+      message: `Please upload your weekly wrap PPT for ${week.start} – ${week.end} (deadline Sunday 23:59 IST).`,
       referenceType: 'weekly_work_update',
       referenceId: week.start,
       eyebrow: 'Weekly update',
       paragraphs: [
         'Drag and drop your .ppt / .pptx (max 1 MB) on Weekly update.',
-        'Submit by Saturday 23:59 IST. Uploads after 6:00 pm IST are marked late.',
+        'Submit by Sunday 23:59 IST. Uploads after 6:00 pm IST on Sunday are marked late.',
         isSecond
           ? 'This is the 10:00 pm IST follow-up. You will not get another PPT reminder this week once you upload.'
-          : 'Reminders go out at 8:00 pm and 10:00 pm IST on Saturday only if the deck is still missing.',
+          : 'Reminders go out at 8:00 pm and 10:00 pm IST on Sunday only if the deck is still missing.',
       ],
       details: [
         { label: 'Week', value: `${week.start} – ${week.end}` },
-        { label: 'Deadline', value: `Saturday ${saturday} 23:59 IST` },
+        { label: 'Deadline', value: `Sunday ${deadlineDate} 23:59 IST` },
       ],
       ctaLabel: 'Upload weekly PPT',
       ctaHref: portalUrl('/work/weekly-update'),
@@ -531,7 +531,7 @@ export async function runWeeklyPptCsoDigest(
 ): Promise<WeeklyPptCsoDigestResult> {
   const clock = zonedClock(now);
   const week = pptWeekBounds(clock.isoDate);
-  const saturday = saturdayOfPptWeek(week.start);
+  const deadlineDate = sundayOfPptWeek(week.start);
   const base = {
     date: clock.isoDate,
     hour: clock.hour,
@@ -544,8 +544,8 @@ export async function runWeeklyPptCsoDigest(
     sent: 0,
   };
 
-  if (clock.isoDate !== saturday) {
-    return { ...base, skipped: true, skipReason: 'not_saturday' };
+  if (clock.isoDate !== deadlineDate) {
+    return { ...base, skipped: true, skipReason: 'not_deadline_day' };
   }
   if (clock.hour !== DEFAULT_SECOND_DAILY_REMINDER_HOUR) {
     return { ...base, skipped: true, skipReason: 'outside_digest_hour' };
@@ -580,10 +580,10 @@ export async function runWeeklyPptCsoDigest(
   const csoStaff = await listStaffByRole(supabase, ROLE_CODES.CSO);
   let sent = 0;
   for (const cso of csoStaff) {
-    if (!(await claimReminder(supabase, cso.id, saturday, 'weekly_ppt_cso_digest'))) continue;
+    if (!(await claimReminder(supabase, cso.id, deadlineDate, 'weekly_ppt_cso_digest'))) continue;
     await notifyStaff(supabase, cso, {
       type: 'work',
-      title: 'Saturday weekly PPT digest',
+      title: 'Sunday weekly PPT digest',
       message: `This week: ${onTime} on time, ${late} late, ${missing} missing (of ${loop.length}).`,
       referenceType: 'weekly_ppt_desk',
       referenceId: week.start,

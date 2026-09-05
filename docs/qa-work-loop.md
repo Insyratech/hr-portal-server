@@ -25,7 +25,7 @@ With `x-cron-secret`, call (or wait for cron):
 - [ ] **Leave Monday:** employee on approved leave that Monday is **not** mailed; they can still submit later in the week (no Monday-only lock; no 6pm cutoff).
 - [ ] Submit with **no work goal** (skill only) is rejected; ≥1 work goal is required.
 - [ ] `POST /api/v1/jobs/work/daily-reminders` at **20 / 22 IST** — daily only if priorities approved; skip hats excluded.
-- [ ] Saturday after **18 IST**: PPT reminders for missing decks; at **22 IST**: CSO digest only.
+- [ ] Sunday after **18 IST**: PPT reminders for missing decks; at **22 IST**: CSO digest only.
 
 See `docs/cron-ist.md`.
 

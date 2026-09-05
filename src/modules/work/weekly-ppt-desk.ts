@@ -10,7 +10,7 @@ import { listActiveStaff, listStaffByRole, loadStaffById, notifyStaff } from '..
 import { skipsWorkApprovalLoop } from './approval';
 import { loadEmployeeRoleMap } from './employee-roles';
 import { formatIsoDateInZone } from './ist-clock';
-import { WEEKLY_PPT_BUCKET, pptWeekBounds, saturdayOfPptWeek } from './ppt-week';
+import { WEEKLY_PPT_BUCKET, pptWeekBounds, sundayOfPptWeek } from './ppt-week';
 
 type RequestMeta = { ipAddress?: string | null; userAgent?: string | null };
 
@@ -72,7 +72,7 @@ export function createWeeklyPptDeskService(supabase: SupabaseClient) {
       assertCsoDesk(actor);
       const today = formatIsoDateInZone(new Date());
       const week = weekStart && /^\d{4}-\d{2}-\d{2}$/.test(weekStart) ? pptWeekBounds(weekStart) : pptWeekBounds(today);
-      const saturday = saturdayOfPptWeek(week.start);
+      const deadlineDate = sundayOfPptWeek(week.start);
       const staff = await listActiveStaff(supabase);
       const rolesByEmployee = await loadEmployeeRoleMap(supabase);
       const loop = staff.filter((person) => !skipsWorkApprovalLoop(rolesByEmployee.get(person.id) ?? []));
@@ -89,7 +89,7 @@ export function createWeeklyPptDeskService(supabase: SupabaseClient) {
         let status: 'on_time' | 'late' | 'missing' | 'pending';
         if (row) {
           status = row.late ? 'late' : 'on_time';
-        } else if (today > saturday) {
+        } else if (today > deadlineDate) {
           status = 'missing';
         } else {
           status = 'pending';
@@ -122,9 +122,9 @@ export function createWeeklyPptDeskService(supabase: SupabaseClient) {
         week: {
           start: week.start,
           end: week.end,
-          saturday,
-          deadlineLabel: `Saturday ${saturday} 23:59 IST`,
-          lateAfterLabel: `Saturday ${saturday} 18:00 IST`,
+          deadlineDate,
+          deadlineLabel: `Sunday ${deadlineDate} 23:59 IST`,
+          lateAfterLabel: `Sunday ${deadlineDate} 18:00 IST`,
         },
         counts: {
           expected: people.length,

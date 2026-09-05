@@ -16,7 +16,7 @@ import {
 } from './approval';
 import { loadEmployeeRoleMap } from './employee-roles';
 import { formatIsoDateInZone } from './ist-clock';
-import { pptWeekBounds, saturdayOfPptWeek } from './ppt-week';
+import { pptWeekBounds, sundayOfPptWeek } from './ppt-week';
 import { dayContext } from './day-context';
 import { completionPct } from './overview';
 import { tallyToday } from './tally';
@@ -177,7 +177,7 @@ export function createWorkBoardService(supabase: SupabaseClient) {
       }
 
       const pptWeek = pptWeekBounds(date);
-      const pptSaturday = saturdayOfPptWeek(pptWeek.start);
+      const pptDeadline = sundayOfPptWeek(pptWeek.start);
       const todayIso = formatIsoDateInZone(new Date());
       const { data: pptRows } = await supabase
         .from('weekly_work_updates')
@@ -228,7 +228,7 @@ export function createWorkBoardService(supabase: SupabaseClient) {
           hasUpdate: Boolean(pptRow),
           late: pptRow?.late ?? false,
           todayIso,
-          saturdayIso: pptSaturday,
+          deadlineIso: pptDeadline,
         });
         return {
           id: person.id,

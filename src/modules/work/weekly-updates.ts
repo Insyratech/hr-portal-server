@@ -16,7 +16,7 @@ import {
   isWeeklyPptLate,
   pptExtension,
   pptWeekBounds,
-  saturdayOfPptWeek,
+  sundayOfPptWeek,
 } from './ppt-week';
 
 type RequestMeta = { ipAddress?: string | null; userAgent?: string | null };
@@ -91,7 +91,7 @@ export function createWeeklyUpdatesService(supabase: SupabaseClient) {
       assertWorkLoop(actor);
       const today = formatIsoDateInZone(new Date());
       const week = pptWeekBounds(today);
-      const saturday = saturdayOfPptWeek(week.start);
+      const deadlineDate = sundayOfPptWeek(week.start);
       const current = await loadCurrent(actor.employeeId, week.start);
       const { data: historyRows, error } = await supabase
         .from('weekly_work_updates')
@@ -112,12 +112,12 @@ export function createWeeklyUpdatesService(supabase: SupabaseClient) {
       for (let i = 0; i < 8; i += 1) {
         const ref = formatIsoDate(addUtcDays(parseIsoDate(week.start), -7 * i));
         const bounds = pptWeekBounds(ref);
-        const sat = saturdayOfPptWeek(bounds.start);
+        const deadline = sundayOfPptWeek(bounds.start);
         const row = history.find((item) => item.weekStart === bounds.start) ?? null;
         let status: 'on_time' | 'late' | 'missing' | 'pending';
         if (row) {
           status = row.late ? 'late' : 'on_time';
-        } else if (today > sat) {
+        } else if (today > deadline) {
           status = 'missing';
         } else {
           status = 'pending';
@@ -138,9 +138,9 @@ export function createWeeklyUpdatesService(supabase: SupabaseClient) {
         week: {
           start: week.start,
           end: week.end,
-          saturday,
-          deadlineLabel: `Saturday ${saturday} 23:59 IST`,
-          lateAfterLabel: `Saturday ${saturday} 18:00 IST`,
+          deadlineDate,
+          deadlineLabel: `Sunday ${deadlineDate} 23:59 IST`,
+          lateAfterLabel: `Sunday ${deadlineDate} 18:00 IST`,
         },
         current: current ? mapUpdate(current) : null,
         uploadsRemaining: current ? Math.max(0, WEEKLY_PPT_MAX_UPLOADS - current.upload_count) : WEEKLY_PPT_MAX_UPLOADS,

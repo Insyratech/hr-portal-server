@@ -7,8 +7,8 @@ All work reminder / digests use **Asia/Kolkata (IST)**. Cron runners should call
 | Method | Path | When it acts (IST) | What it does |
 |--------|------|--------------------|--------------|
 | `POST` | `/api/v1/jobs/work/monday-priorities` | **Monday 16:00** | Remind employees (work loop only) to set / submit weekly priorities. **Reminder only** — there is no 6pm (or other) submit cutoff. |
-| `POST` | `/api/v1/jobs/work/daily-reminders` | **Daily 20:00 & 22:00** (org-configurable hours) | Daily update reminders if priorities are fully approved; on **Saturday** also employee PPT reminders after 18:00 and **CSO PPT digest at 22:00** |
-| `POST` | `/api/v1/jobs/work/weekly-ppt-reminders` | Same Saturday gates as above | PPT employee reminders + CSO digest only (alias for PPT slice) |
+| `POST` | `/api/v1/jobs/work/daily-reminders` | **Daily 20:00 & 22:00** (org-configurable hours) | Daily update reminders if priorities are fully approved; on **Sunday** also employee PPT reminders after 18:00 and **CSO PPT digest at 22:00** |
+| `POST` | `/api/v1/jobs/work/weekly-ppt-reminders` | Same Sunday gates as above | PPT employee reminders + CSO digest only (alias for PPT slice) |
 | `POST` | `/api/v1/jobs/reminders/daily` | Morning-style bundle | Leave daily reminders + Monday priorities (if Mon 16) + close missing work days |
 | `POST` | `/api/v1/jobs/work/close-days` | After midnight IST (ops choice) | Close previous calendar day’s missing daily updates |
 | `POST` | `/api/v1/jobs/work/retention-purge` | Weekly / nightly (ops) | Purge work data past retention |
@@ -36,12 +36,12 @@ UTC equivalents shift with DST elsewhere — prefer an IST-aware scheduler, or c
 |-----|-------------------------|
 | Mon 16:00 | Mon 10:30 |
 | Daily 20:00 | 14:30 |
-| Daily / Sat 22:00 | 16:30 |
-| Sat PPT late gate 18:00 | 12:30 |
+| Daily / Sun 22:00 | 16:30 |
+| Sun PPT late gate 18:00 | 12:30 |
 
 ## Who is in the loop
 
-Reminders and Team week / PPT desks **exclude** Super Admin, HR Manager, General Manager, and Finance Manager. **CSO still participates** as an employee (personal priorities, daily, PPT) and owns the managerial PPT desk + Saturday digest.
+Reminders and Team week / PPT desks **exclude** Super Admin, HR Manager, General Manager, and Finance Manager. **CSO still participates** as an employee (personal priorities, daily, PPT) and owns the managerial PPT desk + Sunday digest.
 
 ## Source of truth
 
