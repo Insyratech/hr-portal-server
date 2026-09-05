@@ -17,6 +17,8 @@ import { createWorkService } from './service';
 import { createWorkSettingsService } from './settings';
 import { createWeeklyUpdatesService } from './weekly-updates';
 import { createWeeklyPptDeskService } from './weekly-ppt-desk';
+import { createJcPptsService } from './jc-ppts';
+import { createJcPptDeskService } from './jc-ppt-desk';
 import { createProjectGoalsMilestonesService } from './goals-milestones';
 
 function metaOf(request: { ip: string; headers: { 'user-agent'?: string } }) {
@@ -751,6 +753,25 @@ export async function registerWorkRoutes(app: FastifyInstance): Promise<void> {
   );
 
   app.post(
+    '/api/v1/work/weekly-updates/shares/:shareId/gm-delete-all',
+    {
+      preHandler: [requirePermission(PERMISSIONS.WORK_VIEW)],
+      schema: { params: Type.Object({ shareId: Type.String({ minLength: 1 }) }) },
+    },
+    async (request) => {
+      if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
+      const { shareId } = request.params as { shareId: string };
+      return ok(
+        await createWeeklyPptDeskService(requireSupabase(app.supabase)).gmDeleteAllInShare(
+          request.user,
+          shareId,
+          metaOf(request),
+        ),
+      );
+    },
+  );
+
+  app.post(
     '/api/v1/work/weekly-updates/share-to-gm',
     {
       preHandler: [requirePermission(PERMISSIONS.WORK_VIEW, PERMISSIONS.WORK_ASSIGN)],
@@ -1159,6 +1180,254 @@ export async function registerWorkRoutes(app: FastifyInstance): Promise<void> {
           request.user,
           id,
           query.shareId,
+        ),
+      );
+    },
+  );
+
+  app.get('/api/v1/work/jc', { preHandler: [requirePermission(PERMISSIONS.WORK_OWN)] }, async (request) => {
+    if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
+    return ok(await createJcPptsService(requireSupabase(app.supabase)).getBoard(request.user));
+  });
+
+  app.post(
+    '/api/v1/work/jc/upload',
+    {
+      preHandler: [requirePermission(PERMISSIONS.WORK_OWN)],
+      schema: {
+        body: Type.Object({
+          fileName: Type.String({ minLength: 1 }),
+          contentType: Type.String(),
+          sizeBytes: Type.Integer({ minimum: 1 }),
+        }),
+      },
+    },
+    async (request) => {
+      if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
+      const body = request.body as { fileName: string; contentType: string; sizeBytes: number };
+      return ok(
+        await createJcPptsService(requireSupabase(app.supabase)).createUploadSession(
+          request.user,
+          body,
+          metaOf(request),
+        ),
+      );
+    },
+  );
+
+  app.get(
+    '/api/v1/work/jc/admin',
+    { preHandler: [requirePermission(PERMISSIONS.WORK_VIEW, PERMISSIONS.WORK_ASSIGN)] },
+    async (request) => {
+      if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
+      return ok(await createJcPptDeskService(requireSupabase(app.supabase)).getCsoBoard(request.user));
+    },
+  );
+
+  app.get(
+    '/api/v1/work/jc/gm',
+    { preHandler: [requirePermission(PERMISSIONS.WORK_VIEW)] },
+    async (request) => {
+      if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
+      return ok(await createJcPptDeskService(requireSupabase(app.supabase)).getGmBoard(request.user));
+    },
+  );
+
+  app.post(
+    '/api/v1/work/jc/gm-delete-all',
+    { preHandler: [requirePermission(PERMISSIONS.WORK_VIEW)] },
+    async (request) => {
+      if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
+      return ok(
+        await createJcPptDeskService(requireSupabase(app.supabase)).gmDeleteAll(
+          request.user,
+          metaOf(request),
+        ),
+      );
+    },
+  );
+
+  app.post(
+    '/api/v1/work/jc/:id/transfer-to-gm',
+    {
+      preHandler: [requirePermission(PERMISSIONS.WORK_VIEW, PERMISSIONS.WORK_ASSIGN)],
+      schema: { params: Type.Object({ id: Type.String({ minLength: 1 }) }) },
+    },
+    async (request) => {
+      if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
+      const { id } = request.params as { id: string };
+      return ok(
+        await createJcPptDeskService(requireSupabase(app.supabase)).transferToGm(
+          request.user,
+          id,
+          metaOf(request),
+        ),
+      );
+    },
+  );
+
+  app.get(
+    '/api/v1/work/jc/:id/download',
+    {
+      preHandler: [requirePermission(PERMISSIONS.WORK_OWN, PERMISSIONS.WORK_VIEW)],
+      schema: { params: Type.Object({ id: Type.String({ minLength: 1 }) }) },
+    },
+    async (request) => {
+      if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
+      const { id } = request.params as { id: string };
+      // Employee own download (preview). CSO preview uses /preview.
+      return ok(await createJcPptsService(requireSupabase(app.supabase)).getDownloadUrl(request.user, id));
+    },
+  );
+
+  app.get(
+    '/api/v1/work/jc/:id/preview',
+    {
+      preHandler: [requirePermission(PERMISSIONS.WORK_VIEW, PERMISSIONS.WORK_ASSIGN)],
+      schema: { params: Type.Object({ id: Type.String({ minLength: 1 }) }) },
+    },
+    async (request) => {
+      if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
+      const { id } = request.params as { id: string };
+      return ok(await createJcPptDeskService(requireSupabase(app.supabase)).getPreviewDownload(request.user, id));
+    },
+  );
+
+  app.post(
+    '/api/v1/work/jc/:id/gm-download',
+    {
+      preHandler: [requirePermission(PERMISSIONS.WORK_VIEW)],
+      schema: { params: Type.Object({ id: Type.String({ minLength: 1 }) }) },
+    },
+    async (request) => {
+      if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
+      const { id } = request.params as { id: string };
+      return ok(
+        await createJcPptDeskService(requireSupabase(app.supabase)).gmDownload(
+          request.user,
+          id,
+          metaOf(request),
+        ),
+      );
+    },
+  );
+
+  app.post(
+    '/api/v1/work/jc/:id/gm-email',
+    {
+      preHandler: [requirePermission(PERMISSIONS.WORK_VIEW)],
+      schema: {
+        params: Type.Object({ id: Type.String({ minLength: 1 }) }),
+        body: Type.Object({
+          recipientEmail: Type.String({ minLength: 3, maxLength: 320 }),
+        }),
+      },
+    },
+    async (request) => {
+      if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
+      const { id } = request.params as { id: string };
+      const body = request.body as { recipientEmail: string };
+      return ok(
+        await createJcPptDeskService(requireSupabase(app.supabase)).gmEmail(
+          request.user,
+          id,
+          body.recipientEmail,
+          metaOf(request),
+        ),
+      );
+    },
+  );
+
+  app.post(
+    '/api/v1/work/jc/:id/gm-delete',
+    {
+      preHandler: [requirePermission(PERMISSIONS.WORK_VIEW)],
+      schema: { params: Type.Object({ id: Type.String({ minLength: 1 }) }) },
+    },
+    async (request) => {
+      if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
+      const { id } = request.params as { id: string };
+      return ok(
+        await createJcPptDeskService(requireSupabase(app.supabase)).gmDelete(
+          request.user,
+          id,
+          metaOf(request),
+        ),
+      );
+    },
+  );
+
+  app.post(
+    '/api/v1/work/weekly-updates/:id/gm-download',
+    {
+      preHandler: [requirePermission(PERMISSIONS.WORK_VIEW)],
+      schema: {
+        params: Type.Object({ id: Type.String({ minLength: 1 }) }),
+        body: Type.Object({ shareId: Type.String({ minLength: 1 }) }),
+      },
+    },
+    async (request) => {
+      if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
+      const { id } = request.params as { id: string };
+      const body = request.body as { shareId: string };
+      return ok(
+        await createWeeklyPptDeskService(requireSupabase(app.supabase)).gmDownload(
+          request.user,
+          id,
+          body.shareId,
+          metaOf(request),
+        ),
+      );
+    },
+  );
+
+  app.post(
+    '/api/v1/work/weekly-updates/:id/gm-email',
+    {
+      preHandler: [requirePermission(PERMISSIONS.WORK_VIEW)],
+      schema: {
+        params: Type.Object({ id: Type.String({ minLength: 1 }) }),
+        body: Type.Object({
+          shareId: Type.String({ minLength: 1 }),
+          recipientEmail: Type.String({ minLength: 3, maxLength: 320 }),
+        }),
+      },
+    },
+    async (request) => {
+      if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
+      const { id } = request.params as { id: string };
+      const body = request.body as { shareId: string; recipientEmail: string };
+      return ok(
+        await createWeeklyPptDeskService(requireSupabase(app.supabase)).gmEmail(
+          request.user,
+          id,
+          body.shareId,
+          body.recipientEmail,
+          metaOf(request),
+        ),
+      );
+    },
+  );
+
+  app.post(
+    '/api/v1/work/weekly-updates/:id/gm-delete',
+    {
+      preHandler: [requirePermission(PERMISSIONS.WORK_VIEW)],
+      schema: {
+        params: Type.Object({ id: Type.String({ minLength: 1 }) }),
+        body: Type.Object({ shareId: Type.String({ minLength: 1 }) }),
+      },
+    },
+    async (request) => {
+      if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
+      const { id } = request.params as { id: string };
+      const body = request.body as { shareId: string };
+      return ok(
+        await createWeeklyPptDeskService(requireSupabase(app.supabase)).gmDelete(
+          request.user,
+          id,
+          body.shareId,
+          metaOf(request),
         ),
       );
     },

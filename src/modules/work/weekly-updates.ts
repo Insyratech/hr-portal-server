@@ -26,7 +26,7 @@ type UpdateRow = {
   employee_id: string;
   week_start: string;
   week_end: string;
-  storage_path: string;
+  storage_path: string | null;
   original_file_name: string;
   system_file_name: string;
   content_type: string;
@@ -34,6 +34,10 @@ type UpdateRow = {
   upload_count: number;
   submitted_at: string;
   late: boolean;
+  file_removed_at?: string | null;
+  file_removed_by?: string | null;
+  file_removed_reason?: string | null;
+  email_recipient?: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -51,6 +55,10 @@ function mapUpdate(row: UpdateRow) {
     uploadCount: row.upload_count,
     submittedAt: row.submitted_at,
     late: row.late,
+    fileAvailable: Boolean(row.storage_path),
+    fileRemovedAt: row.file_removed_at ?? null,
+    fileRemovedReason: row.file_removed_reason ?? null,
+    emailRecipient: row.email_recipient ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -162,7 +170,7 @@ export function createWeeklyUpdatesService(supabase: SupabaseClient) {
         throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Upload a .ppt or .pptx file only.', 400);
       }
       if (input.sizeBytes <= 0 || input.sizeBytes > WEEKLY_PPT_MAX_BYTES) {
-        throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'File must be 1 MB or smaller.', 400);
+        throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'File must be 15 MB or smaller.', 400);
       }
       const contentType = (input.contentType || '').trim() || 'application/octet-stream';
       if (contentType && !WEEKLY_PPT_MIME.has(contentType)) {
@@ -202,7 +210,9 @@ export function createWeeklyUpdatesService(supabase: SupabaseClient) {
 
       let mapped;
       if (existing) {
-        await supabase.storage.from(WEEKLY_PPT_BUCKET).remove([existing.storage_path]);
+        if (existing.storage_path) {
+          await supabase.storage.from(WEEKLY_PPT_BUCKET).remove([existing.storage_path]);
+        }
         const { data, error } = await supabase
           .from('weekly_work_updates')
           .update({
@@ -214,6 +224,10 @@ export function createWeeklyUpdatesService(supabase: SupabaseClient) {
             upload_count: existing.upload_count + 1,
             submitted_at: new Date().toISOString(),
             late,
+            file_removed_at: null,
+            file_removed_by: null,
+            file_removed_reason: null,
+            email_recipient: null,
           })
           .eq('id', existing.id)
           .select('*')

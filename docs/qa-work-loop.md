@@ -31,23 +31,31 @@ See `docs/cron-ist.md`.
 
 ## 4. PPT replace
 
-1. Employee uploads `.pptx` ≤ 1 MB on **My weekly update**.
-2. Upload again (2nd of 2) → first file replaced; `uploadCount` / late flag correct after Sat 18 IST.
+1. Employee uploads `.pptx` ≤ 15 MB on **My weekly update**.
+2. Upload again (2nd of 2) → first file replaced; `uploadCount` / late flag correct after Sunday 18 IST.
 3. Download from employee page works.
 
 ## 5. Share → GM download
 
 1. CSO **Weekly work updates** → **Share all to General Manager** (needs ≥1 file).
 2. GM gets alert/email → **`/gm/weekly-updates?shareId=…`**.
-3. GM downloads a file; CSO still has full archive + share timeline.
+3. GM downloads / emails / deletes a file → storage file removed; share + audit history remain.
 4. Re-share same week → second timeline row (allowed).
 
-## 6. Deep-links
+## 6. JC PPT flow
+
+1. Employee **Work → JC** uploads `.pptx` ≤ 15 MB.
+2. CSO **Team JC** → Preview → **Transfer to GM**.
+3. GM **Team JC** → Download / Email / Delete (or Download all / Delete all). File removed; audit history kept.
+4. Employee / CSO / GM still see audit history rows after the file is gone.
+
+## 7. Deep-links
 
 - [ ] CSO personal daily/Monday mail → `/work` or `/work/priorities` (not Team week).
 - [ ] CSO digest → `/cso/work/weekly-updates?weekStart=…`.
 - [ ] Team week name → `/cso/work/priorities?employeeId=…`.
 - [ ] Login `?next=/work/priorities` as CSO lands on priorities (not forced to `/cso`).
+- [ ] JC alerts → `/work/jc` (employee), `/cso/work/jc` (CSO), `/gm/jc` (GM).
 
 ## Quick API smoke (optional)
 
@@ -58,4 +66,7 @@ curl -s -H "Authorization: Bearer $CSO_TOKEN" "$API/api/v1/work/weekly-updates/a
 curl -s -X POST -H "Authorization: Bearer $CSO_TOKEN" -H "Content-Type: application/json" \
   -d '{}' "$API/api/v1/work/weekly-updates/share-to-gm"
 curl -s -H "Authorization: Bearer $GM_TOKEN" "$API/api/v1/work/weekly-updates/shares"
+curl -s -H "Authorization: Bearer $EMP_TOKEN" "$API/api/v1/work/jc"
+curl -s -H "Authorization: Bearer $CSO_TOKEN" "$API/api/v1/work/jc/admin"
+curl -s -H "Authorization: Bearer $GM_TOKEN" "$API/api/v1/work/jc/gm"
 ```

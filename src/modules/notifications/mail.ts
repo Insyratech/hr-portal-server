@@ -7,6 +7,7 @@ type MailInput = {
   subject: string;
   text: string;
   html?: string;
+  attachments?: Array<{ name: string; content: string }>;
 };
 
 export type PortalMailInput = PortalMailContent & {
@@ -26,11 +27,11 @@ export function portalLoginUrl(): string {
   return portalUrl('/login');
 }
 
-export async function sendMail(input: MailInput): Promise<void> {
+export async function sendMail(input: MailInput): Promise<{ sent: boolean }> {
   const env = loadEnv();
   const recipients = uniqueEmails(input.to);
   if (env.NODE_ENV === 'test' || !env.BREVO_API_KEY || !env.BREVO_SENDER_EMAIL || recipients.length === 0) {
-    return;
+    return { sent: false };
   }
 
   const response = await fetch('https://api.brevo.com/v3/smtp/email', {
@@ -46,12 +47,25 @@ export async function sendMail(input: MailInput): Promise<void> {
       subject: input.subject,
       textContent: input.text,
       htmlContent: input.html,
+      ...(input.attachments && input.attachments.length > 0
+        ? {
+            attachment: input.attachments.map((file) => ({
+              name: file.name,
+              content: file.content,
+            })),
+          }
+        : {}),
     }),
   });
 
   if (!response.ok) {
     console.error('Brevo mail failed', response.status, await response.text());
+    if (input.attachments && input.attachments.length > 0) {
+      throw new Error('Failed to send email with attachment.');
+    }
+    return { sent: false };
   }
+  return { sent: true };
 }
 
 export async function sendPortalMail(input: PortalMailInput): Promise<void> {

@@ -83,7 +83,7 @@ export function pptExtension(fileName: string): '.ppt' | '.pptx' | null {
   return null;
 }
 
-export const WEEKLY_PPT_MAX_BYTES = 1024 * 1024;
+export const WEEKLY_PPT_MAX_BYTES = 15 * 1024 * 1024;
 export const WEEKLY_PPT_MAX_UPLOADS = 2;
 export const WEEKLY_PPT_BUCKET = 'weekly-work-updates';
 

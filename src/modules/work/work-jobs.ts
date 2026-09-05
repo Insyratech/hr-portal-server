@@ -492,7 +492,7 @@ export async function runWeeklyPptReminders(
       referenceId: week.start,
       eyebrow: 'Weekly update',
       paragraphs: [
-        'Drag and drop your .ppt / .pptx (max 1 MB) on Weekly update.',
+        'Drag and drop your .ppt / .pptx (max 15 MB) on Weekly update.',
         'Submit by Sunday 23:59 IST. Uploads after 6:00 pm IST on Sunday are marked late.',
         isSecond
           ? 'This is the 10:00 pm IST follow-up. You will not get another PPT reminder this week once you upload.'

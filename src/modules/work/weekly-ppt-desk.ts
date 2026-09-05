@@ -5,7 +5,7 @@ import { assertCsoDomainOwner, assertGmDomainOwner, isCsoDomainOwner } from '../
 import { AppError } from '../../shared/errors/app-error';
 import type { RequestUser } from '../../shared/types/request-user';
 import { writeAuditLog } from '../audit/write-audit-log';
-import { portalUrl } from '../notifications/mail';
+import { portalUrl, sendMail } from '../notifications/mail';
 import { listActiveStaff, listStaffByRole, loadStaffById, notifyStaff } from '../notifications/notify-staff';
 import { skipsWorkApprovalLoop } from './approval';
 import { loadEmployeeRoleMap } from './employee-roles';
@@ -14,12 +14,14 @@ import { WEEKLY_PPT_BUCKET, pptWeekBounds, sundayOfPptWeek } from './ppt-week';
 
 type RequestMeta = { ipAddress?: string | null; userAgent?: string | null };
 
+type FileRemovedReason = 'downloaded' | 'emailed' | 'deleted';
+
 type UpdateRow = {
   id: string;
   employee_id: string;
   week_start: string;
   week_end: string;
-  storage_path: string;
+  storage_path: string | null;
   original_file_name: string;
   system_file_name: string;
   content_type: string;
@@ -27,6 +29,10 @@ type UpdateRow = {
   upload_count: number;
   submitted_at: string;
   late: boolean;
+  file_removed_at: string | null;
+  file_removed_by: string | null;
+  file_removed_reason: FileRemovedReason | null;
+  email_recipient: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -44,9 +50,18 @@ function mapUpdate(row: UpdateRow) {
     uploadCount: row.upload_count,
     submittedAt: row.submitted_at,
     late: row.late,
+    fileAvailable: Boolean(row.storage_path),
+    fileRemovedAt: row.file_removed_at,
+    fileRemovedBy: row.file_removed_by,
+    fileRemovedReason: row.file_removed_reason,
+    emailRecipient: row.email_recipient,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+function isValidEmail(value: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 }
 
 function assertCsoDesk(actor: RequestUser): void {
@@ -65,6 +80,126 @@ export function createWeeklyPptDeskService(supabase: SupabaseClient) {
       throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to create download URL.', 500);
     }
     return { url: signed.signedUrl, fileName };
+  }
+
+  async function downloadBytes(storagePath: string): Promise<Uint8Array> {
+    const { data, error } = await supabase.storage.from(WEEKLY_PPT_BUCKET).download(storagePath);
+    if (error || !data) {
+      throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to read weekly PPT from storage.', 500);
+    }
+    return new Uint8Array(await data.arrayBuffer());
+  }
+
+  async function assertShareContains(shareId: string, updateId: string) {
+    const { data: item } = await supabase
+      .from('weekly_ppt_share_items')
+      .select('share_id')
+      .eq('share_id', shareId)
+      .eq('update_id', updateId)
+      .maybeSingle();
+    if (!item) {
+      throw new AppError(API_ERROR_CODES.FORBIDDEN, 'That file was not included in this share.', 403);
+    }
+  }
+
+  async function consumeSharedFile(
+    actor: RequestUser,
+    updateId: string,
+    shareId: string,
+    mode: FileRemovedReason,
+    emailRecipient: string | null,
+    meta: RequestMeta,
+  ) {
+    assertGmDomainOwner(actor, 'manage shared weekly updates');
+    await assertShareContains(shareId, updateId);
+
+    const { data, error } = await supabase.from('weekly_work_updates').select('*').eq('id', updateId).maybeSingle();
+    if (error || !data) throw new AppError(API_ERROR_CODES.NOT_FOUND, 'Weekly update not found.', 404);
+    const row = data as UpdateRow;
+    if (!row.storage_path) {
+      throw new AppError(
+        API_ERROR_CODES.CONFLICT,
+        'File is no longer available. Audit history remains on this page.',
+        409,
+      );
+    }
+
+    const fileName = row.system_file_name;
+    const contentType = row.content_type || 'application/octet-stream';
+    let bytes: Uint8Array | null = null;
+    if (mode === 'downloaded' || mode === 'emailed') {
+      bytes = await downloadBytes(row.storage_path);
+    }
+
+    if (mode === 'emailed') {
+      if (!emailRecipient || !isValidEmail(emailRecipient)) {
+        throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Enter a valid recipient email address.', 400);
+      }
+      try {
+        const mail = await sendMail({
+          to: [emailRecipient],
+          subject: `Weekly PPT: ${fileName}`,
+          text: `Attached is the weekly work-update PowerPoint "${fileName}" from the HR Portal.`,
+          html: `<p>Attached is the weekly work-update PowerPoint <strong>${fileName}</strong> from the HR Portal.</p>`,
+          attachments: [{ name: fileName, content: Buffer.from(bytes!).toString('base64') }],
+        });
+        if (!mail.sent) {
+          throw new AppError(
+            API_ERROR_CODES.INTERNAL_ERROR,
+            'Email delivery is not configured. File was not removed.',
+            502,
+          );
+        }
+      } catch (err) {
+        if (err instanceof AppError) throw err;
+        throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to email the weekly PPT. File was not removed.', 502);
+      }
+    }
+
+    const now = new Date().toISOString();
+    const { data: updated, error: updateError } = await supabase
+      .from('weekly_work_updates')
+      .update({
+        storage_path: null,
+        file_removed_at: now,
+        file_removed_by: actor.employeeId,
+        file_removed_reason: mode,
+        email_recipient: mode === 'emailed' ? emailRecipient : null,
+      })
+      .eq('id', updateId)
+      .not('storage_path', 'is', null)
+      .select('*')
+      .maybeSingle();
+    if (updateError || !updated) {
+      throw new AppError(API_ERROR_CODES.CONFLICT, 'Weekly PPT was already removed.', 409);
+    }
+
+    await supabase.storage.from(WEEKLY_PPT_BUCKET).remove([row.storage_path]);
+    await writeAuditLog(supabase, {
+      actorId: actor.employeeId,
+      action:
+        mode === 'emailed'
+          ? 'weekly_work_update.email'
+          : mode === 'downloaded'
+            ? 'weekly_work_update.download_remove'
+            : 'weekly_work_update.delete',
+      entityType: 'weekly_work_update',
+      entityId: updateId,
+      newValues: { fileRemovedReason: mode, emailRecipient, shareId },
+      ...meta,
+    });
+
+    return {
+      update: mapUpdate(updated as UpdateRow),
+      download:
+        mode === 'downloaded' && bytes
+          ? {
+              fileName,
+              contentType,
+              contentBase64: Buffer.from(bytes).toString('base64'),
+            }
+          : null,
+    };
   }
 
   return {
@@ -264,7 +399,9 @@ export function createWeeklyPptDeskService(supabase: SupabaseClient) {
       const { data: updateRows } = updateIds.length
         ? await supabase
             .from('weekly_work_updates')
-            .select('id, system_file_name, late, employee_id')
+            .select(
+              'id, system_file_name, late, employee_id, storage_path, file_removed_at, file_removed_reason, email_recipient',
+            )
             .in('id', updateIds)
         : { data: [] };
       const employeeIds = [...new Set((updateRows ?? []).map((row) => row.employee_id as string))];
@@ -280,11 +417,27 @@ export function createWeeklyPptDeskService(supabase: SupabaseClient) {
             systemFileName: row.system_file_name as string,
             late: Boolean(row.late),
             employeeName: nameById.get(row.employee_id as string) ?? 'Employee',
+            fileAvailable: Boolean(row.storage_path),
+            fileRemovedAt: (row.file_removed_at as string | null) ?? null,
+            fileRemovedReason: (row.file_removed_reason as FileRemovedReason | null) ?? null,
+            emailRecipient: (row.email_recipient as string | null) ?? null,
           },
         ]),
       );
 
-      const filesByShare = new Map<string, { updateId: string; systemFileName: string; late: boolean; employeeName: string }[]>();
+      const filesByShare = new Map<
+        string,
+        {
+          updateId: string;
+          systemFileName: string;
+          late: boolean;
+          employeeName: string;
+          fileAvailable: boolean;
+          fileRemovedAt: string | null;
+          fileRemovedReason: FileRemovedReason | null;
+          emailRecipient: string | null;
+        }[]
+      >();
       for (const item of items ?? []) {
         const file = updateById.get(item.update_id as string);
         if (!file) continue;
@@ -295,17 +448,21 @@ export function createWeeklyPptDeskService(supabase: SupabaseClient) {
 
       return {
         count: list.length,
-        shares: list.map((row) => ({
-          id: row.id as string,
-          weekStart: row.week_start as string,
-          weekEnd: row.week_end as string,
-          sharedBy: row.shared_by as string,
-          sharedByName: sharerName.get(row.shared_by as string) ?? 'CSO',
-          sharedAt: row.shared_at as string,
-          fileCount: row.file_count as number,
-          note: row.note as string,
-          files: filesByShare.get(row.id as string) ?? [],
-        })),
+        shares: list.map((row) => {
+          const files = filesByShare.get(row.id as string) ?? [];
+          return {
+            id: row.id as string,
+            weekStart: row.week_start as string,
+            weekEnd: row.week_end as string,
+            sharedBy: row.shared_by as string,
+            sharedByName: sharerName.get(row.shared_by as string) ?? 'CSO',
+            sharedAt: row.shared_at as string,
+            fileCount: row.file_count as number,
+            note: row.note as string,
+            availableCount: files.filter((file) => file.fileAvailable).length,
+            files,
+          };
+        }),
       };
     },
 
@@ -316,6 +473,13 @@ export function createWeeklyPptDeskService(supabase: SupabaseClient) {
         .eq('id', updateId)
         .maybeSingle();
       if (error || !data) throw new AppError(API_ERROR_CODES.NOT_FOUND, 'Weekly update not found.', 404);
+      if (!data.storage_path) {
+        throw new AppError(
+          API_ERROR_CODES.NOT_FOUND,
+          'File is no longer available. Audit history remains on this page.',
+          404,
+        );
+      }
 
       if (data.employee_id === actor.employeeId) {
         return signedDownload(data.storage_path as string, data.system_file_name as string);
@@ -327,19 +491,55 @@ export function createWeeklyPptDeskService(supabase: SupabaseClient) {
 
       if (shareId) {
         assertGmDomainOwner(actor, 'download shared weekly updates');
-        const { data: item } = await supabase
-          .from('weekly_ppt_share_items')
-          .select('share_id')
-          .eq('share_id', shareId)
-          .eq('update_id', updateId)
-          .maybeSingle();
-        if (!item) {
-          throw new AppError(API_ERROR_CODES.FORBIDDEN, 'That file was not included in this share.', 403);
-        }
+        await assertShareContains(shareId, updateId);
+        // Preview-only signed URL. GM consume/download-remove uses dedicated endpoints.
         return signedDownload(data.storage_path as string, data.system_file_name as string);
       }
 
       throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot download this weekly update.', 403);
+    },
+
+    async gmDownload(actor: RequestUser, updateId: string, shareId: string, meta: RequestMeta) {
+      return consumeSharedFile(actor, updateId, shareId, 'downloaded', null, meta);
+    },
+
+    async gmEmail(
+      actor: RequestUser,
+      updateId: string,
+      shareId: string,
+      recipientEmail: string,
+      meta: RequestMeta,
+    ) {
+      return consumeSharedFile(actor, updateId, shareId, 'emailed', recipientEmail.trim().toLowerCase(), meta);
+    },
+
+    async gmDelete(actor: RequestUser, updateId: string, shareId: string, meta: RequestMeta) {
+      return consumeSharedFile(actor, updateId, shareId, 'deleted', null, meta);
+    },
+
+    async gmDeleteAllInShare(actor: RequestUser, shareId: string, meta: RequestMeta) {
+      assertGmDomainOwner(actor, 'manage shared weekly updates');
+      const { data: items, error } = await supabase
+        .from('weekly_ppt_share_items')
+        .select('update_id')
+        .eq('share_id', shareId);
+      if (error) throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load share files.', 500);
+      const updateIds = (items ?? []).map((row) => row.update_id as string);
+      if (updateIds.length === 0) return { removed: 0 };
+
+      const { data: updates, error: updatesError } = await supabase
+        .from('weekly_work_updates')
+        .select('id')
+        .in('id', updateIds)
+        .not('storage_path', 'is', null);
+      if (updatesError) throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load weekly PPTs.', 500);
+
+      let removed = 0;
+      for (const row of updates ?? []) {
+        await consumeSharedFile(actor, row.id as string, shareId, 'deleted', null, meta);
+        removed += 1;
+      }
+      return { removed };
     },
   };
 }
