@@ -576,12 +576,16 @@ export function createWorkService(supabase: SupabaseClient) {
    * Legacy rows may miss the lead's membership row, so led projects are unioned in.
    */
   async function listMyProjectRows(employeeId: string) {
-    const memberProjects = await listMemberProjects(employeeId);
-    const { data: ledRows, error } = await supabase
-      .from('projects')
-      .select('id, name, code, status, lead_employee_id')
-      .eq('lead_employee_id', employeeId)
-      .eq('status', 'active');
+    // Independent lookups: this list backs the nav on every page, so keep the round-trips parallel.
+    const [memberProjects, led] = await Promise.all([
+      listMemberProjects(employeeId),
+      supabase
+        .from('projects')
+        .select('id, name, code, status, lead_employee_id')
+        .eq('lead_employee_id', employeeId)
+        .eq('status', 'active'),
+    ]);
+    const { data: ledRows, error } = led;
     if (error) throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load led projects.', 500);
     const byId = new Map(memberProjects.map((project) => [project.id, project]));
     for (const row of ledRows ?? []) {
@@ -606,11 +610,13 @@ export function createWorkService(supabase: SupabaseClient) {
       }
       const baseProjects = await listMyProjectRows(actor.employeeId);
       const projectIds = baseProjects.map((row) => row.id);
-      const membersByProject = await loadProjectMemberMap(projectIds);
-      const leadNames = await loadEmployeeNames(
-        baseProjects.map((row) => row.leadEmployeeId).filter((id): id is string => Boolean(id)),
-      );
-      const milestonesByProject = await loadActiveMilestonesByProject(projectIds);
+      const [membersByProject, leadNames, milestonesByProject] = await Promise.all([
+        loadProjectMemberMap(projectIds),
+        loadEmployeeNames(
+          baseProjects.map((row) => row.leadEmployeeId).filter((id): id is string => Boolean(id)),
+        ),
+        loadActiveMilestonesByProject(projectIds),
+      ]);
       return enrichProjectsForWeek(baseProjects, milestonesByProject, []).map((project) => {
         const members = membersByProject.get(project.id) ?? [];
         return {
