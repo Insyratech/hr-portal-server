@@ -8,6 +8,7 @@ import { writeAuditLog } from '../audit/write-audit-log';
 import {
   DEFAULT_DAILY_REMINDER_HOUR,
   DEFAULT_SECOND_DAILY_REMINDER_HOUR,
+  DEFAULT_THIRD_DAILY_REMINDER_HOUR,
   WORK_TIMEZONE,
 } from './ist-clock';
 import { isRetentionDays, type RetentionDays } from './retention';
@@ -18,6 +19,7 @@ export type WorkSettings = {
   timeZone: string;
   reminderHour: number;
   secondReminderHour: number | null;
+  thirdReminderHour: number | null;
   retentionDays: RetentionDays;
   archiveBeforeDelete: boolean;
   notifyBeforePurge: boolean;
@@ -28,6 +30,7 @@ export type WorkSettings = {
 export type WorkSettingsPatch = {
   reminderHour?: number;
   secondReminderHour?: number | null;
+  thirdReminderHour?: number | null;
   retentionDays?: number;
   archiveBeforeDelete?: boolean;
   notifyBeforePurge?: boolean;
@@ -39,6 +42,7 @@ type SettingsRow = {
   id: string;
   work_update_reminder_hour?: number | null;
   work_update_second_reminder_hour?: number | null;
+  work_update_third_reminder_hour?: number | null;
   work_retention_days?: number | null;
   work_archive_before_delete?: boolean | null;
   work_notify_before_purge?: boolean | null;
@@ -46,18 +50,18 @@ type SettingsRow = {
   work_legal_hold?: boolean | null;
 };
 
-const SETTINGS_SELECT =
-  'id, work_update_reminder_hour, work_update_second_reminder_hour, work_retention_days, work_archive_before_delete, work_notify_before_purge, work_purge_notify_days_before, work_legal_hold';
+export const SETTINGS_SELECT =
+  'id, work_update_reminder_hour, work_update_second_reminder_hour, work_update_third_reminder_hour, work_retention_days, work_archive_before_delete, work_notify_before_purge, work_purge_notify_days_before, work_legal_hold';
 
-function hourOr(value: number | null | undefined, fallback: number): number {
-  const hour = Number(value);
-  return Number.isInteger(hour) && hour >= 0 && hour <= 23 ? hour : fallback;
-}
-
+/** Null/undefined means "not configured" — Number(null) is 0, so the null check must come first. */
 function optionalHour(value: number | null | undefined): number | null {
   if (value == null) return null;
   const hour = Number(value);
   return Number.isInteger(hour) && hour >= 0 && hour <= 23 ? hour : null;
+}
+
+function hourOr(value: number | null | undefined, fallback: number): number {
+  return optionalHour(value) ?? fallback;
 }
 
 export function mapWorkSettings(row: SettingsRow): WorkSettings {
@@ -68,6 +72,8 @@ export function mapWorkSettings(row: SettingsRow): WorkSettings {
     reminderHour: hourOr(row.work_update_reminder_hour, DEFAULT_DAILY_REMINDER_HOUR),
     secondReminderHour:
       optionalHour(row.work_update_second_reminder_hour) ?? DEFAULT_SECOND_DAILY_REMINDER_HOUR,
+    thirdReminderHour:
+      optionalHour(row.work_update_third_reminder_hour) ?? DEFAULT_THIRD_DAILY_REMINDER_HOUR,
     retentionDays: isRetentionDays(retention) ? retention : 180,
     archiveBeforeDelete: row.work_archive_before_delete !== false,
     notifyBeforePurge: row.work_notify_before_purge !== false,
@@ -123,6 +129,12 @@ export function createWorkSettingsService(supabase: SupabaseClient) {
             ? DEFAULT_SECOND_DAILY_REMINDER_HOUR
             : assertHour(patch.secondReminderHour, 'Second reminder');
       }
+      if (patch.thirdReminderHour !== undefined) {
+        next.thirdReminderHour =
+          patch.thirdReminderHour == null
+            ? DEFAULT_THIRD_DAILY_REMINDER_HOUR
+            : assertHour(patch.thirdReminderHour, 'Third reminder');
+      }
       if (patch.retentionDays !== undefined) {
         if (!isRetentionDays(patch.retentionDays)) {
           throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Retention must be 90, 180, or 365 days.', 400);
@@ -140,8 +152,11 @@ export function createWorkSettingsService(supabase: SupabaseClient) {
       }
       if (patch.legalHold !== undefined) next.legalHold = Boolean(patch.legalHold);
 
-      if (next.secondReminderHour != null && next.secondReminderHour === next.reminderHour) {
-        throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Second reminder must be a different hour.', 400);
+      const hours = [next.reminderHour, next.secondReminderHour, next.thirdReminderHour].filter(
+        (hour): hour is number => hour != null,
+      );
+      if (new Set(hours).size !== hours.length) {
+        throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Each daily reminder must be a different hour.', 400);
       }
 
       const { data, error } = await supabase
@@ -149,6 +164,7 @@ export function createWorkSettingsService(supabase: SupabaseClient) {
         .update({
           work_update_reminder_hour: next.reminderHour,
           work_update_second_reminder_hour: next.secondReminderHour,
+          work_update_third_reminder_hour: next.thirdReminderHour,
           work_retention_days: next.retentionDays,
           work_archive_before_delete: next.archiveBeforeDelete,
           work_notify_before_purge: next.notifyBeforePurge,

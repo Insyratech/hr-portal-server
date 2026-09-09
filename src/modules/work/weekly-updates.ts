@@ -5,10 +5,11 @@ import { AppError } from '../../shared/errors/app-error';
 import type { RequestUser } from '../../shared/types/request-user';
 import { writeAuditLog } from '../audit/write-audit-log';
 import { addUtcDays, formatIsoDate, parseIsoDate } from '../leave/day-count';
-import { skipsWorkApprovalLoop } from './approval';
+import { skipsWorkApprovalLoop, weeklyPptGlanceStatus, type WeeklyPptGlanceStatus } from './approval';
 import { formatIsoDateInZone } from './ist-clock';
 import {
   WEEKLY_PPT_BUCKET,
+  WEEKLY_PPT_LAST_HOUR,
   WEEKLY_PPT_MAX_BYTES,
   WEEKLY_PPT_MAX_UPLOADS,
   WEEKLY_PPT_MIME,
@@ -16,7 +17,10 @@ import {
   isWeeklyPptLate,
   pptExtension,
   pptWeekBounds,
+  readWeeklyPptTiming,
   sundayOfPptWeek,
+  weeklyPptTiming,
+  type WeeklyPptTiming,
 } from './ppt-week';
 
 type RequestMeta = { ipAddress?: string | null; userAgent?: string | null };
@@ -34,6 +38,7 @@ type UpdateRow = {
   upload_count: number;
   submitted_at: string;
   late: boolean;
+  submission_timing?: WeeklyPptTiming | null;
   file_removed_at?: string | null;
   file_removed_by?: string | null;
   file_removed_reason?: string | null;
@@ -43,6 +48,7 @@ type UpdateRow = {
 };
 
 function mapUpdate(row: UpdateRow) {
+  const timing = readWeeklyPptTiming(row);
   return {
     id: row.id,
     employeeId: row.employee_id,
@@ -54,7 +60,8 @@ function mapUpdate(row: UpdateRow) {
     sizeBytes: row.size_bytes,
     uploadCount: row.upload_count,
     submittedAt: row.submitted_at,
-    late: row.late,
+    timing,
+    late: timing === 'late',
     fileAvailable: Boolean(row.storage_path),
     fileRemovedAt: row.file_removed_at ?? null,
     fileRemovedReason: row.file_removed_reason ?? null,
@@ -114,31 +121,27 @@ export function createWeeklyUpdatesService(supabase: SupabaseClient) {
       const weeks: {
         weekStart: string;
         weekEnd: string;
-        status: 'on_time' | 'late' | 'missing' | 'pending';
+        status: WeeklyPptGlanceStatus;
         update: ReturnType<typeof mapUpdate> | null;
       }[] = [];
       for (let i = 0; i < 8; i += 1) {
         const ref = formatIsoDate(addUtcDays(parseIsoDate(week.start), -7 * i));
         const bounds = pptWeekBounds(ref);
-        const deadline = sundayOfPptWeek(bounds.start);
         const row = history.find((item) => item.weekStart === bounds.start) ?? null;
-        let status: 'on_time' | 'late' | 'missing' | 'pending';
-        if (row) {
-          status = row.late ? 'late' : 'on_time';
-        } else if (today > deadline) {
-          status = 'missing';
-        } else {
-          status = 'pending';
-        }
         weeks.push({
           weekStart: bounds.start,
           weekEnd: bounds.end,
-          status,
+          status: weeklyPptGlanceStatus({
+            timing: row?.timing ?? null,
+            todayIso: today,
+            deadlineIso: sundayOfPptWeek(bounds.start),
+          }),
           update: row,
         });
       }
 
       const onTime = weeks.filter((w) => w.status === 'on_time').length;
+      const lastHour = weeks.filter((w) => w.status === 'last_hour').length;
       const late = weeks.filter((w) => w.status === 'late').length;
       const missing = weeks.filter((w) => w.status === 'missing').length;
 
@@ -148,13 +151,13 @@ export function createWeeklyUpdatesService(supabase: SupabaseClient) {
           end: week.end,
           deadlineDate,
           deadlineLabel: `Sunday ${deadlineDate} 23:59 IST`,
-          lateAfterLabel: `Sunday ${deadlineDate} 18:00 IST`,
+          lastHourAfterLabel: `Sunday ${deadlineDate} ${WEEKLY_PPT_LAST_HOUR}:00 IST`,
         },
         current: current ? mapUpdate(current) : null,
         uploadsRemaining: current ? Math.max(0, WEEKLY_PPT_MAX_UPLOADS - current.upload_count) : WEEKLY_PPT_MAX_UPLOADS,
         maxUploads: WEEKLY_PPT_MAX_UPLOADS,
         maxBytes: WEEKLY_PPT_MAX_BYTES,
-        stats: { onTime, late, missing, weeksTracked: weeks.length },
+        stats: { onTime, lastHour, late, missing, weeksTracked: weeks.length },
         weeks,
       };
     },
@@ -195,7 +198,8 @@ export function createWeeklyUpdatesService(supabase: SupabaseClient) {
       const fullName = await loadEmployeeName(actor.employeeId);
       const systemFileName = buildWeeklyPptSystemFileName(fullName, week.start, week.end, extension);
       const storagePath = `${actor.employeeId}/${week.start}/${crypto.randomUUID()}-${systemFileName}`;
-      const late = isWeeklyPptLate(new Date(), week.start);
+      const timing = weeklyPptTiming(new Date(), week.start);
+      const late = isWeeklyPptLate(timing);
 
       const { data: signed, error: signError } = await supabase.storage
         .from(WEEKLY_PPT_BUCKET)
@@ -224,6 +228,7 @@ export function createWeeklyUpdatesService(supabase: SupabaseClient) {
             upload_count: existing.upload_count + 1,
             submitted_at: new Date().toISOString(),
             late,
+            submission_timing: timing,
             file_removed_at: null,
             file_removed_by: null,
             file_removed_reason: null,
@@ -251,6 +256,7 @@ export function createWeeklyUpdatesService(supabase: SupabaseClient) {
             upload_count: 1,
             submitted_at: new Date().toISOString(),
             late,
+            submission_timing: timing,
           })
           .select('*')
           .single();

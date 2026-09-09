@@ -2,9 +2,12 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_DAILY_REMINDER_HOUR,
   DEFAULT_SECOND_DAILY_REMINDER_HOUR,
+  DEFAULT_THIRD_DAILY_REMINDER_HOUR,
   MONDAY_PRIORITY_REMINDER_HOUR,
   WORK_TIMEZONE,
   formatIsoDateInZone,
+  formatWorkHour,
+  formatWorkHourList,
   hourInZone,
   zonedClock,
 } from './ist-clock';
@@ -13,8 +16,17 @@ describe('IST work clock', () => {
   it('uses Asia/Kolkata defaults for reminder hours', () => {
     expect(WORK_TIMEZONE).toBe('Asia/Kolkata');
     expect(MONDAY_PRIORITY_REMINDER_HOUR).toBe(16);
-    expect(DEFAULT_DAILY_REMINDER_HOUR).toBe(20);
-    expect(DEFAULT_SECOND_DAILY_REMINDER_HOUR).toBe(22);
+    expect(DEFAULT_DAILY_REMINDER_HOUR).toBe(17);
+    expect(DEFAULT_SECOND_DAILY_REMINDER_HOUR).toBe(20);
+    expect(DEFAULT_THIRD_DAILY_REMINDER_HOUR).toBe(23);
+  });
+
+  it('writes reminder hours the way they read in an email', () => {
+    expect(formatWorkHour(17)).toBe('5:00 pm');
+    expect(formatWorkHour(12)).toBe('12:00 pm');
+    expect(formatWorkHour(0)).toBe('12:00 am');
+    expect(formatWorkHourList([17, 20, 23])).toBe('5:00 pm, 8:00 pm and 11:00 pm');
+    expect(formatWorkHourList([17])).toBe('5:00 pm');
   });
 
   it('reads the calendar date in IST, not UTC, near midnight', () => {

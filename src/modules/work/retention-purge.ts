@@ -3,11 +3,14 @@ import { writeAuditLog } from '../audit/write-audit-log';
 import { formatIsoDate } from '../leave/day-count';
 import { portalUrl } from '../notifications/mail';
 import { notifyStaff, type StaffContact } from '../notifications/notify-staff';
-import { mapWorkSettings, type WorkSettings } from './settings';
+import {
+  DEFAULT_DAILY_REMINDER_HOUR,
+  DEFAULT_SECOND_DAILY_REMINDER_HOUR,
+  DEFAULT_THIRD_DAILY_REMINDER_HOUR,
+  WORK_TIMEZONE,
+} from './ist-clock';
+import { SETTINGS_SELECT, mapWorkSettings, type WorkSettings } from './settings';
 import { canPurgeAfterNotice, retentionCutoffDate } from './retention';
-
-const SETTINGS_SELECT =
-  'id, work_update_reminder_hour, work_update_second_reminder_hour, work_retention_days, work_archive_before_delete, work_notify_before_purge, work_purge_notify_days_before, work_legal_hold';
 
 export type RetentionPurgeResult = {
   date: string;
@@ -29,9 +32,10 @@ async function loadSettings(supabase: SupabaseClient): Promise<WorkSettings> {
   if (!data) {
     return {
       id: 'missing',
-      timeZone: 'Asia/Kolkata',
-      reminderHour: 20,
-      secondReminderHour: 22,
+      timeZone: WORK_TIMEZONE,
+      reminderHour: DEFAULT_DAILY_REMINDER_HOUR,
+      secondReminderHour: DEFAULT_SECOND_DAILY_REMINDER_HOUR,
+      thirdReminderHour: DEFAULT_THIRD_DAILY_REMINDER_HOUR,
       retentionDays: 180,
       archiveBeforeDelete: true,
       notifyBeforePurge: true,

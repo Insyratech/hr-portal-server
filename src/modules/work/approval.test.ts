@@ -7,6 +7,7 @@ import {
   skipsWorkApprovalLoop,
   weekAllowsSkillSubmit,
   weekHasWorkGoal,
+  weeklyPptGlanceLabel,
   weeklyPptGlanceStatus,
 } from './approval';
 
@@ -94,46 +95,30 @@ describe('work priority approval helpers', () => {
     ).toBe('needs_resubmit');
   });
 
-  it('labels weekly PPT glance from update + Sunday deadline', () => {
+  it('labels weekly PPT glance from submission timing + Sunday deadline', () => {
     expect(
-      weeklyPptGlanceStatus({
-        hasUpdate: true,
-        late: false,
-        todayIso: '2026-08-26',
-        deadlineIso: '2026-08-30',
-      }),
+      weeklyPptGlanceStatus({ timing: 'on_time', todayIso: '2026-08-26', deadlineIso: '2026-08-30' }),
     ).toBe('on_time');
     expect(
-      weeklyPptGlanceStatus({
-        hasUpdate: true,
-        late: true,
-        todayIso: '2026-08-31',
-        deadlineIso: '2026-08-30',
-      }),
+      weeklyPptGlanceStatus({ timing: 'last_hour', todayIso: '2026-08-31', deadlineIso: '2026-08-30' }),
+    ).toBe('last_hour');
+    expect(
+      weeklyPptGlanceStatus({ timing: 'late', todayIso: '2026-08-31', deadlineIso: '2026-08-30' }),
     ).toBe('late');
     expect(
-      weeklyPptGlanceStatus({
-        hasUpdate: false,
-        late: false,
-        todayIso: '2026-08-31',
-        deadlineIso: '2026-08-30',
-      }),
+      weeklyPptGlanceStatus({ timing: null, todayIso: '2026-08-31', deadlineIso: '2026-08-30' }),
     ).toBe('missing');
     expect(
-      weeklyPptGlanceStatus({
-        hasUpdate: false,
-        late: false,
-        todayIso: '2026-08-30',
-        deadlineIso: '2026-08-30',
-      }),
+      weeklyPptGlanceStatus({ timing: null, todayIso: '2026-08-30', deadlineIso: '2026-08-30' }),
     ).toBe('pending');
     expect(
-      weeklyPptGlanceStatus({
-        hasUpdate: false,
-        late: false,
-        todayIso: '2026-08-26',
-        deadlineIso: '2026-08-30',
-      }),
+      weeklyPptGlanceStatus({ timing: null, todayIso: '2026-08-26', deadlineIso: '2026-08-30' }),
     ).toBe('pending');
+  });
+
+  it('labels the last-hour glance status', () => {
+    expect(weeklyPptGlanceLabel('last_hour')).toBe('PPT last hour');
+    expect(weeklyPptGlanceLabel('late')).toBe('PPT late');
+    expect(weeklyPptGlanceLabel('on_time')).toBe('PPT on time');
   });
 });

@@ -10,10 +10,10 @@ import {
   runMondayPriorityReminders,
   runWeeklyPptCsoDigest,
   runWeeklyPptReminders,
-  runWorkEveningReminders,
   workTodayIso,
 } from '../modules/work/work-jobs';
 import { runWorkRetentionPurge } from '../modules/work/retention-purge';
+import { runWorkReminderJobs } from './scheduler';
 import { runAnnualLeaveAllocation, runDailyReminders } from './leave-jobs';
 
 function requireCronSecret(env: Env) {
@@ -48,10 +48,8 @@ export async function registerJobRoutes(app: FastifyInstance, env: Env): Promise
 
   app.post('/api/v1/jobs/work/daily-reminders', { preHandler: [cronAuth] }, async () => {
     const supabase = requireSupabase(app.supabase);
-    const daily = await runWorkEveningReminders(supabase);
-    const weeklyPpt = await runWeeklyPptReminders(supabase);
-    const weeklyPptDigest = await runWeeklyPptCsoDigest(supabase);
-    return ok({ ...daily, weeklyPpt, weeklyPptDigest });
+    const { dailyUpdates, mondayPriorities, weeklyPpt, weeklyPptDigest } = await runWorkReminderJobs(supabase);
+    return ok({ ...dailyUpdates, mondayPriorities, weeklyPpt, weeklyPptDigest });
   });
 
   app.post('/api/v1/jobs/work/weekly-ppt-reminders', { preHandler: [cronAuth] }, async () => {

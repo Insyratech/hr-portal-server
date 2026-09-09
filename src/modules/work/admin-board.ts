@@ -16,7 +16,7 @@ import {
 } from './approval';
 import { loadEmployeeRoleMap } from './employee-roles';
 import { formatIsoDateInZone } from './ist-clock';
-import { pptWeekBounds, sundayOfPptWeek } from './ppt-week';
+import { pptWeekBounds, readWeeklyPptTiming, sundayOfPptWeek } from './ppt-week';
 import { dayContext } from './day-context';
 import { completionPct } from './overview';
 import { tallyToday } from './tally';
@@ -181,11 +181,11 @@ export function createWorkBoardService(supabase: SupabaseClient) {
       const todayIso = formatIsoDateInZone(new Date());
       const { data: pptRows } = await supabase
         .from('weekly_work_updates')
-        .select('employee_id, late')
+        .select('employee_id, late, submission_timing')
         .eq('week_start', pptWeek.start)
         .in('employee_id', ids);
-      const pptByEmployee = new Map(
-        (pptRows ?? []).map((row) => [row.employee_id as string, { late: Boolean(row.late) }]),
+      const pptTimingByEmployee = new Map(
+        (pptRows ?? []).map((row) => [row.employee_id as string, readWeeklyPptTiming(row)]),
       );
 
       let entryQuery = supabase
@@ -223,10 +223,8 @@ export function createWorkBoardService(supabase: SupabaseClient) {
       const peopleOut = people.map((person) => {
         const today = contextById.get(person.id)!;
         const approvalSummary = aggregatePriorityApproval(approvalRowsByEmployee.get(person.id) ?? []);
-        const pptRow = pptByEmployee.get(person.id);
         const pptStatus = weeklyPptGlanceStatus({
-          hasUpdate: Boolean(pptRow),
-          late: pptRow?.late ?? false,
+          timing: pptTimingByEmployee.get(person.id) ?? null,
           todayIso,
           deadlineIso: pptDeadline,
         });

@@ -1,4 +1,5 @@
 import { ROLE_CODES } from '../../shared/constants/permissions';
+import type { WeeklyPptTiming } from './ppt-week';
 
 export const APPROVAL_STATUSES = ['DRAFT', 'SUBMITTED', 'APPROVED', 'RESUBMIT_REQUESTED'] as const;
 export type PriorityApprovalStatus = (typeof APPROVAL_STATUSES)[number];
@@ -123,16 +124,16 @@ export function planApprovalLabel(summary: PlanApprovalSummary): string {
   }
 }
 
-export type WeeklyPptGlanceStatus = 'on_time' | 'late' | 'missing' | 'pending';
+export type WeeklyPptGlanceStatus = WeeklyPptTiming | 'missing' | 'pending';
 
 export function weeklyPptGlanceStatus(input: {
-  hasUpdate: boolean;
-  late: boolean;
+  /** Timing of the submitted deck, or null when nothing has been uploaded yet. */
+  timing: WeeklyPptTiming | null;
   todayIso: string;
   /** Deadline calendar day (Sunday of the PPT week). */
   deadlineIso: string;
 }): WeeklyPptGlanceStatus {
-  if (input.hasUpdate) return input.late ? 'late' : 'on_time';
+  if (input.timing) return input.timing;
   if (input.todayIso > input.deadlineIso) return 'missing';
   return 'pending';
 }
@@ -141,6 +142,8 @@ export function weeklyPptGlanceLabel(status: WeeklyPptGlanceStatus): string {
   switch (status) {
     case 'on_time':
       return 'PPT on time';
+    case 'last_hour':
+      return 'PPT last hour';
     case 'late':
       return 'PPT late';
     case 'missing':

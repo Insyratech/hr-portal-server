@@ -236,6 +236,7 @@ export async function registerWorkRoutes(app: FastifyInstance): Promise<void> {
         body: Type.Object({
           reminderHour: Type.Optional(Type.Integer({ minimum: 0, maximum: 23 })),
           secondReminderHour: Type.Optional(Type.Union([Type.Integer({ minimum: 0, maximum: 23 }), Type.Null()])),
+          thirdReminderHour: Type.Optional(Type.Union([Type.Integer({ minimum: 0, maximum: 23 }), Type.Null()])),
           retentionDays: Type.Optional(Type.Integer()),
           archiveBeforeDelete: Type.Optional(Type.Boolean()),
           notifyBeforePurge: Type.Optional(Type.Boolean()),
@@ -249,6 +250,7 @@ export async function registerWorkRoutes(app: FastifyInstance): Promise<void> {
       const body = request.body as {
         reminderHour?: number;
         secondReminderHour?: number | null;
+        thirdReminderHour?: number | null;
         retentionDays?: number;
         archiveBeforeDelete?: boolean;
         notifyBeforePurge?: boolean;
@@ -403,6 +405,15 @@ export async function registerWorkRoutes(app: FastifyInstance): Promise<void> {
           metaOf(request),
         ),
       );
+    },
+  );
+
+  app.get(
+    '/api/v1/work/my-projects',
+    { preHandler: [requirePermission(PERMISSIONS.WORK_OWN)] },
+    async (request) => {
+      if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
+      return ok(await createWorkService(requireSupabase(app.supabase)).listMyProjects(request.user));
     },
   );
 

@@ -4,8 +4,10 @@ import {
   isWeeklyPptLate,
   pptExtension,
   pptWeekBounds,
+  readWeeklyPptTiming,
   saturdayOfPptWeek,
   sundayOfPptWeek,
+  weeklyPptTiming,
 } from './ppt-week';
 
 describe('weekly PPT week helpers', () => {
@@ -16,15 +18,31 @@ describe('weekly PPT week helpers', () => {
     expect(sundayOfPptWeek('2026-08-31')).toBe('2026-09-06');
   });
 
-  it('marks late at or after Sunday 18:00 IST', () => {
-    // Sat still on time
-    expect(isWeeklyPptLate(new Date('2026-08-29T12:30:00.000Z'), '2026-08-24')).toBe(false);
-    // Sun 2026-08-30 17:30 IST = 12:00 UTC
-    expect(isWeeklyPptLate(new Date('2026-08-30T12:00:00.000Z'), '2026-08-24')).toBe(false);
-    // Sun 18:00 IST = 12:30 UTC
-    expect(isWeeklyPptLate(new Date('2026-08-30T12:30:00.000Z'), '2026-08-24')).toBe(true);
-    // Monday (next week)
-    expect(isWeeklyPptLate(new Date('2026-08-31T05:00:00.000Z'), '2026-08-24')).toBe(true);
+  it('stays on time until Sunday 23:00 IST, then tags the last hour', () => {
+    // Week 2026-08-24 → deadline Sunday 2026-08-30. IST = UTC + 5:30.
+    const timing = (utc: string) => weeklyPptTiming(new Date(utc), '2026-08-24');
+
+    expect(timing('2026-08-29T12:30:00.000Z')).toBe('on_time'); // Sat 18:00 IST
+    expect(timing('2026-08-30T12:30:00.000Z')).toBe('on_time'); // Sun 18:00 IST — no longer late
+    expect(timing('2026-08-30T17:29:00.000Z')).toBe('on_time'); // Sun 22:59 IST
+    expect(timing('2026-08-30T17:30:00.000Z')).toBe('last_hour'); // Sun 23:00 IST
+    expect(timing('2026-08-30T18:28:00.000Z')).toBe('last_hour'); // Sun 23:58 IST
+    expect(timing('2026-08-30T18:30:00.000Z')).toBe('late'); // Mon 00:00 IST
+    expect(timing('2026-08-31T05:00:00.000Z')).toBe('late'); // Mon 10:30 IST
+  });
+
+  it('flags only true lateness on the stored boolean', () => {
+    expect(isWeeklyPptLate('on_time')).toBe(false);
+    expect(isWeeklyPptLate('last_hour')).toBe(false);
+    expect(isWeeklyPptLate('late')).toBe(true);
+  });
+
+  it('reads stored timing, falling back to the legacy late flag', () => {
+    expect(readWeeklyPptTiming({ submission_timing: 'last_hour', late: false })).toBe('last_hour');
+    expect(readWeeklyPptTiming({ submission_timing: 'late', late: true })).toBe('late');
+    expect(readWeeklyPptTiming({ submission_timing: null, late: true })).toBe('late');
+    expect(readWeeklyPptTiming({ submission_timing: null, late: false })).toBe('on_time');
+    expect(readWeeklyPptTiming({})).toBe('on_time');
   });
 
   it('builds Name_Month_DD-DD system file names', () => {

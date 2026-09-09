@@ -7,10 +7,17 @@ import type { RequestUser } from '../../shared/types/request-user';
 import { writeAuditLog } from '../audit/write-audit-log';
 import { portalUrl, sendMail } from '../notifications/mail';
 import { listActiveStaff, listStaffByRole, loadStaffById, notifyStaff } from '../notifications/notify-staff';
-import { skipsWorkApprovalLoop } from './approval';
+import { skipsWorkApprovalLoop, weeklyPptGlanceStatus, type WeeklyPptGlanceStatus } from './approval';
 import { loadEmployeeRoleMap } from './employee-roles';
 import { formatIsoDateInZone } from './ist-clock';
-import { WEEKLY_PPT_BUCKET, pptWeekBounds, sundayOfPptWeek } from './ppt-week';
+import {
+  WEEKLY_PPT_BUCKET,
+  WEEKLY_PPT_LAST_HOUR,
+  pptWeekBounds,
+  readWeeklyPptTiming,
+  sundayOfPptWeek,
+  type WeeklyPptTiming,
+} from './ppt-week';
 
 type RequestMeta = { ipAddress?: string | null; userAgent?: string | null };
 
@@ -29,6 +36,7 @@ type UpdateRow = {
   upload_count: number;
   submitted_at: string;
   late: boolean;
+  submission_timing: WeeklyPptTiming | null;
   file_removed_at: string | null;
   file_removed_by: string | null;
   file_removed_reason: FileRemovedReason | null;
@@ -38,6 +46,7 @@ type UpdateRow = {
 };
 
 function mapUpdate(row: UpdateRow) {
+  const timing = readWeeklyPptTiming(row);
   return {
     id: row.id,
     employeeId: row.employee_id,
@@ -49,7 +58,8 @@ function mapUpdate(row: UpdateRow) {
     sizeBytes: row.size_bytes,
     uploadCount: row.upload_count,
     submittedAt: row.submitted_at,
-    late: row.late,
+    timing,
+    late: timing === 'late',
     fileAvailable: Boolean(row.storage_path),
     fileRemovedAt: row.file_removed_at,
     fileRemovedBy: row.file_removed_by,
@@ -221,20 +231,18 @@ export function createWeeklyPptDeskService(supabase: SupabaseClient) {
 
       const people = loop.map((person) => {
         const row = byEmployee.get(person.id) ?? null;
-        let status: 'on_time' | 'late' | 'missing' | 'pending';
-        if (row) {
-          status = row.late ? 'late' : 'on_time';
-        } else if (today > deadlineDate) {
-          status = 'missing';
-        } else {
-          status = 'pending';
-        }
+        const update = row ? mapUpdate(row) : null;
+        const status: WeeklyPptGlanceStatus = weeklyPptGlanceStatus({
+          timing: update?.timing ?? null,
+          todayIso: today,
+          deadlineIso: deadlineDate,
+        });
         return {
           employeeId: person.id,
           fullName: person.fullName,
           email: person.email,
           status,
-          update: row ? mapUpdate(row) : null,
+          update,
         };
       });
 
@@ -259,11 +267,12 @@ export function createWeeklyPptDeskService(supabase: SupabaseClient) {
           end: week.end,
           deadlineDate,
           deadlineLabel: `Sunday ${deadlineDate} 23:59 IST`,
-          lateAfterLabel: `Sunday ${deadlineDate} 18:00 IST`,
+          lastHourAfterLabel: `Sunday ${deadlineDate} ${WEEKLY_PPT_LAST_HOUR}:00 IST`,
         },
         counts: {
           expected: people.length,
           onTime: people.filter((p) => p.status === 'on_time').length,
+          lastHour: people.filter((p) => p.status === 'last_hour').length,
           late: people.filter((p) => p.status === 'late').length,
           missing: people.filter((p) => p.status === 'missing').length,
           pending: people.filter((p) => p.status === 'pending').length,
@@ -400,7 +409,7 @@ export function createWeeklyPptDeskService(supabase: SupabaseClient) {
         ? await supabase
             .from('weekly_work_updates')
             .select(
-              'id, system_file_name, late, employee_id, storage_path, file_removed_at, file_removed_reason, email_recipient',
+              'id, system_file_name, late, submission_timing, employee_id, storage_path, file_removed_at, file_removed_reason, email_recipient',
             )
             .in('id', updateIds)
         : { data: [] };
@@ -410,19 +419,23 @@ export function createWeeklyPptDeskService(supabase: SupabaseClient) {
         : { data: [] };
       const nameById = new Map((employees ?? []).map((row) => [row.id as string, row.full_name as string]));
       const updateById = new Map(
-        (updateRows ?? []).map((row) => [
-          row.id as string,
-          {
-            updateId: row.id as string,
-            systemFileName: row.system_file_name as string,
-            late: Boolean(row.late),
-            employeeName: nameById.get(row.employee_id as string) ?? 'Employee',
-            fileAvailable: Boolean(row.storage_path),
-            fileRemovedAt: (row.file_removed_at as string | null) ?? null,
-            fileRemovedReason: (row.file_removed_reason as FileRemovedReason | null) ?? null,
-            emailRecipient: (row.email_recipient as string | null) ?? null,
-          },
-        ]),
+        (updateRows ?? []).map((row) => {
+          const timing = readWeeklyPptTiming(row);
+          return [
+            row.id as string,
+            {
+              updateId: row.id as string,
+              systemFileName: row.system_file_name as string,
+              timing,
+              late: timing === 'late',
+              employeeName: nameById.get(row.employee_id as string) ?? 'Employee',
+              fileAvailable: Boolean(row.storage_path),
+              fileRemovedAt: (row.file_removed_at as string | null) ?? null,
+              fileRemovedReason: (row.file_removed_reason as FileRemovedReason | null) ?? null,
+              emailRecipient: (row.email_recipient as string | null) ?? null,
+            },
+          ] as const;
+        }),
       );
 
       const filesByShare = new Map<
@@ -430,6 +443,7 @@ export function createWeeklyPptDeskService(supabase: SupabaseClient) {
         {
           updateId: string;
           systemFileName: string;
+          timing: WeeklyPptTiming;
           late: boolean;
           employeeName: string;
           fileAvailable: boolean;

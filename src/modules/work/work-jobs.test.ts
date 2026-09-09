@@ -1,7 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { dayContext } from './day-context';
 import { skipsWorkApprovalLoop } from './approval';
-import { previousIsoDate, shouldMailDailyUpdate, shouldSkipMondayPriorityReminder } from './work-jobs';
+import { WEEKLY_PPT_REMINDER_HOURS } from './ppt-week';
+import { dueReminderSlot } from './retention';
+import {
+  dailyReminderKindForSlot,
+  previousIsoDate,
+  shouldMailDailyUpdate,
+  shouldSkipMondayPriorityReminder,
+  weeklyPptReminderKindForSlot,
+} from './work-jobs';
 
 const weekdays = ['MON', 'TUE', 'WED', 'THU', 'FRI'];
 
@@ -81,5 +89,27 @@ describe('work reminder rules', () => {
     expect(skipsWorkApprovalLoop(['HR_MANAGER'])).toBe(true);
     expect(skipsWorkApprovalLoop(['EMPLOYEE'])).toBe(false);
     expect(skipsWorkApprovalLoop(['CSO', 'EMPLOYEE'])).toBe(false);
+  });
+
+  it('maps each daily hour to its own reminder kind, so all three slots can send', () => {
+    const hours = [17, 20, 23];
+    const kindAt = (hour: number) => dailyReminderKindForSlot(dueReminderSlot(hour, hours));
+
+    expect(kindAt(16)).toBe(null);
+    expect(kindAt(17)).toBe('daily_update');
+    expect(kindAt(20)).toBe('daily_update_second');
+    expect(kindAt(23)).toBe('daily_update_third');
+  });
+
+  it('maps the Sunday PPT hours 18 / 20 / 22 to their own reminder kinds', () => {
+    const hours = [...WEEKLY_PPT_REMINDER_HOURS];
+    const kindAt = (hour: number) => weeklyPptReminderKindForSlot(dueReminderSlot(hour, hours));
+
+    expect(kindAt(17)).toBe(null);
+    expect(kindAt(18)).toBe('weekly_ppt');
+    expect(kindAt(20)).toBe('weekly_ppt_second');
+    expect(kindAt(22)).toBe('weekly_ppt_third');
+    // A tick a little after the slot still claims that slot rather than dropping it.
+    expect(kindAt(23)).toBe('weekly_ppt_third');
   });
 });

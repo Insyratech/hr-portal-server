@@ -12,6 +12,8 @@ export type Env = {
   SUPABASE_JWT_SECRET: string;
   /** Shared secret for Supabase Cron → HTTP job routes (`x-cron-secret`). */
   CRON_SECRET: string;
+  /** Run work reminder jobs from inside the API process. Disable when an external cron owns them. */
+  WORK_CRON_ENABLED: boolean;
   BREVO_API_KEY: string;
   BREVO_SENDER_EMAIL: string;
   BREVO_SENDER_NAME: string;
@@ -25,6 +27,15 @@ function readHost(source: NodeJS.ProcessEnv): string {
     return '0.0.0.0';
   }
   return source.HOST ?? '127.0.0.1';
+}
+
+/** Opt-out flag: anything other than an explicit "false"/"0" keeps the default on. */
+function readFlag(value: string | undefined, fallback: boolean): boolean {
+  if (value === undefined || value.trim() === '') {
+    return fallback;
+  }
+  const normalized = value.trim().toLowerCase();
+  return !(normalized === 'false' || normalized === '0' || normalized === 'off' || normalized === 'no');
 }
 
 function readPort(value: string | undefined, fallback: number): number {
@@ -51,6 +62,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     SUPABASE_SERVICE_ROLE_KEY: source.SUPABASE_SERVICE_ROLE_KEY ?? '',
     SUPABASE_JWT_SECRET: source.SUPABASE_JWT_SECRET ?? '',
     CRON_SECRET: source.CRON_SECRET ?? '',
+    WORK_CRON_ENABLED: readFlag(source.WORK_CRON_ENABLED, true),
     BREVO_API_KEY: source.BREVO_API_KEY ?? '',
     BREVO_SENDER_EMAIL: source.BREVO_SENDER_EMAIL ?? '',
     BREVO_SENDER_NAME: source.BREVO_SENDER_NAME ?? 'HR Portal',

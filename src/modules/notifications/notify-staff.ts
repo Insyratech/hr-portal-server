@@ -123,6 +123,16 @@ function mapRoleStaff(rows: unknown[], roleCode: string): StaffContact[] {
   return people;
 }
 
+export type NotifyStaffResult = {
+  people: number;
+  notified: number;
+  mailed: number;
+  /** Mail was not attempted: no address on file, or Brevo is not configured. */
+  mailSkipped: number;
+  /** Mail was attempted and rejected — safe for callers to retry later. */
+  mailFailed: number;
+};
+
 export async function notifyStaff(
   supabase: SupabaseClient,
   people: StaffContact | StaffContact[] | null,
@@ -138,10 +148,19 @@ export async function notifyStaff(
     ctaLabel?: string;
     ctaHref?: string;
   },
-): Promise<void> {
+): Promise<NotifyStaffResult> {
   const list = people == null ? [] : Array.isArray(people) ? people : [people];
   const href = input.ctaHref ?? portalLoginUrl();
+  const result: NotifyStaffResult = {
+    people: list.length,
+    notified: 0,
+    mailed: 0,
+    mailSkipped: 0,
+    mailFailed: 0,
+  };
+
   for (const person of list) {
+    // In-app and mail are attempted independently: one failing must not swallow the other.
     try {
       await notifyUser(supabase, {
         userId: person.userId,
@@ -151,20 +170,39 @@ export async function notifyStaff(
         referenceType: input.referenceType,
         referenceId: input.referenceId,
       });
-      if (person.email.includes('@')) {
-        await sendPortalMail({
-          to: [person.email],
-          subject: input.title,
-          eyebrow: input.eyebrow,
-          title: input.title,
-          greeting: `Hi ${person.fullName},`,
-          paragraphs: input.paragraphs,
-          details: input.details,
-          cta: { label: input.ctaLabel ?? 'Open HR Portal', href },
-        });
+      result.notified += 1;
+    } catch (error) {
+      console.error('In-app notification failed', input.type, person.id, error);
+    }
+
+    if (!person.email.includes('@')) {
+      result.mailSkipped += 1;
+      continue;
+    }
+    try {
+      const mail = await sendPortalMail({
+        to: [person.email],
+        subject: input.title,
+        eyebrow: input.eyebrow,
+        title: input.title,
+        greeting: `Hi ${person.fullName},`,
+        paragraphs: input.paragraphs,
+        details: input.details,
+        cta: { label: input.ctaLabel ?? 'Open HR Portal', href },
+      });
+      if (mail.sent) {
+        result.mailed += 1;
+      } else if (mail.outcome === 'failed') {
+        result.mailFailed += 1;
+        console.error('Notification mail rejected', input.type, person.id);
+      } else {
+        result.mailSkipped += 1;
       }
-    } catch {
-      /* Writes must succeed even if mail or in-app notify fails. */
+    } catch (error) {
+      result.mailFailed += 1;
+      console.error('Notification mail failed', input.type, person.id, error);
     }
   }
+
+  return result;
 }

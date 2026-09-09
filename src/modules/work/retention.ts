@@ -21,12 +21,24 @@ export function canPurgeAfterNotice(noticeAtIsoDate: string, today: string, noti
   return today >= readyOn;
 }
 
-export function matchingReminderSlot(
-  hour: number,
-  primaryHour: number,
-  secondHour: number | null,
-): 'primary' | 'second' | null {
-  if (hour === primaryHour) return 'primary';
-  if (secondHour != null && hour === secondHour && secondHour !== primaryHour) return 'second';
-  return null;
+/** Ascending, de-duplicated list of valid 0–23 reminder hours. */
+export function normalizeReminderHours(hours: (number | null | undefined)[]): number[] {
+  const valid = hours.filter(
+    (hour): hour is number => Number.isInteger(hour) && (hour as number) >= 0 && (hour as number) <= 23,
+  );
+  return [...new Set(valid)].sort((a, b) => a - b);
+}
+
+/**
+ * Index of the reminder slot due at `hour` — the latest configured hour at or before it.
+ *
+ * Catch-up by design: a runner that misses the exact hour still sends on its next tick, and the
+ * reminder log keeps every slot to a single mail per person per day.
+ */
+export function dueReminderSlot(hour: number, hours: number[]): number | null {
+  let due: number | null = null;
+  for (let index = 0; index < hours.length; index += 1) {
+    if (hours[index] <= hour) due = index;
+  }
+  return due;
 }

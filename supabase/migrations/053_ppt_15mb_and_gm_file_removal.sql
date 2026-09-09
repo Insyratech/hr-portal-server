@@ -1,4 +1,4 @@
-"-- Raise weekly + JC PPT limits 5 MB → 15 MB.
+-- Raise weekly + JC PPT limits 5 MB → 15 MB.
 -- Allow GM to remove weekly PPT files from storage while keeping audit rows.
 -- Add JC status/event: deleted (GM removes without download/email).
 
@@ -52,4 +52,3 @@ comment on table public.jc_ppts is
   'JC PPT: employee uploads; CSO transfers to GM; GM download/email/delete removes storage file but keeps this audit row. Max 15 MB.';
 
 notify pgrst, 'reload schema';
-"

@@ -571,7 +571,57 @@ export function createWorkService(supabase: SupabaseClient) {
     return rows;
   }
 
+  /**
+   * Every active project the employee belongs to, whether they lead it or not.
+   * Legacy rows may miss the lead's membership row, so led projects are unioned in.
+   */
+  async function listMyProjectRows(employeeId: string) {
+    const memberProjects = await listMemberProjects(employeeId);
+    const { data: ledRows, error } = await supabase
+      .from('projects')
+      .select('id, name, code, status, lead_employee_id')
+      .eq('lead_employee_id', employeeId)
+      .eq('status', 'active');
+    if (error) throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load led projects.', 500);
+    const byId = new Map(memberProjects.map((project) => [project.id, project]));
+    for (const row of ledRows ?? []) {
+      const id = row.id as string;
+      if (byId.has(id)) continue;
+      byId.set(id, {
+        id,
+        name: row.name as string,
+        code: row.code as string,
+        status: row.status as string,
+        leadEmployeeId: (row.lead_employee_id as string | null) ?? null,
+      });
+    }
+    return [...byId.values()].sort((a, b) => a.name.localeCompare(b.name));
+  }
+
   return {
+    /** Read-only project list for the signed-in employee — membership scoped, never org-wide. */
+    async listMyProjects(actor: RequestUser) {
+      if (!actor.employeeId) {
+        throw new AppError(API_ERROR_CODES.FORBIDDEN, 'Your account is not linked to an employee.', 403);
+      }
+      const baseProjects = await listMyProjectRows(actor.employeeId);
+      const projectIds = baseProjects.map((row) => row.id);
+      const membersByProject = await loadProjectMemberMap(projectIds);
+      const leadNames = await loadEmployeeNames(
+        baseProjects.map((row) => row.leadEmployeeId).filter((id): id is string => Boolean(id)),
+      );
+      const milestonesByProject = await loadActiveMilestonesByProject(projectIds);
+      return enrichProjectsForWeek(baseProjects, milestonesByProject, []).map((project) => {
+        const members = membersByProject.get(project.id) ?? [];
+        return {
+          ...project,
+          leadName: project.leadEmployeeId ? (leadNames.get(project.leadEmployeeId) ?? null) : null,
+          memberCount: members.length,
+          isLead: project.leadEmployeeId === actor.employeeId,
+        };
+      });
+    },
+
     async getWeek(actor: RequestUser, input: { employeeId?: string; date?: string }) {
       const employeeId = input.employeeId ?? actor.employeeId;
       if (employeeId !== actor.employeeId && !canViewOthers(actor)) {

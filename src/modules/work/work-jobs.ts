@@ -9,15 +9,25 @@ import { loadDayContext } from './day-context';
 import {
   DEFAULT_DAILY_REMINDER_HOUR,
   DEFAULT_SECOND_DAILY_REMINDER_HOUR,
+  DEFAULT_THIRD_DAILY_REMINDER_HOUR,
   MONDAY_PRIORITY_REMINDER_HOUR,
   WORK_TIMEZONE,
   formatIsoDateInZone,
+  formatWorkHour,
+  formatWorkHourList,
   hourInZone,
   zonedClock,
 } from './ist-clock';
 import { ensureWeeklyPlan } from './plans';
-import { isPastWeeklyPptReminderGate, pptWeekBounds, sundayOfPptWeek } from './ppt-week';
-import { matchingReminderSlot } from './retention';
+import {
+  WEEKLY_PPT_CSO_DIGEST_HOUR,
+  WEEKLY_PPT_LAST_HOUR,
+  WEEKLY_PPT_REMINDER_HOURS,
+  pptWeekBounds,
+  readWeeklyPptTiming,
+  sundayOfPptWeek,
+} from './ppt-week';
+import { dueReminderSlot, normalizeReminderHours } from './retention';
 import type { DayContext } from './types';
 import { weekBounds } from './week-bounds';
 import { ROLE_CODES } from '../../shared/constants/permissions';
@@ -26,12 +36,38 @@ export const REMINDER_KINDS = [
   'monday_priorities',
   'daily_update',
   'daily_update_second',
+  'daily_update_third',
   'carry_forward',
   'weekly_ppt',
   'weekly_ppt_second',
+  'weekly_ppt_third',
   'weekly_ppt_cso_digest',
 ] as const;
 export type ReminderKind = (typeof REMINDER_KINDS)[number];
+
+/** One kind per daily slot, in the same order as the configured reminder hours. */
+const DAILY_REMINDER_KINDS = ['daily_update', 'daily_update_second', 'daily_update_third'] as const;
+type DailyReminderKind = (typeof DAILY_REMINDER_KINDS)[number];
+
+/** One kind per Sunday PPT slot, in the same order as WEEKLY_PPT_REMINDER_HOURS. */
+const WEEKLY_PPT_REMINDER_KINDS = ['weekly_ppt', 'weekly_ppt_second', 'weekly_ppt_third'] as const;
+type WeeklyPptReminderKind = (typeof WEEKLY_PPT_REMINDER_KINDS)[number];
+
+/** Clamped so an extra configured hour still maps to a real kind instead of undefined. */
+function slotKind<T>(kinds: readonly T[], slot: number | null): T | null {
+  if (slot == null) return null;
+  return kinds[Math.min(slot, kinds.length - 1)];
+}
+
+/** Reminder kind for the daily slot due at this hour, or null before the first slot. */
+export function dailyReminderKindForSlot(slot: number | null): DailyReminderKind | null {
+  return slotKind(DAILY_REMINDER_KINDS, slot);
+}
+
+/** Reminder kind for the Sunday PPT slot due at this hour, or null before 18:00 IST. */
+export function weeklyPptReminderKindForSlot(slot: number | null): WeeklyPptReminderKind | null {
+  return slotKind(WEEKLY_PPT_REMINDER_KINDS, slot);
+}
 
 const CLOSED_PRIORITY = new Set(['COMPLETED', 'CANCELLED', 'CARRIED_FORWARD']);
 const SUBMITTED_APPROVAL = new Set(['SUBMITTED', 'APPROVED']);
@@ -47,33 +83,42 @@ export function shouldSkipMondayPriorityReminder(
   return context.onApprovedLeave || !context.required;
 }
 
-export type ReminderHours = { primary: number; second: number | null; timeZone: string };
+/** Configured daily reminder hours (IST), ascending. Defaults to 17 / 20 / 23. */
+export type ReminderHours = { hours: number[]; timeZone: string };
 
 export async function loadReminderHours(supabase: SupabaseClient): Promise<ReminderHours> {
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from('organization_settings')
-    .select('work_update_reminder_hour, work_update_second_reminder_hour')
+    .select('work_update_reminder_hour, work_update_second_reminder_hour, work_update_third_reminder_hour')
     .limit(1)
     .maybeSingle();
-  const primary = Number(data?.work_update_reminder_hour);
-  const secondRaw = data?.work_update_second_reminder_hour;
-  const second = secondRaw == null ? DEFAULT_SECOND_DAILY_REMINDER_HOUR : Number(secondRaw);
+  if (error) {
+    console.error('Work reminder hours could not be read; using IST defaults.', error);
+  }
+  const hours = normalizeReminderHours([
+    data?.work_update_reminder_hour == null
+      ? DEFAULT_DAILY_REMINDER_HOUR
+      : Number(data.work_update_reminder_hour),
+    data?.work_update_second_reminder_hour == null
+      ? DEFAULT_SECOND_DAILY_REMINDER_HOUR
+      : Number(data.work_update_second_reminder_hour),
+    data?.work_update_third_reminder_hour == null
+      ? DEFAULT_THIRD_DAILY_REMINDER_HOUR
+      : Number(data.work_update_third_reminder_hour),
+  ]);
   return {
-    primary:
-      Number.isInteger(primary) && primary >= 0 && primary <= 23 ? primary : DEFAULT_DAILY_REMINDER_HOUR,
-    second:
-      second != null && Number.isInteger(second) && second >= 0 && second <= 23
-        ? second
-        : DEFAULT_SECOND_DAILY_REMINDER_HOUR,
+    hours: hours.length
+      ? hours
+      : [
+          DEFAULT_DAILY_REMINDER_HOUR,
+          DEFAULT_SECOND_DAILY_REMINDER_HOUR,
+          DEFAULT_THIRD_DAILY_REMINDER_HOUR,
+        ],
     timeZone: WORK_TIMEZONE,
   };
 }
 
-/** @deprecated Prefer loadReminderHours — kept for callers that only need the primary hour. */
-export async function loadReminderHour(supabase: SupabaseClient): Promise<number> {
-  return (await loadReminderHours(supabase)).primary;
-}
-
+/** Reserves one reminder slot for one person per day. A duplicate key means it already went out. */
 async function claimReminder(
   supabase: SupabaseClient,
   employeeId: string,
@@ -85,8 +130,48 @@ async function claimReminder(
     work_date: workDate,
     reminder_kind: kind,
   });
-  if (error?.code === '23505') return false;
-  if (error) return false;
+  if (!error) return true;
+  if (error.code === '23505') return false;
+  console.error('Work reminder claim failed', kind, employeeId, workDate, error);
+  return false;
+}
+
+/** Frees a claimed slot after a delivery failure so the next run can retry it. */
+async function releaseReminder(
+  supabase: SupabaseClient,
+  employeeId: string,
+  workDate: string,
+  kind: ReminderKind,
+): Promise<void> {
+  const { error } = await supabase
+    .from('work_reminder_log')
+    .delete()
+    .eq('employee_id', employeeId)
+    .eq('work_date', workDate)
+    .eq('reminder_kind', kind);
+  if (error) {
+    console.error('Work reminder release failed', kind, employeeId, workDate, error);
+  }
+}
+
+/**
+ * Claims the slot, sends it, and rolls the claim back when mail was attempted and rejected.
+ * A skip (no address on file, or mail not configured) keeps the claim so the in-app
+ * notification is not duplicated on every run.
+ */
+async function deliverReminder(
+  supabase: SupabaseClient,
+  person: StaffContact,
+  workDate: string,
+  kind: ReminderKind,
+  input: Parameters<typeof notifyStaff>[2],
+): Promise<boolean> {
+  if (!(await claimReminder(supabase, person.id, workDate, kind))) return false;
+  const result = await notifyStaff(supabase, person, input);
+  if (result.mailFailed > 0) {
+    await releaseReminder(supabase, person.id, workDate, kind);
+    return false;
+  }
   return true;
 }
 
@@ -237,8 +322,7 @@ export async function runMondayPriorityReminders(
     if (await hasSubmittedPrioritiesForApproval(supabase, planId)) continue;
     const context = await loadDayContext(supabase, person.id, today);
     if (shouldSkipMondayPriorityReminder(context)) continue;
-    if (!(await claimReminder(supabase, person.id, today, 'monday_priorities'))) continue;
-    await notifyStaff(supabase, person, {
+    const delivered = await deliverReminder(supabase, person, today, 'monday_priorities', {
       type: 'work_week_priorities',
       title: 'Submit this week’s priorities',
       message: `Plan your week (${week.start} – ${week.end}) and submit for project lead approval before end of Monday.`,
@@ -252,12 +336,12 @@ export async function runMondayPriorityReminders(
       ],
       details: [
         { label: 'This week', value: `${week.start} – ${week.end}` },
-        { label: 'Reminder', value: `${MONDAY_PRIORITY_REMINDER_HOUR}:00 IST` },
+        { label: 'Reminder', value: `${formatWorkHour(MONDAY_PRIORITY_REMINDER_HOUR)} IST` },
       ],
       ctaLabel: 'Open my priorities',
       ctaHref: portalUrl('/work/priorities'),
     });
-    sent += 1;
+    if (delivered) sent += 1;
   }
 
   return { ...base, plans, sent, skipped: false, skipReason: null };
@@ -267,29 +351,29 @@ async function remindDailyUpdate(
   supabase: SupabaseClient,
   person: StaffContact,
   today: string,
-  kind: 'daily_update' | 'daily_update_second',
+  kind: DailyReminderKind,
+  hours: number[],
 ): Promise<boolean> {
   const context = await loadDayContext(supabase, person.id, today);
   if (!shouldMailDailyUpdate(context)) return false;
-  if (!(await claimReminder(supabase, person.id, today, kind))) return false;
-  const isSecond = kind === 'daily_update_second';
-  await notifyStaff(supabase, person, {
-    type: isSecond ? 'work_daily_update_second' : 'work_daily_update',
-    title: isSecond ? 'Reminder: log today’s work' : 'Log today’s work',
+  const isFirst = kind === 'daily_update';
+  const isLast = kind === DAILY_REMINDER_KINDS[DAILY_REMINDER_KINDS.length - 1];
+  return deliverReminder(supabase, person, today, kind, {
+    type: isFirst ? 'work_daily_update' : 'work_daily_update_second',
+    title: isFirst ? 'Log today’s work' : 'Reminder: log today’s work',
     message: 'Tick what you did and add a short note. It takes a minute or two.',
     referenceType: 'daily_work_day',
     referenceId: person.id,
     eyebrow: 'Work & Priorities',
     paragraphs: [
       'A short update is enough: what you finished, and if anything is stuck.',
-      isSecond
-        ? 'This is the evening follow-up (10:00 pm IST). You will not get another reminder today once you save.'
-        : 'Reminders go out at 8:00 pm and 10:00 pm IST on working days if today’s update is still missing.',
+      isLast
+        ? 'This is the last reminder for today. Save your update before the day closes.'
+        : `Reminders go out at ${formatWorkHourList(hours)} IST on working days if today’s update is still missing.`,
     ],
     ctaLabel: 'Log today',
     ctaHref: portalUrl('/work'),
   });
-  return true;
 }
 
 async function writeWeekSnapshot(
@@ -334,10 +418,7 @@ async function snapshotAndCarryPrompt(
   const context = await loadDayContext(supabase, person.id, today);
   if (!context.required) return { snapshot, carryMail: false };
   if (open.length === 0) return { snapshot, carryMail: false };
-  if (!(await claimReminder(supabase, person.id, today, 'carry_forward'))) {
-    return { snapshot, carryMail: false };
-  }
-  await notifyStaff(supabase, person, {
+  const carryMail = await deliverReminder(supabase, person, today, 'carry_forward', {
     type: 'work_carry_forward',
     title: 'Carry unfinished work to next week',
     message: `You still have ${open.length} open ${open.length === 1 ? 'priority' : 'priorities'}. Carry them forward if they continue.`,
@@ -352,17 +433,19 @@ async function snapshotAndCarryPrompt(
     ctaLabel: 'Review my week',
     ctaHref: portalUrl('/work/priorities'),
   });
-  return { snapshot, carryMail: true };
+  return { snapshot, carryMail };
 }
 
 export type EveningWorkResult = {
   date: string;
   hour: number;
-  reminderHour: number;
-  secondReminderHour: number | null;
+  reminderHours: number[];
   timeZone: string;
-  slot: 'primary' | 'second' | null;
+  /** Zero-based index into reminderHours, or null before the first slot of the day. */
+  slot: number | null;
+  reminderKind: DailyReminderKind | null;
   skipped: boolean;
+  skipReason: string | null;
   dailyReminders: number;
   carryForwardMails: number;
   snapshots: number;
@@ -374,22 +457,24 @@ export async function runWorkEveningReminders(
 ): Promise<EveningWorkResult> {
   const clock = zonedClock(now);
   const today = clock.isoDate;
-  const hours = await loadReminderHours(supabase);
+  const { hours } = await loadReminderHours(supabase);
   const hour = clock.hour;
-  const slot = matchingReminderSlot(hour, hours.primary, hours.second);
-  const empty: EveningWorkResult = {
+  const slot = dueReminderSlot(hour, hours);
+  const kind = dailyReminderKindForSlot(slot);
+  const base = {
     date: today,
     hour,
-    reminderHour: hours.primary,
-    secondReminderHour: hours.second,
+    reminderHours: hours,
     timeZone: WORK_TIMEZONE,
     slot,
-    skipped: true,
+    reminderKind: kind,
     dailyReminders: 0,
     carryForwardMails: 0,
     snapshots: 0,
   };
-  if (!slot) return empty;
+  if (kind == null) {
+    return { ...base, skipped: true, skipReason: 'before_first_reminder_hour' };
+  }
 
   const workingDays = await loadWorkingDays(supabase);
   const week = weekBounds(today, workingDays);
@@ -399,32 +484,20 @@ export async function runWorkEveningReminders(
   let dailyReminders = 0;
   let carryForwardMails = 0;
   let snapshots = 0;
-  const kind = slot === 'second' ? 'daily_update_second' : 'daily_update';
 
   for (const person of staff) {
     if (!inWorkReminderLoop(rolesByEmployee.get(person.id))) continue;
     const canUpdate = await prioritiesReadyForDaily(supabase, person.id, today, workingDays);
     if (!canUpdate) continue;
-    if (await remindDailyUpdate(supabase, person, today, kind)) dailyReminders += 1;
-    if (slot === 'primary' && lastWorkingDay) {
+    if (await remindDailyUpdate(supabase, person, today, kind, hours)) dailyReminders += 1;
+    if (lastWorkingDay) {
       const result = await snapshotAndCarryPrompt(supabase, person, today, week);
       if (result.snapshot) snapshots += 1;
       if (result.carryMail) carryForwardMails += 1;
     }
   }
 
-  return {
-    date: today,
-    hour,
-    reminderHour: hours.primary,
-    secondReminderHour: hours.second,
-    timeZone: WORK_TIMEZONE,
-    slot,
-    skipped: false,
-    dailyReminders,
-    carryForwardMails,
-    snapshots,
-  };
+  return { ...base, skipped: false, skipReason: null, dailyReminders, carryForwardMails, snapshots };
 }
 
 export type WeeklyPptReminderResult = {
@@ -433,7 +506,10 @@ export type WeeklyPptReminderResult = {
   timeZone: string;
   weekStart: string;
   deadlineDate: string;
-  slot: 'primary' | 'second' | null;
+  reminderHours: number[];
+  /** Zero-based index into WEEKLY_PPT_REMINDER_HOURS, or null before the 6 pm slot. */
+  slot: number | null;
+  reminderKind: WeeklyPptReminderKind | null;
   skipped: boolean;
   skipReason: string | null;
   sent: number;
@@ -444,8 +520,9 @@ export async function runWeeklyPptReminders(
   now = new Date(),
 ): Promise<WeeklyPptReminderResult> {
   const clock = zonedClock(now);
-  const hours = await loadReminderHours(supabase);
-  const slot = matchingReminderSlot(clock.hour, hours.primary, hours.second);
+  const hours = [...WEEKLY_PPT_REMINDER_HOURS];
+  const slot = dueReminderSlot(clock.hour, hours);
+  const kind = weeklyPptReminderKindForSlot(slot);
   const week = pptWeekBounds(clock.isoDate);
   const deadlineDate = sundayOfPptWeek(week.start);
   const base = {
@@ -454,24 +531,24 @@ export async function runWeeklyPptReminders(
     timeZone: WORK_TIMEZONE,
     weekStart: week.start,
     deadlineDate,
+    reminderHours: hours,
     slot,
+    reminderKind: kind,
     sent: 0,
   };
 
   if (clock.isoDate !== deadlineDate) {
     return { ...base, skipped: true, skipReason: 'not_deadline_day' };
   }
-  if (!slot) {
-    return { ...base, skipped: true, skipReason: 'outside_ist_hour' };
-  }
-  if (!isPastWeeklyPptReminderGate(now, week.start)) {
-    return { ...base, skipped: true, skipReason: 'before_18_ist' };
+  if (kind == null) {
+    return { ...base, skipped: true, skipReason: 'before_first_reminder_hour' };
   }
 
   const staff = await listActiveStaff(supabase);
   const rolesByEmployee = await loadEmployeeRoleMap(supabase);
   let sent = 0;
-  const kind = slot === 'second' ? 'weekly_ppt_second' : 'weekly_ppt';
+  const isFirst = kind === 'weekly_ppt';
+  const isLast = kind === WEEKLY_PPT_REMINDER_KINDS[WEEKLY_PPT_REMINDER_KINDS.length - 1];
 
   for (const person of staff) {
     if (!inWorkReminderLoop(rolesByEmployee.get(person.id))) continue;
@@ -482,21 +559,19 @@ export async function runWeeklyPptReminders(
       .eq('week_start', week.start)
       .maybeSingle();
     if (existing?.id) continue;
-    if (!(await claimReminder(supabase, person.id, deadlineDate, kind))) continue;
-    const isSecond = kind === 'weekly_ppt_second';
-    await notifyStaff(supabase, person, {
-      type: isSecond ? 'work_weekly_ppt_second' : 'work_weekly_ppt',
-      title: isSecond ? 'Reminder: upload this week’s PPT' : 'Upload this week’s work update PPT',
+    const delivered = await deliverReminder(supabase, person, deadlineDate, kind, {
+      type: isFirst ? 'work_weekly_ppt' : 'work_weekly_ppt_second',
+      title: isFirst ? 'Upload this week’s work update PPT' : 'Reminder: upload this week’s PPT',
       message: `Please upload your weekly wrap PPT for ${week.start} – ${week.end} (deadline Sunday 23:59 IST).`,
       referenceType: 'weekly_work_update',
       referenceId: week.start,
       eyebrow: 'Weekly update',
       paragraphs: [
         'Drag and drop your .ppt / .pptx (max 15 MB) on Weekly update.',
-        'Submit by Sunday 23:59 IST. Uploads after 6:00 pm IST on Sunday are marked late.',
-        isSecond
-          ? 'This is the 10:00 pm IST follow-up. You will not get another PPT reminder this week once you upload.'
-          : 'Reminders go out at 8:00 pm and 10:00 pm IST on Sunday only if the deck is still missing.',
+        `Submit by Sunday 23:59 IST. Uploads from ${formatWorkHour(WEEKLY_PPT_LAST_HOUR)} are tagged Last hour submission; anything after Sunday is late.`,
+        isLast
+          ? 'This is the last PPT reminder this week. Upload before Sunday ends.'
+          : `Reminders go out at ${formatWorkHourList(hours)} IST on Sunday only if the deck is still missing.`,
       ],
       details: [
         { label: 'Week', value: `${week.start} – ${week.end}` },
@@ -505,7 +580,7 @@ export async function runWeeklyPptReminders(
       ctaLabel: 'Upload weekly PPT',
       ctaHref: portalUrl('/work/weekly-update'),
     });
-    sent += 1;
+    if (delivered) sent += 1;
   }
 
   return { ...base, sent, skipped: false, skipReason: null };
@@ -520,6 +595,7 @@ export type WeeklyPptCsoDigestResult = {
   skipReason: string | null;
   sent: number;
   onTime: number;
+  lastHour: number;
   late: number;
   missing: number;
   expected: number;
@@ -538,6 +614,7 @@ export async function runWeeklyPptCsoDigest(
     timeZone: WORK_TIMEZONE,
     weekStart: week.start,
     onTime: 0,
+    lastHour: 0,
     late: 0,
     missing: 0,
     expected: 0,
@@ -547,31 +624,39 @@ export async function runWeeklyPptCsoDigest(
   if (clock.isoDate !== deadlineDate) {
     return { ...base, skipped: true, skipReason: 'not_deadline_day' };
   }
-  if (clock.hour !== DEFAULT_SECOND_DAILY_REMINDER_HOUR) {
-    return { ...base, skipped: true, skipReason: 'outside_digest_hour' };
+  if (clock.hour < WEEKLY_PPT_CSO_DIGEST_HOUR) {
+    return { ...base, skipped: true, skipReason: 'before_digest_hour' };
   }
 
   const staff = await listActiveStaff(supabase);
   const rolesByEmployee = await loadEmployeeRoleMap(supabase);
   const loop = staff.filter((person) => !skipsWorkApprovalLoop(rolesByEmployee.get(person.id) ?? []));
-  const { data: updates } = await supabase.from('weekly_work_updates').select('employee_id, late').eq('week_start', week.start);
-  const byEmployee = new Map((updates ?? []).map((row) => [row.employee_id as string, row]));
+  const { data: updates } = await supabase
+    .from('weekly_work_updates')
+    .select('employee_id, late, submission_timing')
+    .eq('week_start', week.start);
+  const timingByEmployee = new Map(
+    (updates ?? []).map((row) => [row.employee_id as string, readWeeklyPptTiming(row)]),
+  );
 
   let onTime = 0;
+  let lastHour = 0;
   let late = 0;
   let missing = 0;
   const lateNames: string[] = [];
   const missingNames: string[] = [];
   for (const person of loop) {
-    const row = byEmployee.get(person.id);
-    if (!row) {
+    const timing = timingByEmployee.get(person.id);
+    if (!timing) {
       missing += 1;
       if (missingNames.length < 8) missingNames.push(person.fullName);
       continue;
     }
-    if (row.late) {
+    if (timing === 'late') {
       late += 1;
       if (lateNames.length < 8) lateNames.push(person.fullName);
+    } else if (timing === 'last_hour') {
+      lastHour += 1;
     } else {
       onTime += 1;
     }
@@ -580,17 +665,16 @@ export async function runWeeklyPptCsoDigest(
   const csoStaff = await listStaffByRole(supabase, ROLE_CODES.CSO);
   let sent = 0;
   for (const cso of csoStaff) {
-    if (!(await claimReminder(supabase, cso.id, deadlineDate, 'weekly_ppt_cso_digest'))) continue;
-    await notifyStaff(supabase, cso, {
+    const delivered = await deliverReminder(supabase, cso, deadlineDate, 'weekly_ppt_cso_digest', {
       type: 'work',
       title: 'Sunday weekly PPT digest',
-      message: `This week: ${onTime} on time, ${late} late, ${missing} missing (of ${loop.length}).`,
+      message: `This week: ${onTime + lastHour} submitted in time, ${late} late, ${missing} missing (of ${loop.length}).`,
       referenceType: 'weekly_ppt_desk',
       referenceId: week.start,
       eyebrow: 'Weekly updates',
       paragraphs: [
         `Weekly wrap PPT status for ${week.start} – ${week.end}.`,
-        `On time: ${onTime}. Late: ${late}. Missing: ${missing}. Expected: ${loop.length}.`,
+        `On time: ${onTime}. Last hour: ${lastHour}. Late: ${late}. Missing: ${missing}. Expected: ${loop.length}.`,
         lateNames.length ? `Late: ${lateNames.join(', ')}${late > lateNames.length ? '…' : ''}` : '',
         missingNames.length
           ? `Missing: ${missingNames.join(', ')}${missing > missingNames.length ? '…' : ''}`
@@ -600,18 +684,20 @@ export async function runWeeklyPptCsoDigest(
       details: [
         { label: 'Week', value: `${week.start} – ${week.end}` },
         { label: 'On time', value: String(onTime) },
+        { label: 'Last hour', value: String(lastHour) },
         { label: 'Late', value: String(late) },
         { label: 'Missing', value: String(missing) },
       ],
       ctaLabel: 'Open weekly PPT desk',
       ctaHref: portalUrl('/cso/work/weekly-updates'),
     });
-    sent += 1;
+    if (delivered) sent += 1;
   }
 
   return {
     ...base,
     onTime,
+    lastHour,
     late,
     missing,
     expected: loop.length,

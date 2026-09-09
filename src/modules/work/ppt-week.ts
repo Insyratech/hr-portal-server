@@ -38,18 +38,61 @@ export function sundayOfPptWeek(weekStart: string): string {
   return formatIsoDate(addUtcDays(parseIsoDate(weekStart), 6));
 }
 
-/** Late when submitted at or after Sunday 18:00 IST (deadline day evening). */
-export function isWeeklyPptLate(now: Date, weekStart: string): boolean {
+/**
+ * Sunday reminder hours (IST) for a missing weekly PPT: 6 pm, 8 pm, 10 pm.
+ * Deliberately independent of the lateness threshold — these nudge before the 23:59 deadline.
+ */
+export const WEEKLY_PPT_REMINDER_HOURS = [18, 20, 22] as const;
+
+/** Sunday hour (IST) from which the CSO status digest may go out. */
+export const WEEKLY_PPT_CSO_DIGEST_HOUR = 22;
+
+/** Sunday hour (IST) from which a submission counts as a last-hour submission rather than on time. */
+export const WEEKLY_PPT_LAST_HOUR = 23;
+
+/**
+ * How a weekly PPT submission is tagged.
+ * `on_time` up to Sunday 22:59 IST, `last_hour` Sunday 23:00–23:59 IST, `late` from Monday.
+ */
+export type WeeklyPptTiming = 'on_time' | 'last_hour' | 'late';
+
+export function weeklyPptTiming(now: Date, weekStart: string): WeeklyPptTiming {
   const sunday = sundayOfPptWeek(weekStart);
   const clock = zonedClock(now, WORK_TIMEZONE);
-  if (clock.isoDate > sunday) return true;
-  if (clock.isoDate < sunday) return false;
-  return clock.hour >= 18;
+  if (clock.isoDate > sunday) return 'late';
+  if (clock.isoDate < sunday) return 'on_time';
+  return clock.hour >= WEEKLY_PPT_LAST_HOUR ? 'last_hour' : 'on_time';
 }
 
-/** Sunday 18:00 IST gate used by reminder jobs. */
-export function isPastWeeklyPptReminderGate(now: Date, weekStart: string): boolean {
-  return isWeeklyPptLate(now, weekStart);
+/** The stored `late` flag: only submissions after Sunday 23:59 IST count as late. */
+export function isWeeklyPptLate(timing: WeeklyPptTiming): boolean {
+  return timing === 'late';
+}
+
+/**
+ * Timing of a stored row. Falls back to the `late` flag so rows written before the
+ * submission_timing column existed still read correctly.
+ */
+export function readWeeklyPptTiming(row: {
+  submission_timing?: string | null;
+  late?: boolean | null;
+}): WeeklyPptTiming {
+  if (row.submission_timing === 'last_hour' || row.submission_timing === 'late') {
+    return row.submission_timing;
+  }
+  if (row.submission_timing === 'on_time') return 'on_time';
+  return row.late ? 'late' : 'on_time';
+}
+
+export function weeklyPptTimingLabel(timing: WeeklyPptTiming): string {
+  switch (timing) {
+    case 'late':
+      return 'Late';
+    case 'last_hour':
+      return 'Last hour submission';
+    default:
+      return 'On time';
+  }
 }
 
 export function sanitizePersonNameForFile(fullName: string): string {
