@@ -35,6 +35,7 @@ function paragraphsToText(content: PortalMailContent): string {
   }
   if (content.cta) {
     lines.push(content.cta.label, content.cta.href);
+    lines.push('', 'Copy and paste that address into your browser if it is not already a link.');
   }
   return lines.join('\n').trim();
 }
@@ -49,6 +50,31 @@ function detailRows(details: { label: string; value: string }[]): string {
         </tr>`,
     )
     .join('');
+}
+
+/**
+ * Portal CTAs must not use `<a href="…">`.
+ *
+ * Brevo rewrites every HTML href to a `*.sendibt2.com` tracking URL. When that
+ * host is unreachable (DNS / firewall / Brevo outage), Sign in and reset links
+ * die with ERR_ADDRESS_UNREACHABLE even though the visible URL is correct.
+ * Brevo does not expose an API switch to disable click wrapping on standard
+ * plans, so we put the real portal URL as plain text. Gmail, Outlook, and Apple
+ * Mail auto-linkify `https://…` at display time — those client-side links go
+ * straight to the portal and never touch sendibt2.
+ */
+function ctaBlock(cta: { label: string; href: string }): string {
+  const label = escapeHtml(cta.label);
+  const href = escapeHtml(cta.href);
+  return `<table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="margin:8px 0 16px;">
+        <tr>
+          <td style="background:${INK};padding:16px 24px;">
+            <p style="margin:0 0 10px;font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:${WHITE};opacity:0.75;">${label}</p>
+            <p style="margin:0;font-size:14px;line-height:1.5;font-weight:600;color:${WHITE};word-break:break-all;">${href}</p>
+          </td>
+        </tr>
+      </table>
+      <p style="margin:0 0 8px;font-size:12px;line-height:1.5;color:${MUTED};">Tap the address above, or copy and paste it into your browser.</p>`;
 }
 
 export function renderPortalEmail(content: PortalMailContent): { html: string; text: string } {
@@ -68,18 +94,7 @@ export function renderPortalEmail(content: PortalMailContent): { html: string; t
         </td></tr>
       </table>`
     : '';
-  const cta = content.cta
-    ? `<table role="presentation" cellpadding="0" cellspacing="0" style="margin:8px 0 24px;">
-        <tr>
-          <td style="background:${INK};">
-            <a href="${escapeHtml(content.cta.href)}" style="display:inline-block;padding:12px 24px;font-size:14px;font-weight:600;letter-spacing:0.04em;color:${WHITE};text-decoration:none;">${escapeHtml(content.cta.label)}</a>
-          </td>
-        </tr>
-      </table>
-      <p style="margin:0 0 8px;font-size:12px;line-height:1.5;color:${MUTED};">Or paste this link into your browser:<br />
-        <a href="${escapeHtml(content.cta.href)}" style="color:${INK};word-break:break-all;">${escapeHtml(content.cta.href)}</a>
-      </p>`
-    : '';
+  const cta = content.cta ? ctaBlock(content.cta) : '';
 
   const html = `<!DOCTYPE html>
 <html lang="en">

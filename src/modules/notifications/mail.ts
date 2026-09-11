@@ -59,7 +59,10 @@ export async function sendMail(input: MailInput): Promise<MailResult> {
     },
     body: JSON.stringify({
       sender: { email: env.BREVO_SENDER_EMAIL, name: env.BREVO_SENDER_NAME || 'HR Portal' },
-      to: recipients.map((email) => ({ email })),
+      // When per-contact pixel consent is enabled on the Brevo account, false keeps
+      // open/click events anonymous. It does not remove href rewriting by itself —
+      // portal emails therefore avoid <a href> (see email-layout.ts).
+      to: recipients.map((email) => ({ email, contactPixelTrackingConsent: false })),
       subject: input.subject,
       textContent: input.text,
       htmlContent: input.html,

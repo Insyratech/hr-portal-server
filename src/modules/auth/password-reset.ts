@@ -91,7 +91,7 @@ export function createPasswordResetService(supabase: SupabaseClient) {
         title: 'Reset your password',
         greeting: `Hi ${fullName},`,
         paragraphs: [
-          'We received a request to reset your HR Portal password. Use the button below to choose a new one.',
+          'We received a request to reset your HR Portal password. Open the address below to choose a new one.',
           'If you did not ask for this, you can ignore this email. Your password will stay the same.',
         ],
         cta: { label: 'Reset password', href: resetLink },

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { renderPortalEmail } from './email-layout';
 
 describe('renderPortalEmail', () => {
-  it('builds a black-and-white HTML card with a CTA', () => {
+  it('builds a black-and-white HTML card with a plain-text portal CTA', () => {
     const { html, text } = renderPortalEmail({
       eyebrow: 'Profile',
       title: 'Your profile was updated',
@@ -16,9 +16,12 @@ describe('renderPortalEmail', () => {
     expect(html).toContain('#ffffff');
     expect(html).toContain('Sign in');
     expect(html).toContain('http://localhost:3000/login');
+    // Brevo rewrites <a href> to sendibt2 — portal CTAs must stay plain text.
+    expect(html).not.toMatch(/<a\b[^>]*href\s*=/i);
     expect(html).not.toContain('<script');
     expect(text).toContain('Hi Sandip,');
     expect(text).toContain('http://localhost:3000/login');
+    expect(text).toContain('Copy and paste that address into your browser');
   });
 
   it('escapes values from the product', () => {
@@ -26,9 +29,12 @@ describe('renderPortalEmail', () => {
       title: 'Leave <pending>',
       paragraphs: ['Name: <b>x</b>'],
       details: [{ label: 'Email', value: 'a@b.com' }],
+      cta: { label: 'Open', href: 'https://example.com/path?x=<y>"' },
     });
     expect(html).toContain('Leave &lt;pending&gt;');
     expect(html).toContain('Name: &lt;b&gt;x&lt;/b&gt;');
     expect(html).toContain('a@b.com');
+    expect(html).toContain('https://example.com/path?x=&lt;y&gt;&quot;');
+    expect(html).not.toMatch(/<a\b[^>]*href\s*=/i);
   });
 });
