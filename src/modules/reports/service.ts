@@ -545,40 +545,49 @@ export function createReportService(supabase: SupabaseClient) {
           milestoneByProject.set(projectId, (row.name as string) || 'Active milestone');
         }
       }
-      const memberCountByProject = new Map<string, number>();
+      const membersByProject = new Map<string, string[]>();
       for (const row of memberRows) {
         const projectId = row.project_id as string;
-        memberCountByProject.set(projectId, (memberCountByProject.get(projectId) ?? 0) + 1);
+        const employeeId = row.employee_id as string;
+        const list = membersByProject.get(projectId) ?? [];
+        list.push(employeeId);
+        membersByProject.set(projectId, list);
       }
-      const leadIds = [
-        ...new Set(
-          projectRows
+      const peopleIds = [
+        ...new Set([
+          ...memberRows.map((row) => row.employee_id as string),
+          ...projectRows
             .map((row) => row.lead_employee_id as string | null)
             .filter((id): id is string => Boolean(id)),
-        ),
+        ]),
       ];
-      const leadNameById = new Map<string, string>();
-      if (leadIds.length > 0) {
-        const { data: leads } = await supabase
-          .from('employees')
-          .select('id, full_name')
-          .in('id', leadIds);
-        for (const lead of leads ?? []) {
-          leadNameById.set(lead.id as string, lead.full_name as string);
+      const nameById = new Map<string, string>();
+      if (peopleIds.length > 0) {
+        const { data: people } = await supabase.from('employees').select('id, full_name').in('id', peopleIds);
+        for (const person of people ?? []) {
+          nameById.set(person.id as string, person.full_name as string);
         }
       }
       const projectItems = projectRows
         .map((row) => {
           const id = row.id as string;
           const leadEmployeeId = (row.lead_employee_id as string | null) ?? null;
+          const memberIds = membersByProject.get(id) ?? [];
+          const members = memberIds
+            .map((employeeId) => ({
+              employeeId,
+              fullName: nameById.get(employeeId) ?? 'Employee',
+            }))
+            .sort((a, b) => a.fullName.localeCompare(b.fullName));
           return {
             id,
             name: row.name as string,
             code: row.code as string,
             status: row.status as string,
             leadEmployeeId,
-            leadName: leadEmployeeId ? (leadNameById.get(leadEmployeeId) ?? null) : null,
-            memberCount: memberCountByProject.get(id) ?? 0,
+            leadName: leadEmployeeId ? (nameById.get(leadEmployeeId) ?? null) : null,
+            memberCount: members.length,
+            members,
             activeMilestoneName: milestoneByProject.get(id) ?? null,
           };
         })

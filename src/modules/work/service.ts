@@ -623,6 +623,7 @@ export function createWorkService(supabase: SupabaseClient) {
           ...project,
           leadName: project.leadEmployeeId ? (leadNames.get(project.leadEmployeeId) ?? null) : null,
           memberCount: members.length,
+          members,
           isLead: project.leadEmployeeId === actor.employeeId,
         };
       });
