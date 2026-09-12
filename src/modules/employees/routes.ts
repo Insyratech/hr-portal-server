@@ -307,4 +307,18 @@ export async function registerEmployeeRoutes(app: FastifyInstance): Promise<void
       return ok(await createWorkWeekService(app.supabase).save(request.user, id, body, requestMeta(request)));
     },
   );
+
+  app.delete(
+    '/api/v1/employees/:id/work-week/:weekId',
+    { preHandler: [requirePermission(PERMISSIONS.SHIFTS_MANAGE)] },
+    async (request) => {
+      if (!app.supabase || !request.user) {
+        throw new AppError(API_ERROR_CODES.SERVICE_UNAVAILABLE, 'Database is not configured.', 503);
+      }
+      const { id, weekId } = request.params as { id: string; weekId: string };
+      return ok(
+        await createWorkWeekService(app.supabase).delete(request.user, id, weekId, requestMeta(request)),
+      );
+    },
+  );
 }

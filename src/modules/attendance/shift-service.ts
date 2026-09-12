@@ -214,6 +214,91 @@ export function createShiftService(supabase: SupabaseClient) {
       };
     },
 
+    async deleteAssignment(actor: RequestUser, assignmentId: string, meta: RequestMeta) {
+      assertHrDomainOwner(actor, 'assign shifts');
+      if (!canWriteDirectoryShiftAssignments(actor)) {
+        throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot assign shifts.', 403);
+      }
+
+      const { data: row, error } = await supabase
+        .from('shift_assignments')
+        .select('id, employee_id, shift_id, effective_from, effective_to')
+        .eq('id', assignmentId)
+        .maybeSingle();
+      if (error) {
+        throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load shift assignment.', 500);
+      }
+      if (!row) {
+        throw new AppError(API_ERROR_CODES.NOT_FOUND, 'Shift assignment not found.', 404);
+      }
+
+      const employeeId = row.employee_id as string;
+      await assertCanStaffDirectoryTarget(supabase, actor, employeeId);
+
+      const effectiveFrom = String(row.effective_from).slice(0, 10);
+      const effectiveTo = row.effective_to ? String(row.effective_to).slice(0, 10) : null;
+
+      let attendanceQuery = supabase
+        .from('attendance_records')
+        .select('id', { count: 'exact', head: true })
+        .eq('employee_id', employeeId)
+        .gte('attendance_date', effectiveFrom);
+      if (effectiveTo) {
+        attendanceQuery = attendanceQuery.lte('attendance_date', effectiveTo);
+      }
+      const { count: attendanceCount, error: attendanceError } = await attendanceQuery;
+      if (attendanceError) {
+        throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to check attendance for this shift.', 500);
+      }
+      if ((attendanceCount ?? 0) > 0) {
+        throw new AppError(
+          API_ERROR_CODES.CONFLICT,
+          'This shift covers published attendance days and cannot be removed. Assign a new shift instead.',
+          409,
+        );
+      }
+
+      const { error: deleteError } = await supabase.from('shift_assignments').delete().eq('id', assignmentId);
+      if (deleteError) {
+        throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to remove shift assignment.', 500);
+      }
+
+      await writeAuditLog(supabase, {
+        actorId: actor.employeeId,
+        action: 'shift_assignment.delete',
+        entityType: 'shift_assignment',
+        entityId: assignmentId,
+        oldValues: {
+          employeeId,
+          shiftId: row.shift_id,
+          effectiveFrom,
+          effectiveTo,
+        },
+        ...meta,
+      });
+
+      const { data: shift } = await supabase.from('shifts').select('name').eq('id', row.shift_id).maybeSingle();
+      const shiftName = (shift?.name as string | undefined) ?? 'a shift';
+      await notifyStaff(supabase, await loadStaffById(supabase, employeeId), {
+        type: 'attendance',
+        title: 'Shift assignment removed',
+        message: `${shiftName} (from ${effectiveFrom}) was removed from your shift history.`,
+        referenceType: 'shift_assignment',
+        referenceId: assignmentId,
+        eyebrow: 'Attendance',
+        paragraphs: [
+          `An administrator removed ${shiftName} effective from ${effectiveFrom} from your shift history.`,
+        ],
+        details: [
+          { label: 'Shift', value: shiftName },
+          { label: 'Effective from', value: effectiveFrom },
+        ],
+        ctaLabel: 'Open HR Portal',
+      });
+
+      return { id: assignmentId };
+    },
+
     async listAssignments() {
       const { data, error } = await supabase
         .from('shift_assignments')

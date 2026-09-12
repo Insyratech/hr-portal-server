@@ -8,6 +8,7 @@ import { requireAuth, requirePermission } from '../../plugins/permissions';
 import { requireSupabase } from '../leave/support';
 import { createAttendanceImportService } from './import/service';
 import { createAttendanceService } from './service';
+import { createMyScheduleService } from './my-schedule';
 import { createShiftService } from './shift-service';
 import type { HrAction } from './import/lop-proposal';
 
@@ -37,6 +38,12 @@ export async function registerAttendanceRoutes(app: FastifyInstance): Promise<vo
     if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
     const query = request.query as { period?: string };
     return ok(await createAttendanceService(supabase).getMine(request.user, query.period));
+  });
+
+  app.get('/api/v1/me/schedule', { preHandler: [requireAuth()] }, async (request) => {
+    const supabase = requireSupabase(app.supabase);
+    if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
+    return ok(await createMyScheduleService(supabase).getMine(request.user));
   });
 
   app.get(
@@ -175,4 +182,16 @@ export async function registerAttendanceRoutes(app: FastifyInstance): Promise<vo
     const body = request.body as { employeeId: string; shiftId: string; effectiveFrom?: string };
     return ok(await createShiftService(requireSupabase(app.supabase)).assign(request.user, body, metaOf(request)));
   });
+
+  app.delete(
+    '/api/v1/shift-assignments/:id',
+    { preHandler: [requirePermission(PERMISSIONS.SHIFTS_MANAGE)] },
+    async (request) => {
+      if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
+      const { id } = request.params as { id: string };
+      return ok(
+        await createShiftService(requireSupabase(app.supabase)).deleteAssignment(request.user, id, metaOf(request)),
+      );
+    },
+  );
 }

@@ -189,6 +189,48 @@ export function createWorkWeekService(supabase: SupabaseClient) {
 
       return mapWorkWeek({ ...saved, effective_to: null });
     },
+
+    async delete(actor: RequestUser, employeeId: string, weekId: string, meta: RequestMeta) {
+      if (!canWriteDirectoryShiftAssignments(actor)) {
+        throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot update working weeks.', 403);
+      }
+      await assertCanStaffDirectoryTarget(supabase, actor, employeeId);
+
+      const { data: row, error } = await supabase
+        .from('employee_work_weeks')
+        .select('*')
+        .eq('id', weekId)
+        .eq('employee_id', employeeId)
+        .maybeSingle();
+      if (error) {
+        throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load working week.', 500);
+      }
+      if (!row) {
+        throw new AppError(API_ERROR_CODES.NOT_FOUND, 'Working week not found.', 404);
+      }
+
+      const mapped = mapWorkWeek(row as WorkWeekRow);
+      const { error: deleteError } = await supabase.from('employee_work_weeks').delete().eq('id', weekId);
+      if (deleteError) {
+        throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to remove working week.', 500);
+      }
+
+      await writeAuditLog(supabase, {
+        actorId: actor.employeeId,
+        action: 'employee.work_week_delete',
+        entityType: 'employee_work_week',
+        entityId: weekId,
+        oldValues: {
+          employeeId,
+          pattern: mapped.pattern,
+          effectiveFrom: mapped.effectiveFrom,
+          effectiveTo: mapped.effectiveTo,
+        },
+        ...meta,
+      });
+
+      return { id: weekId };
+    },
   };
 }
 
