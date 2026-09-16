@@ -20,6 +20,17 @@ export type Env = {
   VAPID_PUBLIC_KEY: string;
   VAPID_PRIVATE_KEY: string;
   VAPID_SUBJECT: string;
+  /** Finance GSP: sandbox (default) never calls IRP; live requires licensed GSP credentials. */
+  FINANCE_GSP_MODE: 'sandbox' | 'live';
+  FINANCE_GSP_BASE_URL: string;
+  FINANCE_GSP_CLIENT_ID: string;
+  FINANCE_GSP_CLIENT_SECRET: string;
+  FINANCE_GSP_GSTIN: string;
+  FINANCE_PAYMENT_GATEWAY_PROVIDER: 'none' | 'razorpay' | 'stripe';
+  FINANCE_PAYMENT_GATEWAY_KEY_ID: string;
+  FINANCE_PAYMENT_GATEWAY_KEY_SECRET: string;
+  FINANCE_BANK_FEED_PROVIDER: 'none' | 'account_aggregator' | 'manual_api';
+  FINANCE_BANK_FEED_API_KEY: string;
 };
 
 function readHost(source: NodeJS.ProcessEnv): string {
@@ -52,6 +63,15 @@ function readPort(value: string | undefined, fallback: number): number {
 }
 
 export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
+  const gspModeRaw = (source.FINANCE_GSP_MODE ?? 'sandbox').trim().toLowerCase();
+  const gspMode: Env['FINANCE_GSP_MODE'] = gspModeRaw === 'live' ? 'live' : 'sandbox';
+  const payProviderRaw = (source.FINANCE_PAYMENT_GATEWAY_PROVIDER ?? 'none').trim().toLowerCase();
+  const payProvider: Env['FINANCE_PAYMENT_GATEWAY_PROVIDER'] =
+    payProviderRaw === 'razorpay' || payProviderRaw === 'stripe' ? payProviderRaw : 'none';
+  const bankFeedRaw = (source.FINANCE_BANK_FEED_PROVIDER ?? 'none').trim().toLowerCase();
+  const bankFeed: Env['FINANCE_BANK_FEED_PROVIDER'] =
+    bankFeedRaw === 'account_aggregator' || bankFeedRaw === 'manual_api' ? bankFeedRaw : 'none';
+
   return {
     NODE_ENV: source.NODE_ENV ?? 'development',
     PORT: readPort(source.PORT, 3001),
@@ -69,6 +89,16 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     VAPID_PUBLIC_KEY: source.VAPID_PUBLIC_KEY ?? '',
     VAPID_PRIVATE_KEY: source.VAPID_PRIVATE_KEY ?? '',
     VAPID_SUBJECT: source.VAPID_SUBJECT ?? '',
+    FINANCE_GSP_MODE: gspMode,
+    FINANCE_GSP_BASE_URL: source.FINANCE_GSP_BASE_URL ?? '',
+    FINANCE_GSP_CLIENT_ID: source.FINANCE_GSP_CLIENT_ID ?? '',
+    FINANCE_GSP_CLIENT_SECRET: source.FINANCE_GSP_CLIENT_SECRET ?? '',
+    FINANCE_GSP_GSTIN: source.FINANCE_GSP_GSTIN ?? '',
+    FINANCE_PAYMENT_GATEWAY_PROVIDER: payProvider,
+    FINANCE_PAYMENT_GATEWAY_KEY_ID: source.FINANCE_PAYMENT_GATEWAY_KEY_ID ?? '',
+    FINANCE_PAYMENT_GATEWAY_KEY_SECRET: source.FINANCE_PAYMENT_GATEWAY_KEY_SECRET ?? '',
+    FINANCE_BANK_FEED_PROVIDER: bankFeed,
+    FINANCE_BANK_FEED_API_KEY: source.FINANCE_BANK_FEED_API_KEY ?? '',
   };
 }
 

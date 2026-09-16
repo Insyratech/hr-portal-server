@@ -1,6 +1,7 @@
 import { API_ERROR_CODES } from '../../shared/constants/error-codes';
 import { isLeaveStartWithinBookingWindow, leaveTooFarInAdvanceMessage } from './booking-window';
 import { countLeaveQuantity, parseIsoDate, serviceDays } from './day-count';
+import { leaveNoticeMet, noticeHoursValue, noticePeriodNotMetMessage } from './notice-deadline';
 import type { ApplicationInput, EngineResult, LeaveTypeFlags, PolicyRules, Violation } from './types';
 
 function add(violations: Violation[], code: string, message: string): void {
@@ -100,14 +101,25 @@ export function validateApplication(
     );
   }
 
-  const hoursUntilStart = (start.getTime() - input.now.getTime()) / 3_600_000;
-  const noticeHours =
-    rules.noticePeriod.unit === 'days' ? rules.noticePeriod.value * 24 : rules.noticePeriod.value;
-  if (noticeHours > 0 && hoursUntilStart < noticeHours) {
+  const noticeHours = noticeHoursValue(rules.noticePeriod);
+  if (
+    input.enforceNoticePeriod !== false &&
+    noticeHours > 0 &&
+    !leaveNoticeMet({
+      startDate: input.startDate,
+      now: input.now,
+      noticeHours,
+      shift: input.shift,
+    })
+  ) {
     add(
       violations,
       API_ERROR_CODES.NOTICE_PERIOD_NOT_MET,
-      `This leave requires ${rules.noticePeriod.value} ${rules.noticePeriod.unit} notice.`,
+      noticePeriodNotMetMessage({
+        noticePeriod: rules.noticePeriod,
+        startDate: input.startDate,
+        shift: input.shift,
+      }),
     );
   }
 

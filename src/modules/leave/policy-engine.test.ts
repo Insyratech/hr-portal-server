@@ -166,6 +166,52 @@ describe('validateApplication', () => {
     expect(result.violations.some((item) => item.code === API_ERROR_CODES.NOTICE_PERIOD_NOT_MET)).toBe(true);
   });
 
+  it('allows same-day leave until 1 hour before evening shift start', () => {
+    const result = validateApplication(
+      flags,
+      { ...casual, noticePeriod: { value: 1, unit: 'hours' } },
+      baseInput({
+        startDate: '2026-09-16',
+        endDate: '2026-09-16',
+        now: new Date('2026-09-16T03:07:00.000Z'),
+        shift: { name: 'Evening Shift', startTime: '13:30', flexible: false },
+      }),
+    );
+    expect(result.valid).toBe(true);
+  });
+
+  it('rejects leave after the shift-based notice deadline', () => {
+    const result = validateApplication(
+      flags,
+      { ...casual, noticePeriod: { value: 1, unit: 'hours' } },
+      baseInput({
+        startDate: '2026-09-16',
+        endDate: '2026-09-16',
+        now: new Date('2026-09-16T07:15:00.000Z'),
+        shift: { name: 'Evening Shift', startTime: '13:30', flexible: false },
+      }),
+    );
+    const notice = result.violations.find((item) => item.code === API_ERROR_CODES.NOTICE_PERIOD_NOT_MET);
+    expect(notice).toBeTruthy();
+    expect(notice?.message).toContain('1 hour notice');
+    expect(notice?.message).toContain('12:30 pm');
+  });
+
+  it('skips notice when enforceNoticePeriod is false', () => {
+    const result = validateApplication(
+      flags,
+      { ...casual, noticePeriod: { value: 1, unit: 'hours' } },
+      baseInput({
+        startDate: '2026-09-16',
+        endDate: '2026-09-16',
+        now: new Date('2026-09-16T07:15:00.000Z'),
+        shift: { name: 'Evening Shift', startTime: '13:30', flexible: false },
+        enforceNoticePeriod: false,
+      }),
+    );
+    expect(result.violations.some((item) => item.code === API_ERROR_CODES.NOTICE_PERIOD_NOT_MET)).toBe(false);
+  });
+
   it('returns LEAVE_OVERLAP when another application exists', () => {
     const result = validateApplication(flags, casual, baseInput({ overlapping: true }));
     expect(result.violations.some((item) => item.code === API_ERROR_CODES.LEAVE_OVERLAP)).toBe(true);

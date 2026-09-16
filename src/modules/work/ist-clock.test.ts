@@ -5,10 +5,12 @@ import {
   DEFAULT_THIRD_DAILY_REMINDER_HOUR,
   MONDAY_PRIORITY_REMINDER_HOUR,
   WORK_TIMEZONE,
+  formatClock12Hour,
   formatIsoDateInZone,
   formatWorkHour,
   formatWorkHourList,
   hourInZone,
+  instantFromWorkClock,
   zonedClock,
 } from './ist-clock';
 
@@ -47,5 +49,12 @@ describe('IST work clock', () => {
     const clock = zonedClock(mondayFourPm);
     expect(clock.isoDate).toBe('2026-08-24');
     expect(clock.hour).toBe(16);
+  });
+
+  it('converts an IST wall clock to a UTC instant', () => {
+    expect(instantFromWorkClock('2026-09-16', '13:30').toISOString()).toBe('2026-09-16T08:00:00.000Z');
+    expect(instantFromWorkClock('2026-09-16', '12:30').toISOString()).toBe('2026-09-16T07:00:00.000Z');
+    expect(formatClock12Hour('13:30')).toBe('1:30 pm');
+    expect(formatClock12Hour('00:30')).toBe('12:30 am');
   });
 });

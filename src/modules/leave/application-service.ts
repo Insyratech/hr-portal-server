@@ -5,6 +5,7 @@ import { AppError } from '../../shared/errors/app-error';
 import type { RequestUser } from '../../shared/types/request-user';
 import { ledgerAvailable, currentPeriod } from './balance';
 import { validateApplication } from './policy-engine';
+import { loadShiftForLeaveDate } from './shift-for-leave';
 import type { LeaveDuration, LeaveTypeFlags } from './types';
 import {
   canApprove,
@@ -475,6 +476,7 @@ export function createLeaveApplicationService(supabase: SupabaseClient) {
         .lte('start_date', input.endDate)
         .gte('end_date', input.startDate);
 
+      const shift = await loadShiftForLeaveDate(supabase, actor.employeeId, input.startDate);
       const result = validateApplication(flags, policy.rules, {
         startDate: input.startDate,
         endDate: input.endDate,
@@ -494,6 +496,7 @@ export function createLeaveApplicationService(supabase: SupabaseClient) {
         workingDays,
         holidayDates,
         weekPatternForDate,
+        shift,
       });
 
       if (!result.valid) {
@@ -696,6 +699,8 @@ export function createLeaveApplicationService(supabase: SupabaseClient) {
         .lte('start_date', input.endDate)
         .gte('end_date', input.startDate);
 
+      const startUnchanged = input.startDate === existing.startDate.slice(0, 10);
+      const shift = await loadShiftForLeaveDate(supabase, actor.employeeId, input.startDate);
       const result = validateApplication(flags, policy.rules, {
         startDate: input.startDate,
         endDate: input.endDate,
@@ -715,7 +720,9 @@ export function createLeaveApplicationService(supabase: SupabaseClient) {
         workingDays,
         holidayDates,
         weekPatternForDate,
-        enforceAdvanceBookingWindow: input.startDate !== existing.startDate.slice(0, 10),
+        shift,
+        enforceAdvanceBookingWindow: !startUnchanged,
+        enforceNoticePeriod: !startUnchanged,
       });
 
       if (!result.valid) {

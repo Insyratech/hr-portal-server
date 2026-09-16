@@ -24,6 +24,10 @@ export function isSuperAdminOwner(actor: RequestUser): boolean {
   return actor.roles.includes(ROLE_CODES.SUPER_ADMIN);
 }
 
+export function isFinanceDomainOwner(actor: RequestUser): boolean {
+  return actor.roles.includes(ROLE_CODES.FINANCE_MANAGER) && !actor.roles.includes(ROLE_CODES.SUPER_ADMIN);
+}
+
 export function assertHrDomainOwner(actor: RequestUser, action = 'manage this'): void {
   if (isHrDomainOwner(actor)) return;
   throw new AppError(API_ERROR_CODES.FORBIDDEN, `Only HR Manager can ${action}.`, 403);
@@ -42,4 +46,9 @@ export function assertCsoDomainOwner(actor: RequestUser, action = 'manage this')
 export function assertSuperAdminOwner(actor: RequestUser, action = 'manage this'): void {
   if (isSuperAdminOwner(actor)) return;
   throw new AppError(API_ERROR_CODES.FORBIDDEN, `Only Super Admin can ${action}.`, 403);
+}
+
+export function assertFinanceDomainOwner(actor: RequestUser, action = 'manage this'): void {
+  if (isFinanceDomainOwner(actor)) return;
+  throw new AppError(API_ERROR_CODES.FORBIDDEN, `Only Finance Manager can ${action}.`, 403);
 }

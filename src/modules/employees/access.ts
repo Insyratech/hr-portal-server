@@ -111,6 +111,16 @@ export function isStaffableDirectoryTarget(targetRoleCodes: string[]): boolean {
   return !hasRole(targetRoleCodes, ROLE_CODES.SUPER_ADMIN);
 }
 
+/** GM, HR, and Super Admin may read compensation and bank details. */
+export function canViewDirectoryMasterPay(actor: RequestUser): boolean {
+  return (
+    actor.permissions.includes(PERMISSIONS.PAYROLL_VIEW) ||
+    actor.permissions.includes(PERMISSIONS.PAYROLL_MANAGE) ||
+    actor.permissions.includes(PERMISSIONS.USERS_VIEW) ||
+    actor.permissions.includes(PERMISSIONS.USERS_MANAGE)
+  );
+}
+
 /** HR sets master pay + bank (not payroll runs). GM keeps payroll.manage for runs. */
 export function canWriteDirectoryMasterPay(actor: RequestUser): boolean {
   return isHrManager(actor) && actor.permissions.includes(PERMISSIONS.COMPANIES_MANAGE);

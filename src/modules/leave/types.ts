@@ -29,6 +29,12 @@ export type LeaveTypeFlags = {
 
 export type LeaveDuration = 'full' | 'half';
 
+export type LeaveNoticeShift = {
+  name: string;
+  startTime: string;
+  flexible: boolean;
+};
+
 export type ApplicationInput = {
   startDate: string;
   endDate: string;
@@ -50,6 +56,13 @@ export type ApplicationInput = {
   weekPatternForDate?: (isoDate: string) => WeekPattern | null;
   /** When false, skip the global max-advance booking window (e.g. pending edit with unchanged start date). */
   enforceAdvanceBookingWindow?: boolean;
+  /**
+   * Shift on the first leave day (assignment or approved override).
+   * Notice is measured from this start time in Asia/Kolkata, not midnight.
+   */
+  shift?: LeaveNoticeShift | null;
+  /** When false, skip notice (pending edit with unchanged start date). */
+  enforceNoticePeriod?: boolean;
 };
 
 export type Violation = {

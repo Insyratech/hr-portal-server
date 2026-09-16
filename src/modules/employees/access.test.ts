@@ -10,6 +10,7 @@ import {
   canWriteDirectoryAllocations,
   canWriteDirectoryMasterPay,
   canWriteDirectoryPayroll,
+  canViewDirectoryMasterPay,
   canWriteEmployeeCompany,
 } from './access';
 
@@ -123,11 +124,13 @@ describe('employee access', () => {
     );
   });
 
-  it('lets HR write master pay and company; GM does not set master pay', () => {
+  it('lets HR write master pay and company; GM reads pay but does not set it', () => {
     expect(canWriteDirectoryMasterPay(superAdmin)).toBe(false);
     expect(canWriteDirectoryPayroll(superAdmin)).toBe(false);
     expect(canWriteDirectoryAllocations(superAdmin)).toBe(false);
     expect(canWriteDirectoryMasterPay(generalManager)).toBe(false);
+    expect(canViewDirectoryMasterPay(generalManager)).toBe(true);
+    expect(canViewDirectoryMasterPay(hrManager)).toBe(true);
     expect(canWriteDirectoryAllocations(hrManager)).toBe(true);
     expect(canWriteDirectoryMasterPay(hrManager)).toBe(true);
     expect(canWriteEmployeeCompany(hrManager)).toBe(true);

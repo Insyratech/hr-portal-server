@@ -74,3 +74,47 @@ export function formatWorkHourList(hours: number[]): string {
   if (labels.length <= 1) return labels[0] ?? '';
   return `${labels.slice(0, -1).join(', ')} and ${labels[labels.length - 1]}`;
 }
+
+/** Asia/Kolkata is UTC+05:30 year-round (no DST). */
+const WORK_ZONE_OFFSET_MS = (5 * 60 + 30) * 60_000;
+
+export function normalizeClockHhmm(value: string): string | null {
+  const match = /^(\d{1,2}):(\d{2})/.exec(value.trim());
+  if (!match) return null;
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (hours > 23 || minutes > 59) return null;
+  return `${pad2(hours)}:${pad2(minutes)}`;
+}
+
+/**
+ * Instant for a calendar date + HH:MM wall clock in the company work zone.
+ * `13:30` on 2026-09-16 IST is 2026-09-16T08:00:00.000Z.
+ */
+export function instantFromWorkClock(isoDate: string, clockHhmm: string): Date {
+  const dateMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(isoDate);
+  const clock = normalizeClockHhmm(clockHhmm);
+  if (!dateMatch || !clock) return new Date(NaN);
+  const year = Number(dateMatch[1]);
+  const month = Number(dateMatch[2]);
+  const day = Number(dateMatch[3]);
+  const hours = Number(clock.slice(0, 2));
+  const minutes = Number(clock.slice(3, 5));
+  return new Date(Date.UTC(year, month - 1, day, hours, minutes) - WORK_ZONE_OFFSET_MS);
+}
+
+/** 24-hour `13:30` → `1:30 pm`. */
+export function formatClock12Hour(clockHhmm: string): string {
+  const clock = normalizeClockHhmm(clockHhmm);
+  if (!clock) return clockHhmm;
+  const hours = Number(clock.slice(0, 2));
+  const minutes = clock.slice(3, 5);
+  const suffix = hours < 12 ? 'am' : 'pm';
+  const display = hours % 12 === 0 ? 12 : hours % 12;
+  return `${display}:${minutes} ${suffix}`;
+}
+
+export function formatInstantClock12Hour(instant: Date, timeZone: string = WORK_TIMEZONE): string {
+  const clock = zonedClock(instant, timeZone);
+  return formatClock12Hour(`${pad2(clock.hour)}:${pad2(clock.minute)}`);
+}

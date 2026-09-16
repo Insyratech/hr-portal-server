@@ -1,10 +1,9 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { API_ERROR_CODES } from '../../shared/constants/error-codes';
-import { PERMISSIONS } from '../../shared/constants/permissions';
 import { AppError } from '../../shared/errors/app-error';
 import type { RequestUser } from '../../shared/types/request-user';
 import { writeAuditLog } from '../audit/write-audit-log';
-import { canWriteDirectoryMasterPay } from './access';
+import { canViewDirectoryMasterPay, canWriteDirectoryMasterPay } from './access';
 import { parseMoney } from './money';
 import { maskPayment } from './payment-mask';
 import type { CompensationInput, CompensationRecord, EmployeePayroll, PaymentInput, PaymentRecord } from './types';
@@ -122,16 +121,6 @@ export function normalizePayment(input: PaymentInput): PaymentInput {
   return { pan, bankAccountNumber, bankName, ifsc };
 }
 
-function canViewPayroll(actor: RequestUser): boolean {
-  return (
-    actor.permissions.includes(PERMISSIONS.PAYROLL_VIEW) ||
-    actor.permissions.includes(PERMISSIONS.PAYROLL_MANAGE) ||
-    actor.permissions.includes(PERMISSIONS.USERS_VIEW) ||
-    actor.permissions.includes(PERMISSIONS.USERS_MANAGE)
-  );
-}
-
-
 function currentOf(rows: CompensationRecord[]): CompensationRecord | null {
   const today = new Date().toISOString().slice(0, 10);
   return rows.find((row) => row.effectiveFrom <= today) ?? rows[0] ?? null;
@@ -140,7 +129,7 @@ function currentOf(rows: CompensationRecord[]): CompensationRecord | null {
 export function createEmployeeMasterService(supabase: SupabaseClient) {
   return {
     async getPayroll(actor: RequestUser, employeeId: string): Promise<EmployeePayroll> {
-      if (!canViewPayroll(actor) && actor.employeeId !== employeeId) {
+      if (!canViewDirectoryMasterPay(actor) && actor.employeeId !== employeeId) {
         throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot view payroll details.', 403);
       }
       const [{ data: compensationRows, error: compensationError }, { data: paymentRow, error: paymentError }] =
