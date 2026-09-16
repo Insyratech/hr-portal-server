@@ -193,7 +193,7 @@ describe('validateApplication', () => {
     );
     const notice = result.violations.find((item) => item.code === API_ERROR_CODES.NOTICE_PERIOD_NOT_MET);
     expect(notice).toBeTruthy();
-    expect(notice?.message).toContain('1 hour notice');
+    expect(notice?.message).toContain('at least 1 hour before');
     expect(notice?.message).toContain('12:30 pm');
   });
 

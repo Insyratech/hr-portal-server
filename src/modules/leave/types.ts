@@ -32,6 +32,8 @@ export type LeaveDuration = 'full' | 'half';
 export type LeaveNoticeShift = {
   name: string;
   startTime: string;
+  endTime?: string;
+  minimumDurationMinutes?: number;
   flexible: boolean;
 };
 

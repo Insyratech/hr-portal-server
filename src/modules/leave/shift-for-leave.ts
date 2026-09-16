@@ -16,6 +16,8 @@ function toNoticeShift(row: ShiftRow): LeaveNoticeShift {
   return {
     name: row.name,
     startTime: truncateTime(row.start_time),
+    endTime: truncateTime(row.end_time),
+    minimumDurationMinutes: Number(row.minimum_duration_minutes),
     flexible: Boolean(row.flexible),
   };
 }
