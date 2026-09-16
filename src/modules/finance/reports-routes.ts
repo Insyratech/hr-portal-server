@@ -18,12 +18,48 @@ const viewPerms = [
   PERMISSIONS.FINANCE_ACCOUNTANT_MANAGE,
 ] as const;
 
+const salesOverviewPerms = [
+  PERMISSIONS.FINANCE_SALES_VIEW,
+  PERMISSIONS.FINANCE_SALES_MANAGE,
+  PERMISSIONS.FINANCE_REPORTS_VIEW,
+  PERMISSIONS.FINANCE_ACCOUNTANT_VIEW,
+  PERMISSIONS.FINANCE_ACCOUNTANT_MANAGE,
+] as const;
+
+const purchaseOverviewPerms = [
+  PERMISSIONS.FINANCE_PURCHASE_VIEW,
+  PERMISSIONS.FINANCE_PURCHASE_MANAGE,
+  PERMISSIONS.FINANCE_REPORTS_VIEW,
+  PERMISSIONS.FINANCE_ACCOUNTANT_VIEW,
+  PERMISSIONS.FINANCE_ACCOUNTANT_MANAGE,
+] as const;
+
 export async function registerFinanceReportsRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/v1/finance/dashboard', { preHandler: [requirePermission(...viewPerms)] }, async (request) => {
     requireDb(app, request);
     const query = request.query as { fromDate?: string; toDate?: string };
     return ok(await createFinanceReportsService(app.supabase!).getDashboard(request.user!, query));
   });
+
+  app.get(
+    '/api/v1/finance/dashboard/sales',
+    { preHandler: [requirePermission(...salesOverviewPerms)] },
+    async (request) => {
+      requireDb(app, request);
+      const query = request.query as { fromDate?: string; toDate?: string };
+      return ok(await createFinanceReportsService(app.supabase!).getSalesOverview(request.user!, query));
+    },
+  );
+
+  app.get(
+    '/api/v1/finance/dashboard/purchases',
+    { preHandler: [requirePermission(...purchaseOverviewPerms)] },
+    async (request) => {
+      requireDb(app, request);
+      const query = request.query as { fromDate?: string; toDate?: string };
+      return ok(await createFinanceReportsService(app.supabase!).getPurchaseOverview(request.user!, query));
+    },
+  );
 
   app.get('/api/v1/finance/reports/catalog', { preHandler: [requirePermission(...viewPerms)] }, async (request) => {
     requireDb(app, request);

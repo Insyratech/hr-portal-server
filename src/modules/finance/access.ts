@@ -176,6 +176,14 @@ export function canViewReports(actor: RequestUser): boolean {
   );
 }
 
+export function canViewSalesOverview(actor: RequestUser): boolean {
+  return canViewSales(actor) || canViewReports(actor);
+}
+
+export function canViewPurchaseOverview(actor: RequestUser): boolean {
+  return canViewPurchase(actor) || canViewReports(actor);
+}
+
 /** Any Phase 0 finance read for setup checklist. */
 export function canAccessFinanceDesk(actor: RequestUser): boolean {
   return (

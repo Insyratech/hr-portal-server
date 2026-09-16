@@ -12,6 +12,8 @@ export type MoneyRow = {
   drill?: ReportDrillRef | null;
 };
 
+export type DashboardTrendPoint = { period: string; label: string; amount: number };
+
 export type FinanceDashboard = {
   fromDate: string;
   toDate: string;
@@ -20,6 +22,15 @@ export type FinanceDashboard = {
   payables: { current: number; overdue: number; total: number };
   cashFlow: { inflow: number; outflow: number; net: number };
   incomeVsExpense: { income: number; expense: number; net: number };
+  salesTrend: DashboardTrendPoint[];
+  priorPeriod: {
+    fromDate: string;
+    toDate: string;
+    receivablesTotal: number;
+    payablesTotal: number;
+    cashFlowNet: number;
+    incomeVsExpenseNet: number;
+  };
   attention: Array<{
     id: string;
     kind: string;
@@ -38,6 +49,42 @@ export type FinanceDashboard = {
   trialBalanceBalanced: boolean;
   trialBalanceTotalDebit: number;
   trialBalanceTotalCredit: number;
+};
+
+export type SalesOverview = {
+  fromDate: string;
+  toDate: string;
+  invoicedTotal: number;
+  invoicedCount: number;
+  paymentsReceived: number;
+  outstanding: number;
+  overdueAmount: number;
+  overdueCount: number;
+  quotesOpen: number;
+  ordersOpen: number;
+  invoicesDraft: number;
+  priorInvoicedTotal: number;
+  trend: DashboardTrendPoint[];
+  byStatus: Array<{ status: string; count: number; amount: number }>;
+  topCustomers: NamedAmountRow[];
+};
+
+export type PurchaseOverview = {
+  fromDate: string;
+  toDate: string;
+  billedTotal: number;
+  billedCount: number;
+  paymentsMade: number;
+  outstanding: number;
+  overdueAmount: number;
+  overdueCount: number;
+  indentsPending: number;
+  posOpen: number;
+  billsDraft: number;
+  priorBilledTotal: number;
+  trend: DashboardTrendPoint[];
+  byStatus: Array<{ status: string; count: number; amount: number }>;
+  topVendors: NamedAmountRow[];
 };
 
 export type ReportCatalogItem = {

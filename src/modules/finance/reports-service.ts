@@ -2,7 +2,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { API_ERROR_CODES } from '../../shared/constants/error-codes';
 import { AppError } from '../../shared/errors/app-error';
 import type { RequestUser } from '../../shared/types/request-user';
-import { canViewReports } from './access';
+import { canViewPurchaseOverview, canViewReports, canViewSalesOverview } from './access';
 import { createGstService } from './gst-service';
 import type {
   ActivityRow,
@@ -12,13 +12,16 @@ import type {
   BalanceSheetReport,
   BankingReconSummaryRow,
   CashFlowReport,
+  DashboardTrendPoint,
   FinanceDashboard,
   InvoiceDetailRow,
   MoneyRow,
   NamedAmountRow,
   PoStatusRow,
   ProfitAndLossReport,
+  PurchaseOverview,
   ReportCatalogItem,
+  SalesOverview,
   TaxSummaryReport,
 } from './reports-types';
 
@@ -64,9 +67,84 @@ function daysBetween(fromIso: string, toIso: string): number {
   return Math.floor((to - from) / 86_400_000);
 }
 
+function addDaysIso(isoDate: string, deltaDays: number): string {
+  const d = new Date(`${isoDate}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + deltaDays);
+  return d.toISOString().slice(0, 10);
+}
+
+/** Same-length window immediately before `fromDate` (inclusive). */
+function shiftRangeBack(fromDate: string, toDate: string): { fromDate: string; toDate: string } {
+  const lengthDays = daysBetween(fromDate, toDate) + 1;
+  const priorToDate = addDaysIso(fromDate, -1);
+  const priorFromDate = addDaysIso(priorToDate, -(lengthDays - 1));
+  return { fromDate: priorFromDate, toDate: priorToDate };
+}
+
+const MONTH_LABELS = [
+  'Jan',
+  'Feb',
+  'Mar',
+  'Apr',
+  'May',
+  'Jun',
+  'Jul',
+  'Aug',
+  'Sep',
+  'Oct',
+  'Nov',
+  'Dec',
+] as const;
+
+function monthPeriodLabel(period: string): string {
+  const [y, m] = period.split('-');
+  const monthIndex = Number(m) - 1;
+  const label = MONTH_LABELS[monthIndex] ?? m;
+  return `${label} ${y?.slice(2) ?? ''}`.trim();
+}
+
+function buildMonthlyTrend(
+  rows: Array<{ date: string; amount: number }>,
+  fromDate: string,
+  toDate: string,
+): DashboardTrendPoint[] {
+  const buckets = new Map<string, number>();
+  let cursor = `${fromDate.slice(0, 7)}-01`;
+  const endPeriod = toDate.slice(0, 7);
+  while (cursor.slice(0, 7) <= endPeriod) {
+    buckets.set(cursor.slice(0, 7), 0);
+    const [y, m] = cursor.split('-').map(Number);
+    const next = m === 12 ? new Date(Date.UTC(y + 1, 0, 1)) : new Date(Date.UTC(y, m, 1));
+    cursor = next.toISOString().slice(0, 10);
+  }
+  for (const row of rows) {
+    if (row.date < fromDate || row.date > toDate) continue;
+    const period = row.date.slice(0, 7);
+    if (!buckets.has(period)) continue;
+    buckets.set(period, round2((buckets.get(period) ?? 0) + row.amount));
+  }
+  return [...buckets.entries()].map(([period, amount]) => ({
+    period,
+    label: monthPeriodLabel(period),
+    amount,
+  }));
+}
+
 function requireReportsView(actor: RequestUser): void {
   if (!canViewReports(actor)) {
     throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot view finance reports.', 403);
+  }
+}
+
+function requireSalesOverviewView(actor: RequestUser): void {
+  if (!canViewSalesOverview(actor)) {
+    throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot view the sales overview.', 403);
+  }
+}
+
+function requirePurchaseOverviewView(actor: RequestUser): void {
+  if (!canViewPurchaseOverview(actor)) {
+    throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot view the purchase overview.', 403);
   }
 }
 
@@ -506,6 +584,107 @@ function bsRowsFromAgg(
   return rows.sort((a, b) => a.label.localeCompare(b.label));
 }
 
+async function computePeriodCashAndPl(
+  supabase: SupabaseClient,
+  fromDate: string,
+  toDate: string,
+  cashAccountIds: Set<string>,
+): Promise<{ cashFlowNet: number; incomeVsExpenseNet: number }> {
+  const periodJournals = await loadPostedJournals(supabase, { fromDate, toDate });
+  const periodLines = await loadJournalLinesDetailed(
+    supabase,
+    periodJournals.map((j) => j.id),
+  );
+  let cashIn = 0;
+  let cashOut = 0;
+  const incomeExpense = new Map<string, LineAgg>();
+  for (const line of periodLines) {
+    if (cashAccountIds.has(line.account_id)) {
+      cashIn = round2(cashIn + line.debit);
+      cashOut = round2(cashOut + line.credit);
+    }
+    const current = incomeExpense.get(line.account_id) ?? { debit: 0, credit: 0 };
+    current.debit = round2(current.debit + line.debit);
+    current.credit = round2(current.credit + line.credit);
+    incomeExpense.set(line.account_id, current);
+  }
+  const accounts = await loadAccounts(supabase, [...incomeExpense.keys()]);
+  let income = 0;
+  let expense = 0;
+  for (const [accountId, sums] of incomeExpense.entries()) {
+    const account = accounts.get(accountId);
+    if (!account) continue;
+    if (account.account_type === 'income') income = round2(income + (sums.credit - sums.debit));
+    if (account.account_type === 'expense') expense = round2(expense + (sums.debit - sums.credit));
+  }
+  return {
+    cashFlowNet: round2(cashIn - cashOut),
+    incomeVsExpenseNet: round2(income - expense),
+  };
+}
+
+function sumOpenReceivables(
+  invoices: Array<{
+    invoice_date?: string | null;
+    due_date: string | null;
+    grand_total: number | string;
+    amount_paid: number | string;
+    status: string;
+  }>,
+  asOfDate: string,
+  opts?: { filterByInvoiceDate?: boolean; statusAwareOverdue?: boolean },
+): { current: number; overdue: number; total: number; overdueCount: number } {
+  let current = 0;
+  let overdue = 0;
+  let overdueCount = 0;
+  for (const inv of invoices) {
+    if (opts?.filterByInvoiceDate && inv.invoice_date && inv.invoice_date > asOfDate) continue;
+    const amountDue = round2(num(inv.grand_total) - num(inv.amount_paid));
+    if (amountDue <= 0) continue;
+    const duePast = Boolean(inv.due_date) && inv.due_date! < asOfDate;
+    const overdueFlag = opts?.statusAwareOverdue
+      ? duePast &&
+        (inv.status === 'overdue' || inv.status === 'sent' || inv.status === 'partially_paid')
+      : duePast;
+    if (overdueFlag) {
+      overdue = round2(overdue + amountDue);
+      overdueCount += 1;
+    } else {
+      current = round2(current + amountDue);
+    }
+  }
+  return { current, overdue, total: round2(current + overdue), overdueCount };
+}
+
+function sumOpenPayables(
+  bills: Array<{
+    bill_date?: string | null;
+    due_date: string | null;
+    grand_total: number | string;
+    amount_paid: number | string;
+    tds_amount?: number | string;
+  }>,
+  asOfDate: string,
+  opts?: { filterByBillDate?: boolean },
+): { current: number; overdue: number; total: number; overdueCount: number } {
+  let current = 0;
+  let overdue = 0;
+  let overdueCount = 0;
+  for (const bill of bills) {
+    if (opts?.filterByBillDate && bill.bill_date && bill.bill_date > asOfDate) continue;
+    const amountDue = round2(num(bill.grand_total) - num(bill.tds_amount) - num(bill.amount_paid));
+    if (amountDue <= 0) continue;
+    const isOverdue = Boolean(bill.due_date) && bill.due_date! < asOfDate;
+    if (isOverdue) {
+      overdue = round2(overdue + amountDue);
+      overdueCount += 1;
+    } else {
+      current = round2(current + amountDue);
+    }
+  }
+  return { current, overdue, total: round2(current + overdue), overdueCount };
+}
+
 export function createFinanceReportsService(supabase: SupabaseClient) {
   return {
     getCatalog(actor: RequestUser): ReportCatalogItem[] {
@@ -529,10 +708,13 @@ export function createFinanceReportsService(supabase: SupabaseClient) {
         throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'fromDate must be on or before toDate.', 400);
       }
       const asOfDate = toDate;
+      const priorRange = shiftRangeBack(fromDate, toDate);
+      const priorAsOf = priorRange.toDate;
 
       const [
         invoiceRes,
         billRes,
+        salesInvoiceRes,
         periodJournals,
         cashAccountIds,
         indentCountRes,
@@ -544,13 +726,20 @@ export function createFinanceReportsService(supabase: SupabaseClient) {
       ] = await Promise.all([
         supabase
           .from('finance_invoices')
-          .select('id, status, due_date, grand_total, amount_paid, journal_id')
+          .select('id, status, due_date, invoice_date, grand_total, amount_paid, journal_id')
           .not('journal_id', 'is', null)
           .neq('status', 'void'),
         supabase
           .from('finance_vendor_bills')
-          .select('id, status, due_date, grand_total, amount_paid, tds_amount')
+          .select('id, status, due_date, bill_date, grand_total, amount_paid, tds_amount')
           .in('status', ['posted', 'partially_paid']),
+        supabase
+          .from('finance_invoices')
+          .select('invoice_date, grand_total, journal_id, status')
+          .not('journal_id', 'is', null)
+          .neq('status', 'void')
+          .gte('invoice_date', fromDate)
+          .lte('invoice_date', toDate),
         loadPostedJournals(supabase, { fromDate, toDate }),
         resolveCashAccountIds(supabase),
         supabase
@@ -585,46 +774,33 @@ export function createFinanceReportsService(supabase: SupabaseClient) {
       if (billRes.error) {
         throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load payables.', 500);
       }
-
-      let recvCurrent = 0;
-      let recvOverdue = 0;
-      let overdueInvoiceCount = 0;
-      for (const inv of (invoiceRes.data ?? []) as Array<{
-        status: string;
-        due_date: string | null;
-        grand_total: number | string;
-        amount_paid: number | string;
-      }>) {
-        const amountDue = round2(num(inv.grand_total) - num(inv.amount_paid));
-        if (amountDue <= 0) continue;
-        const isOverdue =
-          Boolean(inv.due_date) &&
-          inv.due_date! < asOfDate &&
-          amountDue > 0 &&
-          (inv.status === 'overdue' || inv.status === 'sent' || inv.status === 'partially_paid');
-        if (isOverdue) {
-          recvOverdue = round2(recvOverdue + amountDue);
-          overdueInvoiceCount += 1;
-        } else {
-          recvCurrent = round2(recvCurrent + amountDue);
-        }
+      if (salesInvoiceRes.error) {
+        throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load sales trend.', 500);
       }
 
-      let payCurrent = 0;
-      let payOverdue = 0;
-      for (const bill of (billRes.data ?? []) as Array<{
+      const invoiceRows = (invoiceRes.data ?? []) as Array<{
         status: string;
         due_date: string | null;
+        invoice_date: string | null;
+        grand_total: number | string;
+        amount_paid: number | string;
+      }>;
+      const billRows = (billRes.data ?? []) as Array<{
+        status: string;
+        due_date: string | null;
+        bill_date: string | null;
         grand_total: number | string;
         amount_paid: number | string;
         tds_amount: number | string;
-      }>) {
-        const amountDue = round2(num(bill.grand_total) - num(bill.tds_amount) - num(bill.amount_paid));
-        if (amountDue <= 0) continue;
-        const isOverdue = Boolean(bill.due_date) && bill.due_date! < asOfDate;
-        if (isOverdue) payOverdue = round2(payOverdue + amountDue);
-        else payCurrent = round2(payCurrent + amountDue);
-      }
+      }>;
+
+      const recv = sumOpenReceivables(invoiceRows, asOfDate, { statusAwareOverdue: true });
+      const pay = sumOpenPayables(billRows, asOfDate);
+      const priorRecv = sumOpenReceivables(invoiceRows, priorAsOf, {
+        filterByInvoiceDate: true,
+        statusAwareOverdue: false,
+      });
+      const priorPay = sumOpenPayables(billRows, priorAsOf, { filterByBillDate: true });
 
       const periodLines = await loadJournalLinesDetailed(
         supabase,
@@ -658,6 +834,21 @@ export function createFinanceReportsService(supabase: SupabaseClient) {
         if (account.account_type === 'expense') expense = round2(expense + (sums.debit - sums.credit));
       }
 
+      const priorPeriodMetrics = await computePeriodCashAndPl(
+        supabase,
+        priorRange.fromDate,
+        priorRange.toDate,
+        cashAccountIds,
+      );
+
+      const salesTrend = buildMonthlyTrend(
+        ((salesInvoiceRes.data ?? []) as Array<{ invoice_date: string; grand_total: number | string }>).map(
+          (row) => ({ date: row.invoice_date, amount: num(row.grand_total) }),
+        ),
+        fromDate,
+        toDate,
+      );
+
       const attention: FinanceDashboard['attention'] = [];
       const submittedIndents = indentCountRes.count ?? 0;
       const submittedClaims = claimCountRes.count ?? 0;
@@ -681,12 +872,12 @@ export function createFinanceReportsService(supabase: SupabaseClient) {
           href: '/finance/expense-claims',
         });
       }
-      if (overdueInvoiceCount > 0) {
+      if (recv.overdueCount > 0) {
         attention.push({
           id: 'overdue-invoices',
           kind: 'overdue',
           label: 'Overdue invoices',
-          count: overdueInvoiceCount,
+          count: recv.overdueCount,
           href: '/finance/invoices',
         });
       }
@@ -745,14 +936,14 @@ export function createFinanceReportsService(supabase: SupabaseClient) {
         toDate,
         asOfDate,
         receivables: {
-          current: recvCurrent,
-          overdue: recvOverdue,
-          total: round2(recvCurrent + recvOverdue),
+          current: recv.current,
+          overdue: recv.overdue,
+          total: recv.total,
         },
         payables: {
-          current: payCurrent,
-          overdue: payOverdue,
-          total: round2(payCurrent + payOverdue),
+          current: pay.current,
+          overdue: pay.overdue,
+          total: pay.total,
         },
         cashFlow: {
           inflow: cashIn,
@@ -764,11 +955,334 @@ export function createFinanceReportsService(supabase: SupabaseClient) {
           expense,
           net: round2(income - expense),
         },
+        salesTrend,
+        priorPeriod: {
+          fromDate: priorRange.fromDate,
+          toDate: priorRange.toDate,
+          receivablesTotal: priorRecv.total,
+          payablesTotal: priorPay.total,
+          cashFlowNet: priorPeriodMetrics.cashFlowNet,
+          incomeVsExpenseNet: priorPeriodMetrics.incomeVsExpenseNet,
+        },
         attention,
         recentTransactions,
         trialBalanceBalanced: tbDebit === tbCredit,
         trialBalanceTotalDebit: tbDebit,
         trialBalanceTotalCredit: tbCredit,
+      };
+    },
+
+    async getSalesOverview(
+      actor: RequestUser,
+      input: { fromDate?: string; toDate?: string },
+    ): Promise<SalesOverview> {
+      requireSalesOverviewView(actor);
+      const { fromDate, toDate } = requireDateRange(
+        input.fromDate ||
+          (() => {
+            const t = todayIsoDate();
+            const [y, m] = t.split('-');
+            return `${y}-${m}-01`;
+          })(),
+        input.toDate || todayIsoDate(),
+      );
+      const priorRange = shiftRangeBack(fromDate, toDate);
+      const asOfDate = toDate;
+
+      const [
+        rangeInvoicesRes,
+        priorInvoicesRes,
+        openInvoicesRes,
+        paymentsRes,
+        quotesRes,
+        ordersRes,
+        draftInvoicesRes,
+      ] = await Promise.all([
+        supabase
+          .from('finance_invoices')
+          .select('id, customer_id, status, invoice_date, due_date, grand_total, amount_paid, journal_id')
+          .not('journal_id', 'is', null)
+          .neq('status', 'void')
+          .gte('invoice_date', fromDate)
+          .lte('invoice_date', toDate),
+        supabase
+          .from('finance_invoices')
+          .select('grand_total')
+          .not('journal_id', 'is', null)
+          .neq('status', 'void')
+          .gte('invoice_date', priorRange.fromDate)
+          .lte('invoice_date', priorRange.toDate),
+        supabase
+          .from('finance_invoices')
+          .select('id, status, due_date, grand_total, amount_paid, journal_id')
+          .not('journal_id', 'is', null)
+          .neq('status', 'void'),
+        supabase
+          .from('finance_customer_payments')
+          .select('amount, payment_date, status')
+          .eq('status', 'posted')
+          .gte('payment_date', fromDate)
+          .lte('payment_date', toDate),
+        supabase
+          .from('finance_sales_quotes')
+          .select('id', { count: 'exact', head: true })
+          .in('status', ['draft', 'sent']),
+        supabase
+          .from('finance_sales_orders')
+          .select('id', { count: 'exact', head: true })
+          .in('status', ['confirmed', 'partially_delivered', 'delivered', 'partially_invoiced']),
+        supabase
+          .from('finance_invoices')
+          .select('id', { count: 'exact', head: true })
+          .eq('status', 'draft'),
+      ]);
+
+      if (rangeInvoicesRes.error || priorInvoicesRes.error || openInvoicesRes.error) {
+        throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load invoices for sales overview.', 500);
+      }
+      if (paymentsRes.error) {
+        throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load customer payments.', 500);
+      }
+
+      const rangeInvoices = (rangeInvoicesRes.data ?? []) as Array<{
+        id: string;
+        customer_id: string;
+        status: string;
+        invoice_date: string;
+        grand_total: number | string;
+      }>;
+      let invoicedTotal = 0;
+      const byStatus = new Map<string, { count: number; amount: number }>();
+      const byCustomer = new Map<string, { amount: number; count: number }>();
+      for (const inv of rangeInvoices) {
+        const amount = num(inv.grand_total);
+        invoicedTotal = round2(invoicedTotal + amount);
+        const statusAgg = byStatus.get(inv.status) ?? { count: 0, amount: 0 };
+        statusAgg.count += 1;
+        statusAgg.amount = round2(statusAgg.amount + amount);
+        byStatus.set(inv.status, statusAgg);
+        const cust = byCustomer.get(inv.customer_id) ?? { amount: 0, count: 0 };
+        cust.amount = round2(cust.amount + amount);
+        cust.count += 1;
+        byCustomer.set(inv.customer_id, cust);
+      }
+
+      const priorInvoicedTotal = round2(
+        ((priorInvoicesRes.data ?? []) as Array<{ grand_total: number | string }>).reduce(
+          (sum, row) => sum + num(row.grand_total),
+          0,
+        ),
+      );
+
+      const paymentsReceived = round2(
+        ((paymentsRes.data ?? []) as Array<{ amount: number | string }>).reduce(
+          (sum, row) => sum + num(row.amount),
+          0,
+        ),
+      );
+
+      const openRecv = sumOpenReceivables(
+        (openInvoicesRes.data ?? []) as Array<{
+          status: string;
+          due_date: string | null;
+          grand_total: number | string;
+          amount_paid: number | string;
+        }>,
+        asOfDate,
+        { statusAwareOverdue: true },
+      );
+
+      const names = await nameMap(supabase, 'finance_customers', [...byCustomer.keys()]);
+      const topCustomers = [...byCustomer.entries()]
+        .map(([id, agg]) => ({
+          id,
+          name: names.get(id) ?? 'Customer',
+          amount: agg.amount,
+          count: agg.count,
+          href: '/finance/customers',
+        }))
+        .sort((a, b) => b.amount - a.amount)
+        .slice(0, 5);
+
+      return {
+        fromDate,
+        toDate,
+        invoicedTotal,
+        invoicedCount: rangeInvoices.length,
+        paymentsReceived,
+        outstanding: openRecv.total,
+        overdueAmount: openRecv.overdue,
+        overdueCount: openRecv.overdueCount,
+        quotesOpen: quotesRes.count ?? 0,
+        ordersOpen: ordersRes.count ?? 0,
+        invoicesDraft: draftInvoicesRes.count ?? 0,
+        priorInvoicedTotal,
+        trend: buildMonthlyTrend(
+          rangeInvoices.map((inv) => ({ date: inv.invoice_date, amount: num(inv.grand_total) })),
+          fromDate,
+          toDate,
+        ),
+        byStatus: [...byStatus.entries()]
+          .map(([status, agg]) => ({ status, count: agg.count, amount: agg.amount }))
+          .sort((a, b) => b.amount - a.amount),
+        topCustomers,
+      };
+    },
+
+    async getPurchaseOverview(
+      actor: RequestUser,
+      input: { fromDate?: string; toDate?: string },
+    ): Promise<PurchaseOverview> {
+      requirePurchaseOverviewView(actor);
+      const { fromDate, toDate } = requireDateRange(
+        input.fromDate ||
+          (() => {
+            const t = todayIsoDate();
+            const [y, m] = t.split('-');
+            return `${y}-${m}-01`;
+          })(),
+        input.toDate || todayIsoDate(),
+      );
+      const priorRange = shiftRangeBack(fromDate, toDate);
+      const asOfDate = toDate;
+
+      const [
+        rangeBillsRes,
+        priorBillsRes,
+        openBillsRes,
+        paymentsRes,
+        indentsRes,
+        posRes,
+        draftBillsRes,
+      ] = await Promise.all([
+        supabase
+          .from('finance_vendor_bills')
+          .select('id, vendor_id, status, bill_date, due_date, grand_total, amount_paid, tds_amount, journal_id')
+          .not('journal_id', 'is', null)
+          .neq('status', 'void')
+          .neq('status', 'draft')
+          .gte('bill_date', fromDate)
+          .lte('bill_date', toDate),
+        supabase
+          .from('finance_vendor_bills')
+          .select('grand_total')
+          .not('journal_id', 'is', null)
+          .neq('status', 'void')
+          .neq('status', 'draft')
+          .gte('bill_date', priorRange.fromDate)
+          .lte('bill_date', priorRange.toDate),
+        supabase
+          .from('finance_vendor_bills')
+          .select('id, status, due_date, grand_total, amount_paid, tds_amount')
+          .in('status', ['posted', 'partially_paid']),
+        supabase
+          .from('finance_vendor_payments')
+          .select('amount, payment_date, status')
+          .eq('status', 'posted')
+          .gte('payment_date', fromDate)
+          .lte('payment_date', toDate),
+        supabase
+          .from('finance_purchase_indents')
+          .select('id', { count: 'exact', head: true })
+          .eq('status', 'submitted'),
+        supabase
+          .from('finance_purchase_orders')
+          .select('id', { count: 'exact', head: true })
+          .in('status', ['draft', 'approved', 'issued', 'partially_received', 'received']),
+        supabase
+          .from('finance_vendor_bills')
+          .select('id', { count: 'exact', head: true })
+          .eq('status', 'draft'),
+      ]);
+
+      if (rangeBillsRes.error || priorBillsRes.error || openBillsRes.error) {
+        throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load bills for purchase overview.', 500);
+      }
+      if (paymentsRes.error) {
+        throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load vendor payments.', 500);
+      }
+
+      const rangeBills = (rangeBillsRes.data ?? []) as Array<{
+        id: string;
+        vendor_id: string;
+        status: string;
+        bill_date: string;
+        grand_total: number | string;
+      }>;
+      let billedTotal = 0;
+      const byStatus = new Map<string, { count: number; amount: number }>();
+      const byVendor = new Map<string, { amount: number; count: number }>();
+      for (const bill of rangeBills) {
+        const amount = num(bill.grand_total);
+        billedTotal = round2(billedTotal + amount);
+        const statusAgg = byStatus.get(bill.status) ?? { count: 0, amount: 0 };
+        statusAgg.count += 1;
+        statusAgg.amount = round2(statusAgg.amount + amount);
+        byStatus.set(bill.status, statusAgg);
+        const vendor = byVendor.get(bill.vendor_id) ?? { amount: 0, count: 0 };
+        vendor.amount = round2(vendor.amount + amount);
+        vendor.count += 1;
+        byVendor.set(bill.vendor_id, vendor);
+      }
+
+      const priorBilledTotal = round2(
+        ((priorBillsRes.data ?? []) as Array<{ grand_total: number | string }>).reduce(
+          (sum, row) => sum + num(row.grand_total),
+          0,
+        ),
+      );
+
+      const paymentsMade = round2(
+        ((paymentsRes.data ?? []) as Array<{ amount: number | string }>).reduce(
+          (sum, row) => sum + num(row.amount),
+          0,
+        ),
+      );
+
+      const openPay = sumOpenPayables(
+        (openBillsRes.data ?? []) as Array<{
+          due_date: string | null;
+          grand_total: number | string;
+          amount_paid: number | string;
+          tds_amount: number | string;
+        }>,
+        asOfDate,
+      );
+
+      const names = await nameMap(supabase, 'finance_vendors', [...byVendor.keys()]);
+      const topVendors = [...byVendor.entries()]
+        .map(([id, agg]) => ({
+          id,
+          name: names.get(id) ?? 'Vendor',
+          amount: agg.amount,
+          count: agg.count,
+          href: '/finance/vendors',
+        }))
+        .sort((a, b) => b.amount - a.amount)
+        .slice(0, 5);
+
+      return {
+        fromDate,
+        toDate,
+        billedTotal,
+        billedCount: rangeBills.length,
+        paymentsMade,
+        outstanding: openPay.total,
+        overdueAmount: openPay.overdue,
+        overdueCount: openPay.overdueCount,
+        indentsPending: indentsRes.count ?? 0,
+        posOpen: posRes.count ?? 0,
+        billsDraft: draftBillsRes.count ?? 0,
+        priorBilledTotal,
+        trend: buildMonthlyTrend(
+          rangeBills.map((bill) => ({ date: bill.bill_date, amount: num(bill.grand_total) })),
+          fromDate,
+          toDate,
+        ),
+        byStatus: [...byStatus.entries()]
+          .map(([status, agg]) => ({ status, count: agg.count, amount: agg.amount }))
+          .sort((a, b) => b.amount - a.amount),
+        topVendors,
       };
     },
 
