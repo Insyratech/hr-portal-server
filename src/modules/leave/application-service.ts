@@ -101,14 +101,58 @@ export function mapApplication(row: ApplicationRow) {
   };
 }
 
-const APPLICATION_COLUMNS =
-  'id, employee_id, leave_type_id, policy_version_id, start_date, end_date, duration, quantity, reason, reviewer_comment, handover, handover_employee_id, project_id, attachment_url, status, created_at, leave_types (name, code), projects (name, code, lead_employee_id), leave_approvals (approver_role, status)';
+/**
+ * Column ladders for environments where optional leave columns (reviewer_comment,
+ * handover_employee_id, project_id) may be missing. Always keep project_id + projects
+ * as long as the schema has them — otherwise project-lead approve cannot authorize.
+ */
+const APPLICATION_SELECT_ATTEMPTS = [
+  'id, employee_id, leave_type_id, policy_version_id, start_date, end_date, duration, quantity, reason, reviewer_comment, handover, handover_employee_id, project_id, attachment_url, status, created_at, leave_types (name, code), projects (name, code, lead_employee_id), leave_approvals (approver_role, status)',
+  'id, employee_id, leave_type_id, policy_version_id, start_date, end_date, duration, quantity, reason, handover, handover_employee_id, project_id, attachment_url, status, created_at, leave_types (name, code), projects (name, code, lead_employee_id), leave_approvals (approver_role, status)',
+  'id, employee_id, leave_type_id, policy_version_id, start_date, end_date, duration, quantity, reason, handover, project_id, attachment_url, status, created_at, leave_types (name, code), projects (name, code, lead_employee_id), leave_approvals (approver_role, status)',
+  'id, employee_id, leave_type_id, policy_version_id, start_date, end_date, duration, quantity, reason, handover, handover_employee_id, attachment_url, status, created_at, leave_types (name, code), leave_approvals (approver_role, status)',
+  'id, employee_id, leave_type_id, policy_version_id, start_date, end_date, duration, quantity, reason, handover, attachment_url, status, created_at, leave_types (name, code), leave_approvals (approver_role, status)',
+] as const;
 
-const APPLICATION_COLUMNS_HANDOVER =
-  'id, employee_id, leave_type_id, policy_version_id, start_date, end_date, duration, quantity, reason, handover, handover_employee_id, attachment_url, status, created_at, leave_types (name, code), leave_approvals (approver_role, status)';
+async function selectLeaveApplications(
+  run: (columns: string) => PromiseLike<{ data: unknown; error: { message?: string } | null }>,
+): Promise<{ data: unknown; error: { message?: string } | null }> {
+  let lastError: { message?: string } | null = null;
+  for (const columns of APPLICATION_SELECT_ATTEMPTS) {
+    const result = await run(columns);
+    if (!result.error) return result;
+    lastError = result.error;
+  }
+  return { data: null, error: lastError };
+}
 
-const APPLICATION_COLUMNS_LEGACY =
-  'id, employee_id, leave_type_id, policy_version_id, start_date, end_date, duration, quantity, reason, handover, attachment_url, status, created_at, leave_types (name, code), leave_approvals (approver_role, status)';
+async function hydrateProjectEmbed(
+  supabase: SupabaseClient,
+  rows: ApplicationRow[],
+): Promise<ApplicationRow[]> {
+  const missing = rows.filter((row) => row.project_id && !first(row.projects)?.lead_employee_id);
+  if (missing.length === 0) return rows;
+  const projectIds = [...new Set(missing.map((row) => row.project_id as string))];
+  const { data } = await supabase
+    .from('projects')
+    .select('id, name, code, lead_employee_id')
+    .in('id', projectIds);
+  const byId = new Map(
+    (data ?? []).map((row) => [
+      row.id as string,
+      {
+        name: row.name as string,
+        code: row.code as string,
+        lead_employee_id: (row.lead_employee_id as string | null) ?? null,
+      },
+    ]),
+  );
+  return rows.map((row) => {
+    if (!row.project_id || first(row.projects)?.lead_employee_id) return row;
+    const project = byId.get(row.project_id);
+    return project ? { ...row, projects: project } : row;
+  });
+}
 
 async function loadEmployeeNames(supabase: SupabaseClient, rows: ApplicationRow[]): Promise<Record<string, string>> {
   const ids = [...new Set(rows.flatMap((row) => [row.employee_id, row.handover_employee_id]).filter((id): id is string => Boolean(id)))];
@@ -356,43 +400,46 @@ export function createLeaveApplicationService(supabase: SupabaseClient) {
         return { data: withLead, error: null };
       };
 
-      let { data, error } = await fetchScoped(APPLICATION_COLUMNS);
-      if (error) {
-        ({ data, error } = await fetchScoped(APPLICATION_COLUMNS_HANDOVER));
-      }
-      if (error) {
-        ({ data, error } = await fetchScoped(APPLICATION_COLUMNS_LEGACY));
-      }
+      const { data, error } = await selectLeaveApplications((columns) => fetchScoped(columns));
       if (error) {
         throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, error.message || 'Failed to load leave applications.', 500);
       }
-      const rows = await hydrateHandoverIds(supabase, (data ?? []) as unknown as ApplicationRow[]);
+      const rows = await hydrateProjectEmbed(
+        supabase,
+        await hydrateHandoverIds(supabase, (data ?? []) as unknown as ApplicationRow[]),
+      );
       const names = await loadEmployeeNames(supabase, rows);
       return rows.map((row) => mapApplicationWithNames(row, names));
     },
 
     async getApplication(actor: RequestUser, id: string) {
-      let { data, error } = await supabase.from('leave_applications').select(APPLICATION_COLUMNS).eq('id', id).maybeSingle();
-      if (error) {
-        ({ data, error } = await supabase.from('leave_applications').select(APPLICATION_COLUMNS_HANDOVER).eq('id', id).maybeSingle());
-      }
-      if (error) {
-        ({ data, error } = await supabase.from('leave_applications').select(APPLICATION_COLUMNS_LEGACY).eq('id', id).maybeSingle());
-      }
+      const { data, error } = await selectLeaveApplications((columns) =>
+        supabase.from('leave_applications').select(columns).eq('id', id).maybeSingle(),
+      );
       if (error) {
         throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, error.message || 'Failed to load leave application.', 500);
       }
       if (!data) {
         throw new AppError(API_ERROR_CODES.NOT_FOUND, 'Leave application not found.', 404);
       }
-      const row = ((await hydrateHandoverIds(supabase, [data as ApplicationRow]))[0] ?? data) as ApplicationRow;
+      const hydrated = await hydrateProjectEmbed(
+        supabase,
+        await hydrateHandoverIds(supabase, [data as ApplicationRow]),
+      );
+      const row = hydrated[0] ?? (data as ApplicationRow);
       const names = await loadEmployeeNames(supabase, [row]);
       const mapped = mapApplicationWithNames(row, names);
-      const isLeadViewer =
+
+      // Current lead may view even after they already accepted (post-accept reload).
+      let isLeadViewer =
         Boolean(mapped.projectId) &&
-        mapped.projectLeadEmployeeId === actor.employeeId &&
         mapped.hasProjectLeadStep &&
-        !mapped.projectLeadAccepted;
+        mapped.projectLeadEmployeeId === actor.employeeId;
+      if (!isLeadViewer && mapped.projectId && mapped.hasProjectLeadStep) {
+        const liveLeadId = await currentLeadEmployeeId(supabase, mapped.projectId);
+        isLeadViewer = liveLeadId === actor.employeeId;
+      }
+
       if (
         mapped.employeeId !== actor.employeeId &&
         mapped.handoverEmployeeId !== actor.employeeId &&

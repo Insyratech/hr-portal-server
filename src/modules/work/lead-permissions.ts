@@ -32,11 +32,12 @@ function firstRel<T>(value: T | T[] | null | undefined): T | null {
   return Array.isArray(value) ? (value[0] ?? null) : value;
 }
 
-/** Same column ladder as leave listApplications — schema differs across environments. */
+/** Same column ladder as leave application-service — keep project_id/projects when possible. */
 const LEAVE_SELECT_ATTEMPTS = [
   'id, employee_id, leave_type_id, policy_version_id, start_date, end_date, duration, quantity, reason, reviewer_comment, handover, handover_employee_id, project_id, attachment_url, status, created_at, leave_types (name, code), projects (name, code, lead_employee_id), leave_approvals (approver_role, status)',
   'id, employee_id, leave_type_id, policy_version_id, start_date, end_date, duration, quantity, reason, handover, handover_employee_id, project_id, attachment_url, status, created_at, leave_types (name, code), projects (name, code, lead_employee_id), leave_approvals (approver_role, status)',
   'id, employee_id, leave_type_id, policy_version_id, start_date, end_date, duration, quantity, reason, handover, project_id, attachment_url, status, created_at, leave_types (name, code), projects (name, code, lead_employee_id), leave_approvals (approver_role, status)',
+  'id, employee_id, leave_type_id, policy_version_id, start_date, end_date, duration, quantity, reason, handover, handover_employee_id, project_id, attachment_url, status, created_at, leave_types (name, code), leave_approvals (approver_role, status)',
   'id, employee_id, leave_type_id, policy_version_id, start_date, end_date, duration, quantity, reason, handover, project_id, attachment_url, status, created_at, leave_types (name, code), leave_approvals (approver_role, status)',
 ] as const;
 
