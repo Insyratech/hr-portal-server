@@ -104,6 +104,8 @@ export function buildLeaveApprovalSteps(input: {
   applicationId: string;
   withHandover: boolean;
   withProjectLead: boolean;
+  /** When false, HR_MANAGER step is omitted (PL-only or handover-only). Default true. */
+  withHr?: boolean;
   handoverAccepted?: boolean;
   projectLeadAccepted?: boolean;
 }): ApprovalStepInsert[] {
@@ -125,13 +127,29 @@ export function buildLeaveApprovalSteps(input: {
       status: input.projectLeadAccepted ? 'APPROVED' : 'PENDING',
     });
   }
-  rows.push({
-    application_id: input.applicationId,
-    step_order: step,
-    approver_role: 'HR_MANAGER',
-    status: 'PENDING',
-  });
+  if (input.withHr !== false) {
+    rows.push({
+      application_id: input.applicationId,
+      step_order: step,
+      approver_role: 'HR_MANAGER',
+      status: 'PENDING',
+    });
+  }
   return rows;
+}
+
+/** True when any inserted step would still be PENDING after apply/reset. */
+export function leaveWorkflowStillPending(input: {
+  withHandover: boolean;
+  withProjectLead: boolean;
+  withHr: boolean;
+  handoverAccepted?: boolean;
+  projectLeadAccepted?: boolean;
+}): boolean {
+  if (input.withHandover && !input.handoverAccepted) return true;
+  if (input.withProjectLead && !input.projectLeadAccepted) return true;
+  if (input.withHr) return true;
+  return false;
 }
 
 export async function resetLeaveApprovals(
@@ -140,12 +158,14 @@ export async function resetLeaveApprovals(
   options: {
     withHandover: boolean;
     withProjectLead: boolean;
+    withHr?: boolean;
     handoverAccepted?: boolean;
     projectLeadAccepted?: boolean;
   },
 ): Promise<void> {
   await supabase.from('leave_approvals').delete().eq('application_id', applicationId);
   const rows = buildLeaveApprovalSteps({ applicationId, ...options });
+  if (rows.length === 0) return;
   const { error } = await supabase.from('leave_approvals').insert(rows);
   if (error) {
     throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to set leave approval steps.', 500);
@@ -202,7 +222,7 @@ export async function notifyProjectLeadApproval(
     eyebrow: 'Leave',
     paragraphs: [
       `${input.applicantName} applied for leave linked to ${input.projectName}.`,
-      'Review and approve as project lead before HR can decide.',
+      'Review and approve as project lead.',
     ],
     details: [
       { label: 'Project', value: input.projectName },
@@ -257,4 +277,10 @@ export function hasProjectLeadStep(
   approvals: { approver_role: string; status: string }[] | null | undefined,
 ): boolean {
   return (approvals ?? []).some((item) => item.approver_role === 'PROJECT_LEAD');
+}
+
+export function hasHrManagerStep(
+  approvals: { approver_role: string; status: string }[] | null | undefined,
+): boolean {
+  return (approvals ?? []).some((item) => item.approver_role === 'HR_MANAGER');
 }

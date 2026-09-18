@@ -24,6 +24,7 @@ export function createLeaveCatalogService(supabase: SupabaseClient) {
 
     async createType(actor: RequestUser, input: Record<string, unknown>, meta: RequestMeta) {
       if (!canManageTypes(actor)) throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot manage leave types.', 403);
+      const approval = resolveTypeApprovalInput(input);
       const { data, error } = await supabase
         .from('leave_types')
         .insert({
@@ -31,7 +32,9 @@ export function createLeaveCatalogService(supabase: SupabaseClient) {
           code: input.code,
           description: input.description ?? '',
           active: input.active ?? true,
-          requires_approval: input.requiresApproval ?? true,
+          requires_approval: approval.requiresApproval,
+          requires_pl_approval: approval.requiresPlApproval,
+          requires_hr_approval: approval.requiresHrApproval,
           requires_handover: input.requiresHandover ?? false,
           requires_attachment: input.requiresAttachment ?? false,
           allow_half_day: input.allowHalfDay ?? true,
@@ -73,7 +76,26 @@ export function createLeaveCatalogService(supabase: SupabaseClient) {
       if (input.name !== undefined) patch.name = input.name;
       if (input.description !== undefined) patch.description = input.description;
       if (input.active !== undefined) patch.active = input.active;
-      if (input.requiresApproval !== undefined) patch.requires_approval = input.requiresApproval;
+      if (
+        input.requiresPlApproval !== undefined ||
+        input.requiresHrApproval !== undefined ||
+        input.requiresApproval !== undefined
+      ) {
+        const { data: existing } = await supabase
+          .from('leave_types')
+          .select('requires_approval, requires_pl_approval, requires_hr_approval')
+          .eq('id', id)
+          .maybeSingle();
+        const mapped = existing ? mapType(existing as Record<string, unknown>) : null;
+        const approval = resolveTypeApprovalInput(input, {
+          requiresPlApproval: mapped?.requiresPlApproval,
+          requiresHrApproval: mapped?.requiresHrApproval,
+          requiresApproval: mapped?.requiresApproval,
+        });
+        patch.requires_pl_approval = approval.requiresPlApproval;
+        patch.requires_hr_approval = approval.requiresHrApproval;
+        patch.requires_approval = approval.requiresApproval;
+      }
       if (input.requiresHandover !== undefined) patch.requires_handover = input.requiresHandover;
       if (input.requiresAttachment !== undefined) patch.requires_attachment = input.requiresAttachment;
       if (input.allowHalfDay !== undefined) patch.allow_half_day = input.allowHalfDay;
@@ -581,14 +603,59 @@ export function createLeaveCatalogService(supabase: SupabaseClient) {
 
 type RequestMeta = { ipAddress?: string | null; userAgent?: string | null };
 
+function resolveTypeApprovalInput(
+  input: Record<string, unknown>,
+  current?: {
+    requiresPlApproval?: boolean;
+    requiresHrApproval?: boolean;
+    requiresApproval?: boolean;
+  },
+): { requiresPlApproval: boolean; requiresHrApproval: boolean; requiresApproval: boolean } {
+  const hasPl = input.requiresPlApproval !== undefined;
+  const hasHr = input.requiresHrApproval !== undefined;
+  const hasLegacy = input.requiresApproval !== undefined;
+
+  let requiresPlApproval: boolean;
+  let requiresHrApproval: boolean;
+
+  if (hasPl || hasHr) {
+    requiresPlApproval = hasPl
+      ? Boolean(input.requiresPlApproval)
+      : (current?.requiresPlApproval ?? (hasLegacy ? Boolean(input.requiresApproval) : true));
+    requiresHrApproval = hasHr
+      ? Boolean(input.requiresHrApproval)
+      : (current?.requiresHrApproval ?? (hasLegacy ? Boolean(input.requiresApproval) : true));
+  } else if (hasLegacy) {
+    const legacy = Boolean(input.requiresApproval);
+    requiresPlApproval = legacy;
+    requiresHrApproval = legacy;
+  } else {
+    requiresPlApproval = current?.requiresPlApproval ?? true;
+    requiresHrApproval = current?.requiresHrApproval ?? true;
+  }
+
+  return {
+    requiresPlApproval,
+    requiresHrApproval,
+    requiresApproval: requiresPlApproval || requiresHrApproval,
+  };
+}
+
 function mapType(row: Record<string, unknown>) {
+  const hasPl = row.requires_pl_approval !== undefined && row.requires_pl_approval !== null;
+  const hasHr = row.requires_hr_approval !== undefined && row.requires_hr_approval !== null;
+  const legacy = Boolean(row.requires_approval);
+  const requiresPlApproval = hasPl ? Boolean(row.requires_pl_approval) : legacy;
+  const requiresHrApproval = hasHr ? Boolean(row.requires_hr_approval) : legacy;
   return {
     id: row.id as string,
     name: row.name as string,
     code: row.code as string,
     description: (row.description as string) ?? '',
     active: Boolean(row.active),
-    requiresApproval: Boolean(row.requires_approval),
+    requiresApproval: requiresPlApproval || requiresHrApproval,
+    requiresPlApproval,
+    requiresHrApproval,
     requiresHandover: Boolean(row.requires_handover),
     requiresAttachment: Boolean(row.requires_attachment),
     allowHalfDay: Boolean(row.allow_half_day),

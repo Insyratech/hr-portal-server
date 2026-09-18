@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildLeaveApprovalSteps } from './project-lead-approval';
+import { buildLeaveApprovalSteps, leaveWorkflowStillPending } from './project-lead-approval';
 
 describe('buildLeaveApprovalSteps', () => {
   it('builds handover → project lead → HR', () => {
@@ -7,6 +7,7 @@ describe('buildLeaveApprovalSteps', () => {
       applicationId: 'app-1',
       withHandover: true,
       withProjectLead: true,
+      withHr: true,
     });
     expect(rows.map((row) => [row.step_order, row.approver_role, row.status])).toEqual([
       [1, 'HANDOVER', 'PENDING'],
@@ -20,6 +21,7 @@ describe('buildLeaveApprovalSteps', () => {
       applicationId: 'app-1',
       withHandover: false,
       withProjectLead: true,
+      withHr: true,
     });
     expect(rows.map((row) => row.approver_role)).toEqual(['PROJECT_LEAD', 'HR_MANAGER']);
   });
@@ -29,6 +31,7 @@ describe('buildLeaveApprovalSteps', () => {
       applicationId: 'app-1',
       withHandover: false,
       withProjectLead: false,
+      withHr: true,
     });
     expect(rows).toEqual([
       {
@@ -40,14 +43,69 @@ describe('buildLeaveApprovalSteps', () => {
     ]);
   });
 
+  it('builds PL-only without HR', () => {
+    const rows = buildLeaveApprovalSteps({
+      applicationId: 'app-1',
+      withHandover: false,
+      withProjectLead: true,
+      withHr: false,
+    });
+    expect(rows.map((row) => row.approver_role)).toEqual(['PROJECT_LEAD']);
+  });
+
+  it('builds handover-only when neither PL nor HR', () => {
+    const rows = buildLeaveApprovalSteps({
+      applicationId: 'app-1',
+      withHandover: true,
+      withProjectLead: false,
+      withHr: false,
+    });
+    expect(rows.map((row) => row.approver_role)).toEqual(['HANDOVER']);
+  });
+
   it('marks lead step approved when applicant is the lead', () => {
     const rows = buildLeaveApprovalSteps({
       applicationId: 'app-1',
       withHandover: true,
       withProjectLead: true,
+      withHr: true,
       projectLeadAccepted: true,
     });
     expect(rows.find((row) => row.approver_role === 'PROJECT_LEAD')?.status).toBe('APPROVED');
     expect(rows.find((row) => row.approver_role === 'HANDOVER')?.status).toBe('PENDING');
+  });
+});
+
+describe('leaveWorkflowStillPending', () => {
+  it('is pending when HR is required', () => {
+    expect(
+      leaveWorkflowStillPending({
+        withHandover: false,
+        withProjectLead: false,
+        withHr: true,
+      }),
+    ).toBe(true);
+  });
+
+  it('is not pending when PL already accepted and no HR', () => {
+    expect(
+      leaveWorkflowStillPending({
+        withHandover: false,
+        withProjectLead: true,
+        withHr: false,
+        projectLeadAccepted: true,
+      }),
+    ).toBe(false);
+  });
+
+  it('is pending when PL still needed', () => {
+    expect(
+      leaveWorkflowStillPending({
+        withHandover: false,
+        withProjectLead: true,
+        withHr: false,
+        projectLeadAccepted: false,
+      }),
+    ).toBe(true);
   });
 });

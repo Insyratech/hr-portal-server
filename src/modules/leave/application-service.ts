@@ -27,6 +27,7 @@ import { syncEmployeeWorkDays } from '../work/daily';
 import { assertHandoverColleagueFree, employeeIdsOnLeave } from './handover-availability';
 import {
   currentLeadEmployeeId,
+  leaveWorkflowStillPending,
   listLeaveProjectOptions,
   loadProjectForLeave,
   notifyProjectLeadApproval,
@@ -94,6 +95,7 @@ export function mapApplication(row: ApplicationRow) {
       (item) => item.approver_role === 'PROJECT_LEAD' && item.status === 'PENDING',
     ),
     hasProjectLeadStep: approvals.some((item) => item.approver_role === 'PROJECT_LEAD'),
+    hasHrManagerStep: approvals.some((item) => item.approver_role === 'HR_MANAGER'),
     reviewerComment: row.reviewer_comment ?? null,
     attachmentUrl: row.attachment_url,
     status: row.status,
@@ -245,17 +247,35 @@ async function approveApprovalRole(
   }
 }
 
+function leaveTypeFlagsFromRow(leaveType: Record<string, unknown>): LeaveTypeFlags {
+  const hasPl = leaveType.requires_pl_approval !== undefined && leaveType.requires_pl_approval !== null;
+  const hasHr = leaveType.requires_hr_approval !== undefined && leaveType.requires_hr_approval !== null;
+  const legacy = Boolean(leaveType.requires_approval);
+  const requiresPlApproval = hasPl ? Boolean(leaveType.requires_pl_approval) : legacy;
+  const requiresHrApproval = hasHr ? Boolean(leaveType.requires_hr_approval) : legacy;
+  return {
+    active: Boolean(leaveType.active),
+    requiresApproval: requiresPlApproval || requiresHrApproval,
+    requiresPlApproval,
+    requiresHrApproval,
+    requiresHandover: Boolean(leaveType.requires_handover),
+    requiresAttachment: Boolean(leaveType.requires_attachment),
+    allowHalfDay: Boolean(leaveType.allow_half_day),
+    allowMultipleDays: Boolean(leaveType.allow_multiple_days),
+  };
+}
+
 async function resolveLeaveProjectStep(
   supabase: SupabaseClient,
   actor: RequestUser,
-  requiresApproval: boolean,
+  requiresPlApproval: boolean,
   projectId: string | undefined,
 ): Promise<{
   project: Awaited<ReturnType<typeof loadProjectForLeave>> | null;
   withProjectLead: boolean;
   projectLeadAccepted: boolean;
 }> {
-  if (!requiresApproval) {
+  if (!requiresPlApproval) {
     return { project: null, withProjectLead: false, projectLeadAccepted: true };
   }
   const options = await listLeaveProjectOptions(supabase, actor.employeeId);
@@ -276,6 +296,23 @@ async function resolveLeaveProjectStep(
     withProjectLead: true,
     projectLeadAccepted: applicantIsLead,
   };
+}
+
+async function finaliseLeaveApprove(
+  supabase: SupabaseClient,
+  applicationId: string,
+  actorEmployeeId: string,
+  comment?: string | null,
+) {
+  const { error } = await supabase.rpc('finalise_leave_application', {
+    p_application_id: applicationId,
+    p_action: 'approve',
+    p_actor_id: actorEmployeeId,
+    p_comment: comment ?? null,
+  });
+  if (error) {
+    mapRpcError(error);
+  }
 }
 
 export function createLeaveApplicationService(supabase: SupabaseClient) {
@@ -488,14 +525,7 @@ export function createLeaveApplicationService(supabase: SupabaseClient) {
         throw new AppError(API_ERROR_CODES.NOT_FOUND, 'Leave type not found.', 404);
       }
 
-      const flags: LeaveTypeFlags = {
-        active: Boolean(leaveType.active),
-        requiresApproval: Boolean(leaveType.requires_approval),
-        requiresHandover: Boolean(leaveType.requires_handover),
-        requiresAttachment: Boolean(leaveType.requires_attachment),
-        allowHalfDay: Boolean(leaveType.allow_half_day),
-        allowMultipleDays: Boolean(leaveType.allow_multiple_days),
-      };
+      const flags = leaveTypeFlagsFromRow(leaveType as Record<string, unknown>);
 
       const policy = await loadActivePolicy(supabase, input.leaveTypeId);
       const workingDays = await loadWorkingDays(supabase);
@@ -571,11 +601,18 @@ export function createLeaveApplicationService(supabase: SupabaseClient) {
       const projectStep = await resolveLeaveProjectStep(
         supabase,
         actor,
-        result.requiresApproval,
+        result.requiresPlApproval,
         input.projectId,
       );
 
-      const status = result.requiresApproval || result.requiresHandover ? 'PENDING' : 'APPROVED';
+      const workflow = {
+        withHandover: Boolean(handoverPerson),
+        withProjectLead: projectStep.withProjectLead,
+        withHr: result.requiresHrApproval,
+        handoverAccepted: false,
+        projectLeadAccepted: projectStep.projectLeadAccepted,
+      };
+      const status = leaveWorkflowStillPending(workflow) ? 'PENDING' : 'APPROVED';
       const { data, error } = await supabase.rpc('apply_leave_application', {
         p_employee_id: actor.employeeId,
         p_leave_type_id: input.leaveTypeId,
@@ -611,8 +648,9 @@ export function createLeaveApplicationService(supabase: SupabaseClient) {
 
       if (status === 'PENDING') {
         await resetLeaveApprovals(supabase, createdId, {
-          withHandover: Boolean(handoverPerson),
-          withProjectLead: projectStep.withProjectLead,
+          withHandover: workflow.withHandover,
+          withProjectLead: workflow.withProjectLead,
+          withHr: workflow.withHr,
           handoverAccepted: false,
           projectLeadAccepted: projectStep.projectLeadAccepted,
         });
@@ -648,7 +686,7 @@ export function createLeaveApplicationService(supabase: SupabaseClient) {
             endDate: input.endDate,
             leadEmployeeId: projectStep.project.leadEmployeeId,
           });
-        } else {
+        } else if (result.requiresHrApproval) {
           await notifyApprovers(supabase, createdId, employee.full_name as string);
         }
       } else {
@@ -706,14 +744,7 @@ export function createLeaveApplicationService(supabase: SupabaseClient) {
         throw new AppError(API_ERROR_CODES.NOT_FOUND, 'Leave type not found.', 404);
       }
 
-      const flags: LeaveTypeFlags = {
-        active: Boolean(leaveType.active),
-        requiresApproval: Boolean(leaveType.requires_approval),
-        requiresHandover: Boolean(leaveType.requires_handover),
-        requiresAttachment: Boolean(leaveType.requires_attachment),
-        allowHalfDay: Boolean(leaveType.allow_half_day),
-        allowMultipleDays: Boolean(leaveType.allow_multiple_days),
-      };
+      const flags = leaveTypeFlagsFromRow(leaveType as Record<string, unknown>);
 
       const policy = await loadActivePolicy(supabase, input.leaveTypeId);
       const workingDays = await loadWorkingDays(supabase);
@@ -794,6 +825,45 @@ export function createLeaveApplicationService(supabase: SupabaseClient) {
         await assertHandoverColleagueFree(supabase, handoverPerson.id, input.startDate, input.endDate);
       }
 
+      const projectStep = await resolveLeaveProjectStep(
+        supabase,
+        actor,
+        result.requiresPlApproval,
+        input.projectId,
+      );
+
+      const keepHandover = Boolean(
+        handoverPerson && existing.handoverEmployeeId === handoverPerson.id && existing.handoverAccepted,
+      );
+      const keepLead = Boolean(
+        projectStep.withProjectLead &&
+          existing.projectId === projectStep.project?.id &&
+          existing.projectLeadAccepted &&
+          (keepHandover ||
+            !handoverPerson ||
+            (handoverPerson &&
+              existing.handoverAccepted &&
+              handoverPerson.id === projectStep.project?.leadEmployeeId)),
+      );
+      const combineLeadWithHandover = Boolean(
+        projectStep.withProjectLead &&
+          handoverPerson &&
+          handoverPerson.id === projectStep.project?.leadEmployeeId,
+      );
+      const projectLeadAccepted =
+        projectStep.projectLeadAccepted ||
+        keepLead ||
+        (combineLeadWithHandover && keepHandover);
+
+      const workflow = {
+        withHandover: Boolean(handoverPerson),
+        withProjectLead: projectStep.withProjectLead,
+        withHr: result.requiresHrApproval,
+        handoverAccepted: keepHandover,
+        projectLeadAccepted,
+      };
+      const stillPending = leaveWorkflowStillPending(workflow);
+
       const { error: updateError } = await supabase
         .from('leave_applications')
         .update({
@@ -806,7 +876,7 @@ export function createLeaveApplicationService(supabase: SupabaseClient) {
           reason: input.reason ?? null,
           handover: handoverPerson?.full_name ?? input.handover ?? null,
           attachment_url: input.attachmentUrl ?? null,
-          status: 'PENDING',
+          status: stillPending ? 'PENDING' : 'APPROVED',
         })
         .eq('id', id);
       if (updateError) {
@@ -814,13 +884,6 @@ export function createLeaveApplicationService(supabase: SupabaseClient) {
       }
       await persistHandoverEmployeeId(supabase, id, handoverPerson?.id ?? null);
       await persistReviewerComment(supabase, id, null);
-
-      const projectStep = await resolveLeaveProjectStep(
-        supabase,
-        actor,
-        result.requiresApproval,
-        input.projectId,
-      );
       await persistLeaveProjectId(supabase, id, projectStep.project?.id ?? null);
 
       if (sameType && allocation) {
@@ -856,74 +919,43 @@ export function createLeaveApplicationService(supabase: SupabaseClient) {
         }
       }
 
-      const keepHandover = Boolean(
-        handoverPerson && existing.handoverEmployeeId === handoverPerson.id && existing.handoverAccepted,
-      );
-      const keepLead = Boolean(
-        projectStep.withProjectLead &&
-          existing.projectId === projectStep.project?.id &&
-          existing.projectLeadAccepted &&
-          (keepHandover ||
-            !handoverPerson ||
-            (handoverPerson &&
-              existing.handoverAccepted &&
-              handoverPerson.id === projectStep.project?.leadEmployeeId)),
-      );
-      const combineLeadWithHandover = Boolean(
-        projectStep.withProjectLead &&
-          handoverPerson &&
-          handoverPerson.id === projectStep.project?.leadEmployeeId,
-      );
-      const projectLeadAccepted =
-        projectStep.projectLeadAccepted ||
-        keepLead ||
-        (combineLeadWithHandover && keepHandover);
+      if (stillPending) {
+        await resetLeaveApprovals(supabase, id, {
+          withHandover: workflow.withHandover,
+          withProjectLead: workflow.withProjectLead,
+          withHr: workflow.withHr,
+          handoverAccepted: keepHandover,
+          projectLeadAccepted,
+        });
 
-      await resetLeaveApprovals(supabase, id, {
-        withHandover: Boolean(handoverPerson),
-        withProjectLead: projectStep.withProjectLead,
-        handoverAccepted: keepHandover,
-        projectLeadAccepted,
-      });
-
-      if (handoverPerson && !keepHandover) {
-        if (handoverPerson.user_id) {
-          await insertNotification(supabase, {
-            userId: handoverPerson.user_id,
+        if (handoverPerson && !keepHandover) {
+          if (handoverPerson.user_id) {
+            await insertNotification(supabase, {
+              userId: handoverPerson.user_id,
+              title: 'Handover requested',
+              message: `${employee.full_name as string} updated a leave request and asked you to take handover.`,
+              referenceId: id,
+            });
+          }
+          await sendPortalMail({
+            to: [handoverPerson.email ?? ''],
+            subject: 'Handover requested',
+            eyebrow: 'Leave',
             title: 'Handover requested',
-            message: `${employee.full_name as string} updated a leave request and asked you to take handover.`,
-            referenceId: id,
+            paragraphs: [
+              `${employee.full_name as string} updated an existing leave request and named you for handover.`,
+              combineLeadWithHandover
+                ? 'Accepting also completes the project-lead step because you lead this project.'
+                : 'Review and accept the handover in HR Portal before the next approval step.',
+            ],
+            cta: { label: 'Review and accept', href: portalUrl(`/leave/handover/${id}`) },
           });
-        }
-        await sendPortalMail({
-          to: [handoverPerson.email ?? ''],
-          subject: 'Handover requested',
-          eyebrow: 'Leave',
-          title: 'Handover requested',
-          paragraphs: [
-            `${employee.full_name as string} updated an existing leave request and named you for handover.`,
-            combineLeadWithHandover
-              ? 'Accepting also completes the project-lead step because you lead this project.'
-              : 'Review and accept the handover in HR Portal before the next approval step.',
-          ],
-          cta: { label: 'Review and accept', href: portalUrl(`/leave/handover/${id}`) },
-        });
-      } else if (
-        projectStep.withProjectLead &&
-        !projectLeadAccepted &&
-        projectStep.project &&
-        keepHandover
-      ) {
-        await notifyProjectLeadApproval(supabase, {
-          applicationId: id,
-          projectName: projectStep.project.name,
-          applicantName: employee.full_name as string,
-          startDate: input.startDate,
-          endDate: input.endDate,
-          leadEmployeeId: projectStep.project.leadEmployeeId,
-        });
-      } else if (!handoverPerson || keepHandover) {
-        if (projectStep.withProjectLead && !projectLeadAccepted && projectStep.project && !handoverPerson) {
+        } else if (
+          projectStep.withProjectLead &&
+          !projectLeadAccepted &&
+          projectStep.project &&
+          keepHandover
+        ) {
           await notifyProjectLeadApproval(supabase, {
             applicationId: id,
             projectName: projectStep.project.name,
@@ -932,14 +964,56 @@ export function createLeaveApplicationService(supabase: SupabaseClient) {
             endDate: input.endDate,
             leadEmployeeId: projectStep.project.leadEmployeeId,
           });
-        } else if (projectLeadAccepted || !projectStep.withProjectLead) {
-          await notifyApprovers(supabase, id, employee.full_name as string, {
-            updated: true,
-            handoverAcceptedBy: keepHandover
-              ? (existing.handoverEmployeeName ?? handoverPerson?.full_name ?? undefined)
-              : undefined,
-          });
+        } else if (!handoverPerson || keepHandover) {
+          if (projectStep.withProjectLead && !projectLeadAccepted && projectStep.project && !handoverPerson) {
+            await notifyProjectLeadApproval(supabase, {
+              applicationId: id,
+              projectName: projectStep.project.name,
+              applicantName: employee.full_name as string,
+              startDate: input.startDate,
+              endDate: input.endDate,
+              leadEmployeeId: projectStep.project.leadEmployeeId,
+            });
+          } else if (
+            result.requiresHrApproval &&
+            (projectLeadAccepted || !projectStep.withProjectLead)
+          ) {
+            await notifyApprovers(supabase, id, employee.full_name as string, {
+              updated: true,
+              handoverAcceptedBy: keepHandover
+                ? (existing.handoverEmployeeName ?? handoverPerson?.full_name ?? undefined)
+                : undefined,
+            });
+          }
         }
+      } else {
+        await supabase.from('leave_approvals').delete().eq('application_id', id);
+        if (allocation?.id) {
+          await supabase
+            .from('leave_ledger')
+            .update({ transaction_type: 'LEAVE_APPROVED' })
+            .eq('reference_id', id)
+            .eq('transaction_type', 'LEAVE_PENDING');
+          await supabase.rpc('recompute_leave_allocation', { p_allocation_id: allocation.id });
+        }
+        await syncEmployeeWorkDays(supabase, actor.employeeId, input.startDate, input.endDate);
+        await notifyStaff(supabase, await loadStaffById(supabase, actor.employeeId), {
+          type: 'leave',
+          title: 'Leave approved',
+          message: 'Your leave was auto-approved.',
+          referenceType: 'leave_application',
+          referenceId: id,
+          eyebrow: 'Leave',
+          paragraphs: ['Your updated leave request was auto-approved.'],
+          ctaLabel: 'View leave',
+          ctaHref: portalUrl('/leave'),
+        });
+        await notifyHrLeaveRecorded(
+          supabase,
+          id,
+          employee.full_name as string,
+          (leaveType.name as string) || 'leave',
+        );
       }
 
       const updated = await this.getApplication(actor, id);
@@ -968,6 +1042,13 @@ export function createLeaveApplicationService(supabase: SupabaseClient) {
         throw new AppError(
           API_ERROR_CODES.VALIDATION_ERROR,
           'Project lead must approve before HR can approve.',
+          400,
+        );
+      }
+      if (action === 'approve' && !existing.hasHrManagerStep) {
+        throw new AppError(
+          API_ERROR_CODES.VALIDATION_ERROR,
+          'This leave does not require HR approval.',
           400,
         );
       }
@@ -1097,41 +1178,75 @@ export function createLeaveApplicationService(supabase: SupabaseClient) {
 
       const applicantName = existing.employeeName ?? 'Employee';
       const acceptorName = actor.fullName || existing.handoverEmployeeName || 'Handover colleague';
-      await notifyStaff(supabase, await loadStaffById(supabase, existing.employeeId), {
-        type: 'leave',
-        title: 'Handover accepted',
-        message: `${acceptorName} accepted your handover request.`,
-        referenceType: 'leave_application',
-        referenceId: id,
-        eyebrow: 'Leave',
-        paragraphs: [
-          `${acceptorName} accepted handover for your leave (${existing.startDate} to ${existing.endDate}).`,
-          combinesLead
-            ? 'Project-lead approval was completed in the same step. Your request is now with HR.'
-            : existing.hasProjectLeadStep && !existing.projectLeadAccepted
-              ? 'Next, your project lead will review the request.'
-              : 'Your request is now under review.',
-        ],
-        details: [
-          { label: 'From', value: existing.startDate },
-          { label: 'To', value: existing.endDate },
-          { label: 'Handover', value: acceptorName },
-        ],
-        ctaLabel: 'View leave',
-        ctaHref: portalUrl('/leave'),
-      });
+      const leadDone = combinesLead || !existing.hasProjectLeadStep || existing.projectLeadAccepted;
+      const needsHrNext = existing.hasHrManagerStep && leadDone;
+      const fullyApproved = leadDone && !existing.hasHrManagerStep;
 
-      if (combinesLead || !existing.hasProjectLeadStep || existing.projectLeadAccepted) {
-        await notifyApprovers(supabase, id, applicantName, { handoverAcceptedBy: acceptorName });
-      } else if (existing.projectId && leadId) {
-        await notifyProjectLeadApproval(supabase, {
-          applicationId: id,
-          projectName: existing.projectName ?? 'Project',
-          applicantName,
-          startDate: existing.startDate,
-          endDate: existing.endDate,
-          leadEmployeeId: leadId,
+      if (fullyApproved) {
+        await finaliseLeaveApprove(supabase, id, actor.employeeId, 'Approved after handover');
+        await syncEmployeeWorkDays(supabase, existing.employeeId, existing.startDate, existing.endDate);
+        await notifyStaff(supabase, await loadStaffById(supabase, existing.employeeId), {
+          type: 'leave',
+          title: 'Leave approved',
+          message: `${acceptorName} accepted your handover and your leave is approved.`,
+          referenceType: 'leave_application',
+          referenceId: id,
+          eyebrow: 'Leave',
+          paragraphs: [
+            `${acceptorName} accepted handover for your leave (${existing.startDate} to ${existing.endDate}).`,
+            combinesLead
+              ? 'Project-lead approval was completed in the same step. Your leave is approved.'
+              : 'Your leave is approved.',
+          ],
+          details: [
+            { label: 'From', value: existing.startDate },
+            { label: 'To', value: existing.endDate },
+            { label: 'Handover', value: acceptorName },
+          ],
+          ctaLabel: 'View leave',
+          ctaHref: portalUrl('/leave'),
         });
+      } else {
+        await notifyStaff(supabase, await loadStaffById(supabase, existing.employeeId), {
+          type: 'leave',
+          title: 'Handover accepted',
+          message: `${acceptorName} accepted your handover request.`,
+          referenceType: 'leave_application',
+          referenceId: id,
+          eyebrow: 'Leave',
+          paragraphs: [
+            `${acceptorName} accepted handover for your leave (${existing.startDate} to ${existing.endDate}).`,
+            combinesLead
+              ? existing.hasHrManagerStep
+                ? 'Project-lead approval was completed in the same step. Your request is now with HR.'
+                : 'Project-lead approval was completed in the same step.'
+              : existing.hasProjectLeadStep && !existing.projectLeadAccepted
+                ? 'Next, your project lead will review the request.'
+                : existing.hasHrManagerStep
+                  ? 'Your request is now under review.'
+                  : 'Your request continues through the remaining approval steps.',
+          ],
+          details: [
+            { label: 'From', value: existing.startDate },
+            { label: 'To', value: existing.endDate },
+            { label: 'Handover', value: acceptorName },
+          ],
+          ctaLabel: 'View leave',
+          ctaHref: portalUrl('/leave'),
+        });
+
+        if (needsHrNext) {
+          await notifyApprovers(supabase, id, applicantName, { handoverAcceptedBy: acceptorName });
+        } else if (existing.projectId && leadId && existing.hasProjectLeadStep && !leadDone) {
+          await notifyProjectLeadApproval(supabase, {
+            applicationId: id,
+            projectName: existing.projectName ?? 'Project',
+            applicantName,
+            startDate: existing.startDate,
+            endDate: existing.endDate,
+            leadEmployeeId: leadId,
+          });
+        }
       }
 
       await writeLeaveAudit(supabase, actor.employeeId, 'leave.handover_accept', id, existing, meta);
@@ -1174,28 +1289,52 @@ export function createLeaveApplicationService(supabase: SupabaseClient) {
       await approveApprovalRole(supabase, id, 'PROJECT_LEAD', actor.employeeId);
 
       const applicantName = existing.employeeName ?? 'Employee';
-      await notifyStaff(supabase, await loadStaffById(supabase, existing.employeeId), {
-        type: 'leave',
-        title: 'Project lead approved',
-        message: `${actor.fullName} approved your leave as project lead.`,
-        referenceType: 'leave_application',
-        referenceId: id,
-        eyebrow: 'Leave',
-        paragraphs: [
-          `${actor.fullName} approved your leave as project lead (${existing.startDate} to ${existing.endDate}).`,
-          'Your request is now with HR.',
-        ],
-        details: [
-          { label: 'From', value: existing.startDate },
-          { label: 'To', value: existing.endDate },
-          { label: 'Project', value: existing.projectName ?? existing.projectCode ?? 'Project' },
-        ],
-        ctaLabel: 'View leave',
-        ctaHref: portalUrl('/leave'),
-      });
-      await notifyApprovers(supabase, id, applicantName, {
-        handoverAcceptedBy: existing.handoverEmployeeName ?? undefined,
-      });
+      if (existing.hasHrManagerStep) {
+        await notifyStaff(supabase, await loadStaffById(supabase, existing.employeeId), {
+          type: 'leave',
+          title: 'Project lead approved',
+          message: `${actor.fullName} approved your leave as project lead.`,
+          referenceType: 'leave_application',
+          referenceId: id,
+          eyebrow: 'Leave',
+          paragraphs: [
+            `${actor.fullName} approved your leave as project lead (${existing.startDate} to ${existing.endDate}).`,
+            'Your request is now with HR.',
+          ],
+          details: [
+            { label: 'From', value: existing.startDate },
+            { label: 'To', value: existing.endDate },
+            { label: 'Project', value: existing.projectName ?? existing.projectCode ?? 'Project' },
+          ],
+          ctaLabel: 'View leave',
+          ctaHref: portalUrl('/leave'),
+        });
+        await notifyApprovers(supabase, id, applicantName, {
+          handoverAcceptedBy: existing.handoverEmployeeName ?? undefined,
+        });
+      } else {
+        await finaliseLeaveApprove(supabase, id, actor.employeeId, 'Approved by project lead');
+        await syncEmployeeWorkDays(supabase, existing.employeeId, existing.startDate, existing.endDate);
+        await notifyStaff(supabase, await loadStaffById(supabase, existing.employeeId), {
+          type: 'leave',
+          title: 'Leave approved',
+          message: `${actor.fullName} approved your leave as project lead.`,
+          referenceType: 'leave_application',
+          referenceId: id,
+          eyebrow: 'Leave',
+          paragraphs: [
+            `${actor.fullName} approved your leave as project lead (${existing.startDate} to ${existing.endDate}).`,
+            'Your leave is approved. No further HR approval is required for this leave type.',
+          ],
+          details: [
+            { label: 'From', value: existing.startDate },
+            { label: 'To', value: existing.endDate },
+            { label: 'Project', value: existing.projectName ?? existing.projectCode ?? 'Project' },
+          ],
+          ctaLabel: 'View leave',
+          ctaHref: portalUrl('/leave'),
+        });
+      }
       await writeLeaveAudit(supabase, actor.employeeId, 'leave.project_lead_accept', id, existing, meta);
       return this.getApplication(actor, id);
     },

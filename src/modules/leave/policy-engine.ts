@@ -37,7 +37,9 @@ export function validateApplication(
   input: ApplicationInput,
 ): EngineResult {
   const violations: Violation[] = [];
-  const requiresApproval = flags.requiresApproval || rules.requiresApproval;
+  const requiresPlApproval = flags.requiresPlApproval || rules.requiresPlApproval;
+  const requiresHrApproval = flags.requiresHrApproval || rules.requiresHrApproval;
+  const requiresApproval = requiresPlApproval || requiresHrApproval;
   const requiresHandover = flags.requiresHandover || rules.requiresHandover;
   const requiresAttachment = flags.requiresAttachment || rules.requiresAttachment;
   const allowHalfDay = flags.allowHalfDay && rules.allowHalfDay;
@@ -144,6 +146,8 @@ export function validateApplication(
     violations,
     quantity,
     requiresApproval,
+    requiresPlApproval,
+    requiresHrApproval,
     requiresHandover,
     requiresAttachment,
   };

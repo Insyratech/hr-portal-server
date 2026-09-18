@@ -9,6 +9,8 @@ const workingDays = ['MON', 'TUE', 'WED', 'THU', 'FRI'];
 const flags: LeaveTypeFlags = {
   active: true,
   requiresApproval: true,
+  requiresPlApproval: true,
+  requiresHrApproval: true,
   requiresHandover: true,
   requiresAttachment: false,
   allowHalfDay: true,
@@ -18,6 +20,8 @@ const flags: LeaveTypeFlags = {
 const casual: PolicyRules = {
   noticePeriod: { value: 24, unit: 'hours' },
   requiresApproval: true,
+  requiresPlApproval: true,
+  requiresHrApproval: true,
   requiresHandover: true,
   requiresAttachment: false,
   allowHalfDay: true,

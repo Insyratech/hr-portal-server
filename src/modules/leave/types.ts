@@ -4,7 +4,10 @@ export type NoticeUnit = 'hours' | 'days';
 
 export type PolicyRules = {
   noticePeriod: { value: number; unit: NoticeUnit };
+  /** True when either PL or HR approval is required (legacy / convenience). */
   requiresApproval: boolean;
+  requiresPlApproval: boolean;
+  requiresHrApproval: boolean;
   requiresHandover: boolean;
   requiresAttachment: boolean;
   allowHalfDay: boolean;
@@ -20,7 +23,10 @@ export type PolicyRules = {
 
 export type LeaveTypeFlags = {
   active: boolean;
+  /** True when either PL or HR approval is required (legacy / convenience). */
   requiresApproval: boolean;
+  requiresPlApproval: boolean;
+  requiresHrApproval: boolean;
   requiresHandover: boolean;
   requiresAttachment: boolean;
   allowHalfDay: boolean;
@@ -76,7 +82,10 @@ export type EngineResult = {
   valid: boolean;
   violations: Violation[];
   quantity: number;
+  /** True when either PL or HR approval is required. */
   requiresApproval: boolean;
+  requiresPlApproval: boolean;
+  requiresHrApproval: boolean;
   requiresHandover: boolean;
   requiresAttachment: boolean;
 };

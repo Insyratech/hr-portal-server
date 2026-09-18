@@ -17,18 +17,39 @@ function asStringArray(value: unknown): string[] | null {
   return value.filter((item): item is string => typeof item === 'string');
 }
 
+/** Resolve PL/HR flags; older rules only had requires_approval (both sides). */
+function resolveApprovalFlags(source: RawRules): {
+  requiresPlApproval: boolean;
+  requiresHrApproval: boolean;
+  requiresApproval: boolean;
+} {
+  const legacy = asBoolean(source.requires_approval, true);
+  const hasPl = typeof source.requires_pl_approval === 'boolean';
+  const hasHr = typeof source.requires_hr_approval === 'boolean';
+  const requiresPlApproval = hasPl ? Boolean(source.requires_pl_approval) : legacy;
+  const requiresHrApproval = hasHr ? Boolean(source.requires_hr_approval) : legacy;
+  return {
+    requiresPlApproval,
+    requiresHrApproval,
+    requiresApproval: requiresPlApproval || requiresHrApproval,
+  };
+}
+
 export function parsePolicyRules(raw: unknown): PolicyRules {
   const source = (raw && typeof raw === 'object' ? raw : {}) as RawRules;
   const notice = (source.notice_period as RawRules | undefined) ?? {};
   const eligibility = (source.eligibility as RawRules | undefined) ?? {};
   const unit = notice.unit === 'days' ? 'days' : 'hours';
+  const approval = resolveApprovalFlags(source);
 
   return {
     noticePeriod: {
       value: asNumber(notice.value, 0),
       unit,
     },
-    requiresApproval: asBoolean(source.requires_approval, true),
+    requiresApproval: approval.requiresApproval,
+    requiresPlApproval: approval.requiresPlApproval,
+    requiresHrApproval: approval.requiresHrApproval,
     requiresHandover: asBoolean(source.requires_handover, false),
     requiresAttachment: asBoolean(source.requires_attachment, false),
     allowHalfDay: asBoolean(source.allow_half_day, true),
@@ -50,9 +71,13 @@ export function parsePolicyRules(raw: unknown): PolicyRules {
 }
 
 export function serializePolicyRules(rules: PolicyRules): Record<string, unknown> {
+  const requiresPlApproval = rules.requiresPlApproval;
+  const requiresHrApproval = rules.requiresHrApproval;
   return {
     notice_period: { value: rules.noticePeriod.value, unit: rules.noticePeriod.unit },
-    requires_approval: rules.requiresApproval,
+    requires_approval: requiresPlApproval || requiresHrApproval,
+    requires_pl_approval: requiresPlApproval,
+    requires_hr_approval: requiresHrApproval,
     requires_handover: rules.requiresHandover,
     requires_attachment: rules.requiresAttachment,
     allow_half_day: rules.allowHalfDay,
