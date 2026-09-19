@@ -3,7 +3,7 @@ import { API_ERROR_CODES } from '../../shared/constants/error-codes';
 import { AppError } from '../../shared/errors/app-error';
 import type { RequestUser } from '../../shared/types/request-user';
 import { writeAuditLog } from '../audit/write-audit-log';
-import { canManageSales, canViewSales, type RequestMeta } from './access';
+import { canManageParties, canManageSales, canViewSales, type RequestMeta } from './access';
 import {
   postCustomerCreditNoteJournal,
   postCustomerInvoiceJournal,
@@ -18,8 +18,19 @@ import type {
   SalesLineInput,
   SalesOrder,
   SalesQuote,
+  SalesQuoteDetail,
+  SalesQuoteVersion,
 } from './sales-types';
-import { allocateDocumentNumber, lineAmount } from './series-allocate';
+import { allocateDocumentNumber, lineAmount, peekDocumentNumber } from './series-allocate';
+import {
+  addDaysIso,
+  amountInWordsInr,
+  defaultQuoteNotes,
+  defaultQuoteTerms,
+  istTodayIso,
+  parseGstin,
+} from './gstin-utils';
+import { sendMail } from '../notifications/mail';
 
 const ORG_ID = '00000000-0000-4000-8000-000000000020';
 
@@ -32,6 +43,15 @@ type QuoteRow = {
   status: SalesQuote['status'];
   notes: string;
   terms: string;
+  subject?: string;
+  reference_text?: string;
+  place_of_supply?: string;
+  org_gst_profile_id?: string | null;
+  billing_address_snapshot?: string;
+  shipping_address_snapshot?: string;
+  customer_gstin_snapshot?: string | null;
+  ship_to_name?: string;
+  version_number?: number;
   subtotal: number | string;
   tax_total: number | string;
   grand_total: number | string;
@@ -51,6 +71,8 @@ type QuoteLineRow = {
   tax_percent: number | string;
   amount: number | string;
   tax_amount: number | string;
+  catalog_no?: string;
+  hsn_sac?: string;
 };
 
 type SoRow = {
@@ -187,6 +209,59 @@ function prepareSalesLines(lines: SalesLineInput[]) {
   });
 }
 
+function prepareQuoteLines(lines: SalesLineInput[]) {
+  return lines.map((line, index) => {
+    const base = prepareSalesLines([line])[0]!;
+    return {
+      ...base,
+      line_order: index,
+      catalog_no: line.catalogNo?.trim() ?? '',
+      hsn_sac: line.hsnSac?.trim() ?? '',
+    };
+  });
+}
+
+function composeAddressLines(parts: {
+  line1?: string;
+  line2?: string;
+  city?: string;
+  stateName?: string | null;
+  postalCode?: string;
+  country?: string;
+}): string {
+  const locality = [parts.city, parts.stateName, parts.postalCode]
+    .map((p) => (p ?? '').trim())
+    .filter(Boolean)
+    .join(', ');
+  return [parts.line1, parts.line2, locality, parts.country]
+    .map((p) => (p ?? '').trim())
+    .filter(Boolean)
+    .join('\n');
+}
+
+function customerAddressSnapshot(customer: Record<string, unknown>, kind: 'billing' | 'shipping'): string {
+  if (kind === 'billing') {
+    const structured = composeAddressLines({
+      line1: (customer.billing_line1 as string) ?? '',
+      line2: (customer.billing_line2 as string) ?? '',
+      city: (customer.billing_city as string) ?? '',
+      stateName: (customer.state_name as string | null) ?? null,
+      postalCode: (customer.billing_postal_code as string) ?? '',
+      country: (customer.billing_country as string) ?? 'India',
+    });
+    return structured || ((customer.billing_address as string) ?? '');
+  }
+  const structured = composeAddressLines({
+    line1: (customer.shipping_line1 as string) ?? '',
+    line2: (customer.shipping_line2 as string) ?? '',
+    city: (customer.shipping_city as string) ?? '',
+    stateName: ((customer.shipping_state_name as string | null) ?? (customer.state_name as string | null)) ?? null,
+    postalCode: (customer.shipping_postal_code as string) ?? '',
+    country: (customer.shipping_country as string) ?? 'India',
+  });
+  return structured || ((customer.shipping_address as string) ?? '');
+}
+
 function mapQuote(row: QuoteRow, lines: QuoteLineRow[], customerName: string | null): SalesQuote {
   return {
     id: row.id,
@@ -198,6 +273,15 @@ function mapQuote(row: QuoteRow, lines: QuoteLineRow[], customerName: string | n
     status: row.status,
     notes: row.notes,
     terms: row.terms,
+    subject: row.subject ?? '',
+    referenceText: row.reference_text ?? '',
+    placeOfSupply: row.place_of_supply ?? '',
+    orgGstProfileId: row.org_gst_profile_id ?? null,
+    billingAddressSnapshot: row.billing_address_snapshot ?? '',
+    shippingAddressSnapshot: row.shipping_address_snapshot ?? '',
+    customerGstinSnapshot: row.customer_gstin_snapshot ?? null,
+    shipToName: row.ship_to_name ?? '',
+    versionNumber: Number(row.version_number ?? 1),
     subtotal: num(row.subtotal),
     taxTotal: num(row.tax_total),
     grandTotal: num(row.grand_total),
@@ -214,6 +298,8 @@ function mapQuote(row: QuoteRow, lines: QuoteLineRow[], customerName: string | n
         amount: num(line.amount),
         taxAmount: num(line.tax_amount),
         lineOrder: line.line_order,
+        catalogNo: line.catalog_no ?? '',
+        hsnSac: line.hsn_sac ?? '',
       })),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -276,6 +362,71 @@ export function createSalesService(supabase: SupabaseClient) {
     if (lineErr) throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load quote lines.', 500);
     const names = await customerNames(supabase, [row.customer_id]);
     return mapQuote(row, (lines ?? []) as QuoteLineRow[], names.get(row.customer_id) ?? null);
+  }
+
+  async function loadQuoteVersions(quoteId: string): Promise<SalesQuoteVersion[]> {
+    const { data, error } = await supabase
+      .from('finance_sales_quote_versions')
+      .select('*')
+      .eq('quote_id', quoteId)
+      .order('version_number', { ascending: false });
+    if (error) throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load quote versions.', 500);
+    return ((data ?? []) as {
+      id: string;
+      quote_id: string;
+      version_number: number;
+      change_note: string;
+      snapshot: SalesQuote;
+      created_by: string | null;
+      created_at: string;
+    }[]).map((row) => ({
+      id: row.id,
+      quoteId: row.quote_id,
+      versionNumber: row.version_number,
+      changeNote: row.change_note,
+      snapshot: row.snapshot,
+      createdBy: row.created_by,
+      createdAt: row.created_at,
+    }));
+  }
+
+  async function loadQuoteLetterhead(orgGstProfileId: string | null): Promise<SalesQuoteDetail['letterhead']> {
+    if (!orgGstProfileId) return null;
+    const { data } = await supabase
+      .from('finance_org_gst_profiles')
+      .select('*')
+      .eq('id', orgGstProfileId)
+      .maybeSingle();
+    if (!data) return null;
+    let logoUrl: string | null = null;
+    const path = data.logo_storage_path as string | null;
+    if (path) {
+      const signed = await supabase.storage.from('finance-org-logos').createSignedUrl(path, 60 * 60);
+      logoUrl = signed.data?.signedUrl ?? null;
+    }
+    return {
+      id: data.id as string,
+      label: (data.label as string) ?? '',
+      gstin: data.gstin as string,
+      legalName: (data.legal_name as string) ?? '',
+      tradeName: (data.trade_name as string) ?? '',
+      cin: (data.cin as string | null) ?? null,
+      addressLine1: (data.address_line1 as string) ?? '',
+      addressLine2: (data.address_line2 as string) ?? '',
+      city: (data.city as string) ?? '',
+      postalCode: (data.postal_code as string) ?? '',
+      stateName: (data.state_name as string | null) ?? null,
+      logoUrl,
+    };
+  }
+
+  async function loadQuoteDetail(id: string): Promise<SalesQuoteDetail> {
+    const quote = await loadQuote(id);
+    const [versions, letterhead] = await Promise.all([
+      loadQuoteVersions(id),
+      loadQuoteLetterhead(quote.orgGstProfileId),
+    ]);
+    return { ...quote, versions, letterhead };
   }
 
   async function loadSalesOrder(id: string): Promise<SalesOrder> {
@@ -607,9 +758,106 @@ export function createSalesService(supabase: SupabaseClient) {
       return Promise.all((data ?? []).map((row) => loadQuote(row.id as string)));
     },
 
-    async getQuote(actor: RequestUser, id: string): Promise<SalesQuote> {
+    async getQuote(actor: RequestUser, id: string): Promise<SalesQuoteDetail> {
       requireSalesView(actor);
-      return loadQuote(id);
+      return loadQuoteDetail(id);
+    },
+
+    async peekNextQuoteNumber(actor: RequestUser): Promise<{ documentNumber: string; quoteDate: string; expiryDate: string; terms: string; notes: string }> {
+      requireSalesView(actor);
+      const quoteDate = istTodayIso();
+      const expiryDate = addDaysIso(quoteDate, 30);
+      return {
+        documentNumber: await peekDocumentNumber(supabase, 'quote'),
+        quoteDate,
+        expiryDate,
+        terms: defaultQuoteTerms(expiryDate),
+        notes: defaultQuoteNotes(expiryDate),
+      };
+    },
+
+    async lookupGstin(actor: RequestUser, gstin: string) {
+      if (!canViewSales(actor) && !canManageSales(actor) && !canManageParties(actor)) {
+        throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot look up GSTIN.', 403);
+      }
+      const parsed = parseGstin(gstin);
+      if (!parsed.validFormat) return parsed;
+      const { data: match } = await supabase
+        .from('finance_customers')
+        .select('*')
+        .ilike('gstin', parsed.gstin)
+        .limit(1)
+        .maybeSingle();
+      if (!match) return parsed;
+      const billing = customerAddressSnapshot(match as Record<string, unknown>, 'billing');
+      const shipping =
+        customerAddressSnapshot(match as Record<string, unknown>, 'shipping') || billing;
+      return {
+        ...parsed,
+        legalName: (match.company_name as string) || (match.display_name as string) || parsed.legalName,
+        billingAddress: billing || parsed.billingAddress,
+        shippingAddress: shipping || parsed.shippingAddress,
+        source: 'customer_master' as const,
+        message: `Matched existing customer "${match.display_name as string}". Confirm or edit the address fields.`,
+      };
+    },
+
+    async listQuoteVersions(actor: RequestUser, quoteId: string): Promise<SalesQuoteVersion[]> {
+      requireSalesView(actor);
+      await loadQuote(quoteId);
+      return loadQuoteVersions(quoteId);
+    },
+
+    async emailQuote(
+      actor: RequestUser,
+      id: string,
+      input: { to: string; subject?: string; message?: string; saveEmailToCustomer?: boolean },
+      meta: RequestMeta,
+    ): Promise<{ sent: boolean; outcome: string; quote: SalesQuote }> {
+      requireSalesManage(actor);
+      const quote = await loadQuote(id);
+      const to = input.to.trim();
+      if (!to.includes('@')) {
+        throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'A valid email address is required.', 400);
+      }
+      const subject =
+        input.subject?.trim() ||
+        `Quotation ${quote.documentNumber}${quote.subject ? ` — ${quote.subject}` : ''}`;
+      const message =
+        input.message?.trim() ||
+        [
+          `Please find quotation ${quote.documentNumber} for your review.`,
+          quote.expiryDate ? `Valid until ${quote.expiryDate} (IST).` : '',
+          `Grand total: INR ${quote.grandTotal.toFixed(2)}.`,
+          '',
+          'You can also view this quote in the HR Portal.',
+        ]
+          .filter(Boolean)
+          .join('\n');
+      const result = await sendMail({
+        to: [to],
+        subject,
+        text: message,
+        html: `<p>${message.replace(/\n/g, '<br/>')}</p>`,
+      });
+      if (input.saveEmailToCustomer) {
+        await supabase.from('finance_customers').update({ email: to }).eq('id', quote.customerId);
+      }
+      let updated = quote;
+      if (quote.status === 'draft' && result.sent) {
+        const { error } = await supabase.from('finance_sales_quotes').update({ status: 'sent' }).eq('id', id);
+        if (error) throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, error.message, 500);
+        updated = await loadQuote(id);
+      }
+      await writeAuditLog(supabase, {
+        actorId: actor.employeeId,
+        action: 'finance.quote.email',
+        entityType: 'finance_sales_quote',
+        entityId: id,
+        newValues: { to, outcome: result.outcome },
+        ...meta,
+      });
+      return { sent: result.sent, outcome: result.outcome, quote: updated };
     },
 
     async createQuote(
@@ -620,31 +868,96 @@ export function createSalesService(supabase: SupabaseClient) {
         expiryDate?: string | null;
         notes?: string;
         terms?: string;
+        subject?: string;
+        referenceText?: string;
+        placeOfSupply?: string;
+        orgGstProfileId?: string | null;
+        billingAddressSnapshot?: string;
+        shippingAddressSnapshot?: string;
+        customerGstinSnapshot?: string | null;
+        shipToName?: string;
         lines: SalesLineInput[];
       },
       meta: RequestMeta,
     ): Promise<SalesQuote> {
       requireSalesManage(actor);
       validateSalesLines(input.lines);
-      const { data: customer } = await supabase
+      const { data: customer, error: customerErr } = await supabase
         .from('finance_customers')
-        .select('id')
+        .select('*')
         .eq('id', input.customerId)
         .maybeSingle();
-      if (!customer) throw new AppError(API_ERROR_CODES.NOT_FOUND, 'Customer not found.', 404);
-      const prepared = prepareSalesLines(input.lines);
+      if (customerErr || !customer) {
+        throw new AppError(API_ERROR_CODES.NOT_FOUND, 'Customer not found.', 404);
+      }
+      const prepared = prepareQuoteLines(input.lines);
       const subtotal = round2(prepared.reduce((sum, line) => sum + line.amount, 0));
       const taxTotal = round2(prepared.reduce((sum, line) => sum + line.tax_amount, 0));
       const documentNumber = await allocateDocumentNumber(supabase, 'quote');
+      const quoteDate = input.quoteDate?.trim() || istTodayIso();
+      const expiryDate = (input.expiryDate?.trim() || addDaysIso(quoteDate, 30)) as string;
+      const terms = input.terms?.trim() || defaultQuoteTerms(expiryDate);
+      const notes = input.notes?.trim() || defaultQuoteNotes(expiryDate);
+      const placeOfSupply =
+        input.placeOfSupply?.trim() ||
+        (customer.state_name && customer.state_code
+          ? `${customer.state_name as string} (${customer.state_code as string})`
+          : ((customer.state_name as string) ?? ''));
+      let orgGstProfileId = input.orgGstProfileId ?? null;
+      if (!orgGstProfileId) {
+        const { data: defProfile } = await supabase
+          .from('finance_org_gst_profiles')
+          .select('id')
+          .eq('active', true)
+          .eq('is_default', true)
+          .maybeSingle();
+        orgGstProfileId = (defProfile?.id as string | undefined) ?? null;
+        if (!orgGstProfileId) {
+          const { data: anyProfile } = await supabase
+            .from('finance_org_gst_profiles')
+            .select('id')
+            .eq('active', true)
+            .order('created_at', { ascending: true })
+            .limit(1)
+            .maybeSingle();
+          orgGstProfileId = (anyProfile?.id as string | undefined) ?? null;
+        }
+      }
+      const billingSnapshot =
+        input.billingAddressSnapshot?.trim() || customerAddressSnapshot(customer as Record<string, unknown>, 'billing');
+      const shippingSnapshot =
+        input.shippingAddressSnapshot?.trim() ||
+        customerAddressSnapshot(customer as Record<string, unknown>, 'shipping') ||
+        billingSnapshot;
+      const shipToName =
+        input.shipToName?.trim() ||
+        ((customer.ship_to_contact_name as string) || '').trim() ||
+        ((customer.ship_to_company_name as string) || '').trim() ||
+        (customer.display_name as string) ||
+        '';
+      const customerGstin =
+        input.customerGstinSnapshot !== undefined
+          ? input.customerGstinSnapshot
+          : ((customer.gstin as string | null) ?? null);
+
       const { data, error } = await supabase
         .from('finance_sales_quotes')
         .insert({
           document_number: documentNumber,
           customer_id: input.customerId,
-          quote_date: input.quoteDate ?? todayIsoDate(),
-          expiry_date: input.expiryDate ?? null,
-          notes: input.notes?.trim() ?? '',
-          terms: input.terms?.trim() ?? '',
+          quote_date: quoteDate,
+          expiry_date: expiryDate,
+          notes,
+          terms,
+          subject: input.subject?.trim() ?? '',
+          reference_text: input.referenceText?.trim() ?? '',
+          place_of_supply: placeOfSupply,
+          org_gst_profile_id: orgGstProfileId,
+          billing_address_snapshot: billingSnapshot,
+          shipping_address_snapshot: shippingSnapshot,
+          customer_gstin_snapshot: customerGstin,
+          ship_to_name: shipToName,
+          version_number: 1,
           status: 'draft',
           subtotal,
           tax_total: taxTotal,
@@ -676,27 +989,79 @@ export function createSalesService(supabase: SupabaseClient) {
       actor: RequestUser,
       id: string,
       input: {
+        customerId?: string;
         quoteDate?: string;
         expiryDate?: string | null;
         notes?: string;
         terms?: string;
+        subject?: string;
+        referenceText?: string;
+        placeOfSupply?: string;
+        orgGstProfileId?: string | null;
+        billingAddressSnapshot?: string;
+        shippingAddressSnapshot?: string;
+        customerGstinSnapshot?: string | null;
+        shipToName?: string;
+        changeNote?: string;
         lines?: SalesLineInput[];
       },
       meta: RequestMeta,
     ): Promise<SalesQuote> {
       requireSalesManage(actor);
       const existing = await loadQuote(id);
-      if (existing.status !== 'draft') {
-        throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Only draft quotes can be edited.', 400);
+      const editable = ['draft', 'sent', 'accepted'];
+      if (!editable.includes(existing.status)) {
+        throw new AppError(
+          API_ERROR_CODES.VALIDATION_ERROR,
+          'Only draft, sent, or accepted quotes can be edited.',
+          400,
+        );
       }
-      const patch: Record<string, unknown> = {};
+
+      const { error: versionErr } = await supabase.from('finance_sales_quote_versions').insert({
+        quote_id: id,
+        version_number: existing.versionNumber,
+        change_note: input.changeNote?.trim() || `Snapshot before edit (v${existing.versionNumber})`,
+        snapshot: existing,
+        created_by: actor.employeeId,
+      });
+      if (versionErr) {
+        throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, versionErr.message, 500);
+      }
+
+      const patch: Record<string, unknown> = {
+        version_number: existing.versionNumber + 1,
+      };
+      if (input.customerId !== undefined) patch.customer_id = input.customerId;
       if (input.quoteDate !== undefined) patch.quote_date = input.quoteDate;
       if (input.expiryDate !== undefined) patch.expiry_date = input.expiryDate;
       if (input.notes !== undefined) patch.notes = input.notes.trim();
       if (input.terms !== undefined) patch.terms = input.terms.trim();
+      if (input.subject !== undefined) patch.subject = input.subject.trim();
+      if (input.referenceText !== undefined) patch.reference_text = input.referenceText.trim();
+      if (input.placeOfSupply !== undefined) patch.place_of_supply = input.placeOfSupply.trim();
+      if (input.orgGstProfileId !== undefined) patch.org_gst_profile_id = input.orgGstProfileId;
+      if (input.billingAddressSnapshot !== undefined) {
+        patch.billing_address_snapshot = input.billingAddressSnapshot.trim();
+      }
+      if (input.shippingAddressSnapshot !== undefined) {
+        patch.shipping_address_snapshot = input.shippingAddressSnapshot.trim();
+      }
+      if (input.customerGstinSnapshot !== undefined) {
+        patch.customer_gstin_snapshot = input.customerGstinSnapshot;
+      }
+      if (input.shipToName !== undefined) patch.ship_to_name = input.shipToName.trim();
+
+      if (input.quoteDate !== undefined && input.expiryDate === undefined) {
+        const nextExpiry = addDaysIso(input.quoteDate, 30);
+        patch.expiry_date = nextExpiry;
+        if (input.terms === undefined) patch.terms = defaultQuoteTerms(nextExpiry);
+        if (input.notes === undefined) patch.notes = defaultQuoteNotes(nextExpiry);
+      }
+
       if (input.lines) {
         validateSalesLines(input.lines);
-        const prepared = prepareSalesLines(input.lines);
+        const prepared = prepareQuoteLines(input.lines);
         patch.subtotal = round2(prepared.reduce((sum, line) => sum + line.amount, 0));
         patch.tax_total = round2(prepared.reduce((sum, line) => sum + line.tax_amount, 0));
         patch.grand_total = round2(num(patch.subtotal as number) + num(patch.tax_total as number));
@@ -707,18 +1072,26 @@ export function createSalesService(supabase: SupabaseClient) {
           .insert(prepared.map((line) => ({ ...line, quote_id: id })));
         if (insErr) throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, insErr.message, 500);
       }
-      if (Object.keys(patch).length) {
-        const { error } = await supabase.from('finance_sales_quotes').update(patch).eq('id', id);
-        if (error) throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, error.message, 500);
-      }
+
+      const { error } = await supabase.from('finance_sales_quotes').update(patch).eq('id', id);
+      if (error) throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, error.message, 500);
+
       const updated = await loadQuote(id);
       await writeAuditLog(supabase, {
         actorId: actor.employeeId,
         action: 'finance.quote.update',
         entityType: 'finance_sales_quote',
         entityId: id,
-        oldValues: { status: existing.status, grandTotal: existing.grandTotal },
-        newValues: { status: updated.status, grandTotal: updated.grandTotal },
+        oldValues: {
+          status: existing.status,
+          grandTotal: existing.grandTotal,
+          versionNumber: existing.versionNumber,
+        },
+        newValues: {
+          status: updated.status,
+          grandTotal: updated.grandTotal,
+          versionNumber: updated.versionNumber,
+        },
         ...meta,
       });
       return updated;
@@ -961,20 +1334,48 @@ export function createSalesService(supabase: SupabaseClient) {
 
     async getQuotePrint(actor: RequestUser, id: string): Promise<SalesDocumentPrint> {
       requireSalesView(actor);
-      const quote = await loadQuote(id);
-      const parties = await buildPrintParty(quote.customerId);
+      const detail = await loadQuoteDetail(id);
+      const letterhead = detail.letterhead;
+      const parties = await buildPrintParty(detail.customerId);
+      const organization = letterhead
+        ? {
+            legalName: letterhead.legalName,
+            tradeName: letterhead.tradeName || letterhead.legalName,
+            addressLine1: letterhead.addressLine1,
+            addressLine2: letterhead.addressLine2,
+            city: letterhead.city,
+            postalCode: letterhead.postalCode,
+            stateName: letterhead.stateName,
+            gstin: letterhead.gstin,
+            cin: letterhead.cin,
+            logoUrl: letterhead.logoUrl,
+          }
+        : parties.organization;
       return {
-        ...parties,
+        organization,
+        customer: {
+          displayName: parties.customer.displayName,
+          gstin: detail.customerGstinSnapshot ?? parties.customer.gstin,
+          billingAddress: detail.billingAddressSnapshot || parties.customer.billingAddress,
+          shippingAddress: detail.shippingAddressSnapshot || undefined,
+          shipToName: detail.shipToName || undefined,
+        },
         document: {
           type: 'quote',
-          documentNumber: quote.documentNumber,
-          date: quote.quoteDate,
-          status: quote.status,
-          notes: quote.notes,
-          subtotal: quote.subtotal,
-          taxTotal: quote.taxTotal,
-          grandTotal: quote.grandTotal,
-          lines: quote.lines.map((line) => ({
+          documentNumber: detail.documentNumber,
+          date: detail.quoteDate,
+          expiryDate: detail.expiryDate,
+          subject: detail.subject,
+          referenceText: detail.referenceText,
+          placeOfSupply: detail.placeOfSupply,
+          status: detail.status,
+          notes: detail.notes,
+          terms: detail.terms,
+          amountInWords: amountInWordsInr(detail.grandTotal),
+          subtotal: detail.subtotal,
+          taxTotal: detail.taxTotal,
+          grandTotal: detail.grandTotal,
+          lines: detail.lines.map((line) => ({
             description: line.description,
             quantity: line.quantity,
             unit: line.unit,
@@ -982,6 +1383,8 @@ export function createSalesService(supabase: SupabaseClient) {
             taxPercent: line.taxPercent,
             amount: line.amount,
             taxAmount: line.taxAmount,
+            catalogNo: line.catalogNo,
+            hsnSac: line.hsnSac,
           })),
         },
       };

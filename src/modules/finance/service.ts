@@ -17,6 +17,7 @@ import {
 import type {
   FinanceAccount,
   FinanceCustomer,
+  FinanceCustomerChangeHistory,
   FinanceItem,
   FinanceNumberSeries,
   FinanceOrganization,
@@ -89,6 +90,20 @@ type CustomerRow = {
   state_name: string | null;
   billing_address: string;
   shipping_address: string;
+  billing_line1?: string;
+  billing_line2?: string;
+  billing_city?: string;
+  billing_postal_code?: string;
+  billing_country?: string;
+  shipping_line1?: string;
+  shipping_line2?: string;
+  shipping_city?: string;
+  shipping_state_code?: string | null;
+  shipping_state_name?: string | null;
+  shipping_postal_code?: string;
+  shipping_country?: string;
+  ship_to_contact_name?: string;
+  ship_to_company_name?: string;
   payment_terms_days: number;
   currency_code: string;
   status: 'active' | 'inactive';
@@ -206,6 +221,18 @@ function mapTaxRate(row: TaxRateRow): FinanceTaxRate {
   };
 }
 
+function composePartyAddress(parts: {
+  line1: string;
+  line2: string;
+  city: string;
+  stateName: string | null;
+  postalCode: string;
+  country: string;
+}): string {
+  const locality = [parts.city, parts.stateName, parts.postalCode].filter(Boolean).join(', ');
+  return [parts.line1, parts.line2, locality, parts.country].filter((p) => p.trim()).join('\n');
+}
+
 function mapCustomer(row: CustomerRow): FinanceCustomer {
   return {
     id: row.id,
@@ -219,6 +246,20 @@ function mapCustomer(row: CustomerRow): FinanceCustomer {
     stateName: row.state_name,
     billingAddress: row.billing_address,
     shippingAddress: row.shipping_address,
+    billingLine1: row.billing_line1 ?? '',
+    billingLine2: row.billing_line2 ?? '',
+    billingCity: row.billing_city ?? '',
+    billingPostalCode: row.billing_postal_code ?? '',
+    billingCountry: row.billing_country ?? 'India',
+    shippingLine1: row.shipping_line1 ?? '',
+    shippingLine2: row.shipping_line2 ?? '',
+    shippingCity: row.shipping_city ?? '',
+    shippingStateCode: row.shipping_state_code ?? null,
+    shippingStateName: row.shipping_state_name ?? null,
+    shippingPostalCode: row.shipping_postal_code ?? '',
+    shippingCountry: row.shipping_country ?? 'India',
+    shipToContactName: row.ship_to_contact_name ?? '',
+    shipToCompanyName: row.ship_to_company_name ?? '',
     paymentTermsDays: row.payment_terms_days,
     currencyCode: row.currency_code,
     status: row.status,
@@ -226,6 +267,138 @@ function mapCustomer(row: CustomerRow): FinanceCustomer {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+type CustomerWriteInput = {
+  displayName?: string;
+  companyName?: string;
+  email?: string | null;
+  phone?: string | null;
+  gstin?: string | null;
+  pan?: string | null;
+  stateCode?: string | null;
+  stateName?: string | null;
+  billingAddress?: string;
+  shippingAddress?: string;
+  billingLine1?: string;
+  billingLine2?: string;
+  billingCity?: string;
+  billingPostalCode?: string;
+  billingCountry?: string;
+  shippingLine1?: string;
+  shippingLine2?: string;
+  shippingCity?: string;
+  shippingStateCode?: string | null;
+  shippingStateName?: string | null;
+  shippingPostalCode?: string;
+  shippingCountry?: string;
+  shipToContactName?: string;
+  shipToCompanyName?: string;
+  paymentTermsDays?: number;
+  status?: 'active' | 'inactive';
+  notes?: string;
+};
+
+const CUSTOMER_FIELD_LABELS: Record<string, string> = {
+  display_name: 'Display name',
+  company_name: 'Company name',
+  email: 'Email',
+  phone: 'Phone',
+  gstin: 'GSTIN',
+  pan: 'PAN',
+  state_code: 'State code',
+  state_name: 'State',
+  billing_address: 'Billing address',
+  shipping_address: 'Shipping address',
+  billing_line1: 'Billing line 1',
+  billing_line2: 'Billing line 2',
+  billing_city: 'Billing city',
+  billing_postal_code: 'Billing postal code',
+  billing_country: 'Billing country',
+  shipping_line1: 'Shipping line 1',
+  shipping_line2: 'Shipping line 2',
+  shipping_city: 'Shipping city',
+  shipping_state_code: 'Shipping state code',
+  shipping_state_name: 'Shipping state',
+  shipping_postal_code: 'Shipping postal code',
+  shipping_country: 'Shipping country',
+  ship_to_contact_name: 'Ship-to contact',
+  ship_to_company_name: 'Ship-to company',
+  payment_terms_days: 'Payment terms (days)',
+  status: 'Status',
+  notes: 'Notes',
+};
+
+function buildCustomerPatch(input: CustomerWriteInput): Record<string, unknown> {
+  const patch: Record<string, unknown> = {};
+  if (input.displayName !== undefined) patch.display_name = input.displayName.trim();
+  if (input.companyName !== undefined) patch.company_name = input.companyName.trim();
+  if (input.email !== undefined) patch.email = emptyToNull(input.email);
+  if (input.phone !== undefined) patch.phone = emptyToNull(input.phone);
+  if (input.gstin !== undefined) patch.gstin = emptyToNull(input.gstin);
+  if (input.pan !== undefined) patch.pan = emptyToNull(input.pan);
+  if (input.stateCode !== undefined) patch.state_code = emptyToNull(input.stateCode);
+  if (input.stateName !== undefined) patch.state_name = emptyToNull(input.stateName);
+  if (input.billingLine1 !== undefined) patch.billing_line1 = input.billingLine1.trim();
+  if (input.billingLine2 !== undefined) patch.billing_line2 = input.billingLine2.trim();
+  if (input.billingCity !== undefined) patch.billing_city = input.billingCity.trim();
+  if (input.billingPostalCode !== undefined) patch.billing_postal_code = input.billingPostalCode.trim();
+  if (input.billingCountry !== undefined) patch.billing_country = input.billingCountry.trim() || 'India';
+  if (input.shippingLine1 !== undefined) patch.shipping_line1 = input.shippingLine1.trim();
+  if (input.shippingLine2 !== undefined) patch.shipping_line2 = input.shippingLine2.trim();
+  if (input.shippingCity !== undefined) patch.shipping_city = input.shippingCity.trim();
+  if (input.shippingStateCode !== undefined) patch.shipping_state_code = emptyToNull(input.shippingStateCode);
+  if (input.shippingStateName !== undefined) patch.shipping_state_name = emptyToNull(input.shippingStateName);
+  if (input.shippingPostalCode !== undefined) patch.shipping_postal_code = input.shippingPostalCode.trim();
+  if (input.shippingCountry !== undefined) patch.shipping_country = input.shippingCountry.trim() || 'India';
+  if (input.shipToContactName !== undefined) patch.ship_to_contact_name = input.shipToContactName.trim();
+  if (input.shipToCompanyName !== undefined) patch.ship_to_company_name = input.shipToCompanyName.trim();
+  if (input.paymentTermsDays !== undefined) patch.payment_terms_days = input.paymentTermsDays;
+  if (input.status !== undefined) patch.status = input.status;
+  if (input.notes !== undefined) patch.notes = input.notes.trim();
+
+  const hasStructuredBilling =
+    input.billingLine1 !== undefined ||
+    input.billingLine2 !== undefined ||
+    input.billingCity !== undefined ||
+    input.billingPostalCode !== undefined ||
+    input.billingCountry !== undefined;
+  if (hasStructuredBilling) {
+    patch.billing_address = composePartyAddress({
+      line1: String(patch.billing_line1 ?? input.billingLine1 ?? ''),
+      line2: String(patch.billing_line2 ?? input.billingLine2 ?? ''),
+      city: String(patch.billing_city ?? input.billingCity ?? ''),
+      stateName: (emptyToNull(input.stateName ?? null) ?? null) as string | null,
+      postalCode: String(patch.billing_postal_code ?? input.billingPostalCode ?? ''),
+      country: String(patch.billing_country ?? input.billingCountry ?? 'India'),
+    });
+  } else if (input.billingAddress !== undefined) {
+    patch.billing_address = input.billingAddress.trim();
+    if (input.billingLine1 === undefined) patch.billing_line1 = input.billingAddress.trim();
+  }
+
+  const hasStructuredShipping =
+    input.shippingLine1 !== undefined ||
+    input.shippingLine2 !== undefined ||
+    input.shippingCity !== undefined ||
+    input.shippingPostalCode !== undefined ||
+    input.shippingCountry !== undefined ||
+    input.shippingStateName !== undefined;
+  if (hasStructuredShipping) {
+    patch.shipping_address = composePartyAddress({
+      line1: String(patch.shipping_line1 ?? input.shippingLine1 ?? ''),
+      line2: String(patch.shipping_line2 ?? input.shippingLine2 ?? ''),
+      city: String(patch.shipping_city ?? input.shippingCity ?? ''),
+      stateName: (emptyToNull(input.shippingStateName ?? input.stateName ?? null) ?? null) as string | null,
+      postalCode: String(patch.shipping_postal_code ?? input.shippingPostalCode ?? ''),
+      country: String(patch.shipping_country ?? input.shippingCountry ?? 'India'),
+    });
+  } else if (input.shippingAddress !== undefined) {
+    patch.shipping_address = input.shippingAddress.trim();
+    if (input.shippingLine1 === undefined) patch.shipping_line1 = input.shippingAddress.trim();
+  }
+
+  return patch;
 }
 
 function mapVendor(row: VendorRow): FinanceVendor {
@@ -627,20 +800,7 @@ export function createFinanceService(supabase: SupabaseClient) {
 
     async createCustomer(
       actor: RequestUser,
-      input: {
-        displayName: string;
-        companyName?: string;
-        email?: string | null;
-        phone?: string | null;
-        gstin?: string | null;
-        pan?: string | null;
-        stateCode?: string | null;
-        stateName?: string | null;
-        billingAddress?: string;
-        shippingAddress?: string;
-        paymentTermsDays?: number;
-        notes?: string;
-      },
+      input: CustomerWriteInput & { displayName: string },
       meta: RequestMeta,
     ): Promise<FinanceCustomer> {
       if (!canManageParties(actor)) {
@@ -650,6 +810,7 @@ export function createFinanceService(supabase: SupabaseClient) {
       if (!displayName) {
         throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Customer name is required.', 400);
       }
+      const patch = buildCustomerPatch({ ...input, displayName });
       const { data, error } = await supabase
         .from('finance_customers')
         .insert({
@@ -661,8 +822,22 @@ export function createFinanceService(supabase: SupabaseClient) {
           pan: emptyToNull(input.pan ?? null),
           state_code: emptyToNull(input.stateCode ?? null),
           state_name: emptyToNull(input.stateName ?? null),
-          billing_address: (input.billingAddress ?? '').trim(),
-          shipping_address: (input.shippingAddress ?? '').trim(),
+          billing_address: (patch.billing_address as string) ?? (input.billingAddress ?? '').trim(),
+          shipping_address: (patch.shipping_address as string) ?? (input.shippingAddress ?? '').trim(),
+          billing_line1: (patch.billing_line1 as string) ?? (input.billingLine1 ?? '').trim(),
+          billing_line2: (patch.billing_line2 as string) ?? (input.billingLine2 ?? '').trim(),
+          billing_city: (patch.billing_city as string) ?? (input.billingCity ?? '').trim(),
+          billing_postal_code: (patch.billing_postal_code as string) ?? (input.billingPostalCode ?? '').trim(),
+          billing_country: ((patch.billing_country as string) ?? (input.billingCountry ?? 'India')).trim() || 'India',
+          shipping_line1: (patch.shipping_line1 as string) ?? (input.shippingLine1 ?? '').trim(),
+          shipping_line2: (patch.shipping_line2 as string) ?? (input.shippingLine2 ?? '').trim(),
+          shipping_city: (patch.shipping_city as string) ?? (input.shippingCity ?? '').trim(),
+          shipping_state_code: emptyToNull(input.shippingStateCode ?? null),
+          shipping_state_name: emptyToNull(input.shippingStateName ?? null),
+          shipping_postal_code: (patch.shipping_postal_code as string) ?? (input.shippingPostalCode ?? '').trim(),
+          shipping_country: ((patch.shipping_country as string) ?? (input.shippingCountry ?? 'India')).trim() || 'India',
+          ship_to_contact_name: (input.shipToContactName ?? '').trim(),
+          ship_to_company_name: (input.shipToCompanyName ?? '').trim(),
           payment_terms_days: input.paymentTermsDays ?? 0,
           notes: (input.notes ?? '').trim(),
         })
@@ -686,47 +861,105 @@ export function createFinanceService(supabase: SupabaseClient) {
     async updateCustomer(
       actor: RequestUser,
       id: string,
-      input: Partial<{
-        displayName: string;
-        companyName: string;
-        email: string | null;
-        phone: string | null;
-        gstin: string | null;
-        pan: string | null;
-        stateCode: string | null;
-        stateName: string | null;
-        billingAddress: string;
-        shippingAddress: string;
-        paymentTermsDays: number;
-        status: 'active' | 'inactive';
-        notes: string;
-      }>,
+      input: CustomerWriteInput,
       meta: RequestMeta,
     ): Promise<FinanceCustomer> {
       if (!canManageParties(actor)) {
         throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot manage customers.', 403);
       }
-      const patch: Record<string, unknown> = {};
-      if (input.displayName !== undefined) patch.display_name = input.displayName.trim();
-      if (input.companyName !== undefined) patch.company_name = input.companyName.trim();
-      if (input.email !== undefined) patch.email = emptyToNull(input.email);
-      if (input.phone !== undefined) patch.phone = emptyToNull(input.phone);
-      if (input.gstin !== undefined) patch.gstin = emptyToNull(input.gstin);
-      if (input.pan !== undefined) patch.pan = emptyToNull(input.pan);
-      if (input.stateCode !== undefined) patch.state_code = emptyToNull(input.stateCode);
-      if (input.stateName !== undefined) patch.state_name = emptyToNull(input.stateName);
-      if (input.billingAddress !== undefined) patch.billing_address = input.billingAddress.trim();
-      if (input.shippingAddress !== undefined) patch.shipping_address = input.shippingAddress.trim();
-      if (input.paymentTermsDays !== undefined) patch.payment_terms_days = input.paymentTermsDays;
-      if (input.status !== undefined) patch.status = input.status;
-      if (input.notes !== undefined) patch.notes = input.notes.trim();
+      const { data: existing, error: existingErr } = await supabase
+        .from('finance_customers')
+        .select('*')
+        .eq('id', id)
+        .maybeSingle();
+      if (existingErr) {
+        throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load customer.', 500);
+      }
+      if (!existing) {
+        throw new AppError(API_ERROR_CODES.NOT_FOUND, 'Customer not found.', 404);
+      }
 
-      const { data, error } = await supabase.from('finance_customers').update(patch).eq('id', id).select('*').maybeSingle();
+      const patch = buildCustomerPatch(input);
+      if (Object.keys(patch).length === 0) {
+        return mapCustomer(existing as CustomerRow);
+      }
+
+      // Recompute billing address with correct state when structured fields present
+      if (
+        patch.billing_line1 !== undefined ||
+        patch.billing_line2 !== undefined ||
+        patch.billing_city !== undefined ||
+        patch.billing_postal_code !== undefined ||
+        patch.billing_country !== undefined ||
+        patch.state_name !== undefined
+      ) {
+        const next = { ...(existing as CustomerRow), ...patch } as CustomerRow;
+        patch.billing_address = composePartyAddress({
+          line1: next.billing_line1 ?? '',
+          line2: next.billing_line2 ?? '',
+          city: next.billing_city ?? '',
+          stateName: next.state_name,
+          postalCode: next.billing_postal_code ?? '',
+          country: next.billing_country ?? 'India',
+        });
+      }
+      if (
+        patch.shipping_line1 !== undefined ||
+        patch.shipping_line2 !== undefined ||
+        patch.shipping_city !== undefined ||
+        patch.shipping_postal_code !== undefined ||
+        patch.shipping_country !== undefined ||
+        patch.shipping_state_name !== undefined
+      ) {
+        const next = { ...(existing as CustomerRow), ...patch } as CustomerRow;
+        patch.shipping_address = composePartyAddress({
+          line1: next.shipping_line1 ?? '',
+          line2: next.shipping_line2 ?? '',
+          city: next.shipping_city ?? '',
+          stateName: next.shipping_state_name ?? next.state_name,
+          postalCode: next.shipping_postal_code ?? '',
+          country: next.shipping_country ?? 'India',
+        });
+      }
+
+      const historyRows: {
+        customer_id: string;
+        field_name: string;
+        old_value: string | null;
+        new_value: string | null;
+        changed_by: string;
+      }[] = [];
+      for (const [key, newVal] of Object.entries(patch)) {
+        const oldVal = (existing as Record<string, unknown>)[key];
+        const oldStr = oldVal == null ? null : String(oldVal);
+        const newStr = newVal == null ? null : String(newVal);
+        if (oldStr === newStr) continue;
+        historyRows.push({
+          customer_id: id,
+          field_name: CUSTOMER_FIELD_LABELS[key] ?? key,
+          old_value: oldStr,
+          new_value: newStr,
+          changed_by: actor.employeeId,
+        });
+      }
+
+      const { data, error } = await supabase
+        .from('finance_customers')
+        .update(patch)
+        .eq('id', id)
+        .select('*')
+        .maybeSingle();
       if (error) {
         throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to update customer.', 500);
       }
       if (!data) {
         throw new AppError(API_ERROR_CODES.NOT_FOUND, 'Customer not found.', 404);
+      }
+      if (historyRows.length) {
+        const { error: histErr } = await supabase.from('finance_customer_change_history').insert(historyRows);
+        if (histErr) {
+          throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, histErr.message, 500);
+        }
       }
       const updated = mapCustomer(data as CustomerRow);
       await writeAuditLog(supabase, {
@@ -738,6 +971,42 @@ export function createFinanceService(supabase: SupabaseClient) {
         ...meta,
       });
       return updated;
+    },
+
+    async listCustomerChangeHistory(
+      actor: RequestUser,
+      customerId: string,
+    ): Promise<FinanceCustomerChangeHistory[]> {
+      if (!canManageParties(actor)) {
+        throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot view customer history.', 403);
+      }
+      const { data: customer } = await supabase.from('finance_customers').select('id').eq('id', customerId).maybeSingle();
+      if (!customer) throw new AppError(API_ERROR_CODES.NOT_FOUND, 'Customer not found.', 404);
+      const { data, error } = await supabase
+        .from('finance_customer_change_history')
+        .select('*')
+        .eq('customer_id', customerId)
+        .order('changed_at', { ascending: false });
+      if (error) {
+        throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load customer history.', 500);
+      }
+      return ((data ?? []) as {
+        id: string;
+        customer_id: string;
+        field_name: string;
+        old_value: string | null;
+        new_value: string | null;
+        changed_by: string | null;
+        changed_at: string;
+      }[]).map((row) => ({
+        id: row.id,
+        customerId: row.customer_id,
+        fieldName: row.field_name,
+        oldValue: row.old_value,
+        newValue: row.new_value,
+        changedBy: row.changed_by,
+        changedAt: row.changed_at,
+      }));
     },
 
     async listVendors(actor: RequestUser): Promise<FinanceVendor[]> {

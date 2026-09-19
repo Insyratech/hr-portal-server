@@ -71,6 +71,20 @@ const customerCreateBody = Type.Object({
   stateName: Type.Optional(Type.Union([Type.String(), Type.Null()])),
   billingAddress: Type.Optional(Type.String()),
   shippingAddress: Type.Optional(Type.String()),
+  billingLine1: Type.Optional(Type.String()),
+  billingLine2: Type.Optional(Type.String()),
+  billingCity: Type.Optional(Type.String()),
+  billingPostalCode: Type.Optional(Type.String()),
+  billingCountry: Type.Optional(Type.String()),
+  shippingLine1: Type.Optional(Type.String()),
+  shippingLine2: Type.Optional(Type.String()),
+  shippingCity: Type.Optional(Type.String()),
+  shippingStateCode: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  shippingStateName: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  shippingPostalCode: Type.Optional(Type.String()),
+  shippingCountry: Type.Optional(Type.String()),
+  shipToContactName: Type.Optional(Type.String()),
+  shipToCompanyName: Type.Optional(Type.String()),
   paymentTermsDays: Type.Optional(Type.Integer({ minimum: 0 })),
   notes: Type.Optional(Type.String()),
 });
@@ -86,6 +100,20 @@ const customerPatchBody = Type.Object({
   stateName: Type.Optional(Type.Union([Type.String(), Type.Null()])),
   billingAddress: Type.Optional(Type.String()),
   shippingAddress: Type.Optional(Type.String()),
+  billingLine1: Type.Optional(Type.String()),
+  billingLine2: Type.Optional(Type.String()),
+  billingCity: Type.Optional(Type.String()),
+  billingPostalCode: Type.Optional(Type.String()),
+  billingCountry: Type.Optional(Type.String()),
+  shippingLine1: Type.Optional(Type.String()),
+  shippingLine2: Type.Optional(Type.String()),
+  shippingCity: Type.Optional(Type.String()),
+  shippingStateCode: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  shippingStateName: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  shippingPostalCode: Type.Optional(Type.String()),
+  shippingCountry: Type.Optional(Type.String()),
+  shipToContactName: Type.Optional(Type.String()),
+  shipToCompanyName: Type.Optional(Type.String()),
   paymentTermsDays: Type.Optional(Type.Integer({ minimum: 0 })),
   status: Type.Optional(partyStatus),
   notes: Type.Optional(Type.String()),
@@ -304,6 +332,16 @@ export async function registerFinanceRoutes(app: FastifyInstance): Promise<void>
           metaOf(request),
         ),
       );
+    },
+  );
+
+  app.get(
+    '/api/v1/finance/customers/:id/history',
+    { preHandler: [requirePermission(PERMISSIONS.FINANCE_PARTIES_MANAGE)] },
+    async (request) => {
+      requireDb(app, request);
+      const { id } = request.params as { id: string };
+      return ok(await createFinanceService(app.supabase!).listCustomerChangeHistory(request.user!, id));
     },
   );
 

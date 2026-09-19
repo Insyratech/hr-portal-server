@@ -5,6 +5,8 @@ export type SalesLineInput = {
   unit?: string;
   rate: number;
   taxPercent: number;
+  catalogNo?: string;
+  hsnSac?: string;
 };
 
 export type SalesQuoteLine = SalesLineInput & {
@@ -24,12 +26,49 @@ export type SalesQuote = {
   status: 'draft' | 'sent' | 'accepted' | 'declined' | 'expired' | 'converted' | 'cancelled';
   notes: string;
   terms: string;
+  subject: string;
+  referenceText: string;
+  placeOfSupply: string;
+  orgGstProfileId: string | null;
+  billingAddressSnapshot: string;
+  shippingAddressSnapshot: string;
+  customerGstinSnapshot: string | null;
+  shipToName: string;
+  versionNumber: number;
   subtotal: number;
   taxTotal: number;
   grandTotal: number;
   lines: SalesQuoteLine[];
   createdAt: string;
   updatedAt: string;
+};
+
+export type SalesQuoteVersion = {
+  id: string;
+  quoteId: string;
+  versionNumber: number;
+  changeNote: string;
+  snapshot: SalesQuote;
+  createdBy: string | null;
+  createdAt: string;
+};
+
+export type SalesQuoteDetail = SalesQuote & {
+  versions: SalesQuoteVersion[];
+  letterhead: {
+    id: string;
+    label: string;
+    gstin: string;
+    legalName: string;
+    tradeName: string;
+    cin: string | null;
+    addressLine1: string;
+    addressLine2: string;
+    city: string;
+    postalCode: string;
+    stateName: string | null;
+    logoUrl: string | null;
+  } | null;
 };
 
 export type SalesOrderLine = SalesLineInput & {
@@ -174,21 +213,35 @@ export type SalesDocumentPrint = {
     legalName: string;
     tradeName: string;
     addressLine1: string;
+    addressLine2?: string;
     city: string;
     postalCode: string;
+    stateName?: string | null;
     gstin: string | null;
+    cin?: string | null;
+    logoUrl?: string | null;
+    phone?: string | null;
+    email?: string | null;
   };
   customer: {
     displayName: string;
     gstin: string | null;
     billingAddress: string;
+    shippingAddress?: string;
+    shipToName?: string;
   };
   document: {
     type: 'quote' | 'invoice' | 'delivery_note';
     documentNumber: string;
     date: string;
+    expiryDate?: string | null;
+    subject?: string;
+    referenceText?: string;
+    placeOfSupply?: string;
     status: string;
     notes: string;
+    terms?: string;
+    amountInWords?: string;
     subtotal?: number;
     taxTotal?: number;
     grandTotal?: number;
@@ -200,6 +253,8 @@ export type SalesDocumentPrint = {
       taxPercent?: number;
       amount?: number;
       taxAmount?: number;
+      catalogNo?: string;
+      hsnSac?: string;
     }>;
     einvoice?: {
       irn: string;

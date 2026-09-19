@@ -24,6 +24,8 @@ const salesLineBody = Type.Object({
   unit: Type.Optional(Type.String()),
   rate: Type.Number({ minimum: 0 }),
   taxPercent: Type.Number({ minimum: 0 }),
+  catalogNo: Type.Optional(Type.String()),
+  hsnSac: Type.Optional(Type.String()),
 });
 
 const quoteCreateBody = Type.Object({
@@ -32,15 +34,44 @@ const quoteCreateBody = Type.Object({
   expiryDate: Type.Optional(Type.Union([Type.String(), Type.Null()])),
   notes: Type.Optional(Type.String()),
   terms: Type.Optional(Type.String()),
+  subject: Type.Optional(Type.String()),
+  referenceText: Type.Optional(Type.String()),
+  placeOfSupply: Type.Optional(Type.String()),
+  orgGstProfileId: Type.Optional(Type.Union([Type.String({ format: 'uuid' }), Type.Null()])),
+  billingAddressSnapshot: Type.Optional(Type.String()),
+  shippingAddressSnapshot: Type.Optional(Type.String()),
+  customerGstinSnapshot: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  shipToName: Type.Optional(Type.String()),
   lines: Type.Array(salesLineBody, { minItems: 1 }),
 });
 
 const quotePatchBody = Type.Object({
+  customerId: Type.Optional(Type.String({ format: 'uuid' })),
   quoteDate: Type.Optional(Type.String()),
   expiryDate: Type.Optional(Type.Union([Type.String(), Type.Null()])),
   notes: Type.Optional(Type.String()),
   terms: Type.Optional(Type.String()),
+  subject: Type.Optional(Type.String()),
+  referenceText: Type.Optional(Type.String()),
+  placeOfSupply: Type.Optional(Type.String()),
+  orgGstProfileId: Type.Optional(Type.Union([Type.String({ format: 'uuid' }), Type.Null()])),
+  billingAddressSnapshot: Type.Optional(Type.String()),
+  shippingAddressSnapshot: Type.Optional(Type.String()),
+  customerGstinSnapshot: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  shipToName: Type.Optional(Type.String()),
+  changeNote: Type.Optional(Type.String()),
   lines: Type.Optional(Type.Array(salesLineBody, { minItems: 1 })),
+});
+
+const quoteEmailBody = Type.Object({
+  to: Type.String({ minLength: 3 }),
+  subject: Type.Optional(Type.String()),
+  message: Type.Optional(Type.String()),
+  saveEmailToCustomer: Type.Optional(Type.Boolean()),
+});
+
+const gstinLookupBody = Type.Object({
+  gstin: Type.String({ minLength: 15, maxLength: 15 }),
 });
 
 const quoteDecideBody = Type.Object({
@@ -137,6 +168,34 @@ export async function registerFinanceSalesRoutes(app: FastifyInstance): Promise<
     return ok(await createSalesService(app.supabase!).listQuotes(request.user!));
   });
 
+  app.get(
+    '/api/v1/finance/quotes/next-number',
+    { preHandler: [requirePermission(...salesViewPerms)] },
+    async (request) => {
+      requireDb(app, request);
+      return ok(await createSalesService(app.supabase!).peekNextQuoteNumber(request.user!));
+    },
+  );
+
+  app.post(
+    '/api/v1/finance/gstin-lookup',
+    {
+      preHandler: [
+        requirePermission(
+          PERMISSIONS.FINANCE_SALES_VIEW,
+          PERMISSIONS.FINANCE_SALES_MANAGE,
+          PERMISSIONS.FINANCE_PARTIES_MANAGE,
+        ),
+      ],
+      schema: { body: gstinLookupBody },
+    },
+    async (request) => {
+      requireDb(app, request);
+      const body = request.body as { gstin: string };
+      return ok(await createSalesService(app.supabase!).lookupGstin(request.user!, body.gstin));
+    },
+  );
+
   app.get('/api/v1/finance/quotes/:id', { preHandler: [requirePermission(...salesViewPerms)] }, async (request) => {
     requireDb(app, request);
     const { id } = request.params as { id: string };
@@ -163,7 +222,28 @@ export async function registerFinanceSalesRoutes(app: FastifyInstance): Promise<
           request.user!,
           request.body as {
             customerId: string;
-            lines: { description: string; quantity: number; rate: number; taxPercent: number }[];
+            lines: {
+              description: string;
+              quantity: number;
+              rate: number;
+              taxPercent: number;
+              catalogNo?: string;
+              hsnSac?: string;
+              unit?: string;
+              itemId?: string | null;
+            }[];
+            quoteDate?: string;
+            expiryDate?: string | null;
+            notes?: string;
+            terms?: string;
+            subject?: string;
+            referenceText?: string;
+            placeOfSupply?: string;
+            orgGstProfileId?: string | null;
+            billingAddressSnapshot?: string;
+            shippingAddressSnapshot?: string;
+            customerGstinSnapshot?: string | null;
+            shipToName?: string;
           },
           metaOf(request),
         ),
@@ -242,6 +322,33 @@ export async function registerFinanceSalesRoutes(app: FastifyInstance): Promise<
       requireDb(app, request);
       const { id } = request.params as { id: string };
       return ok(await createSalesService(app.supabase!).convertQuoteToInvoice(request.user!, id, metaOf(request)));
+    },
+  );
+
+  app.get(
+    '/api/v1/finance/quotes/:id/versions',
+    { preHandler: [requirePermission(...salesViewPerms)] },
+    async (request) => {
+      requireDb(app, request);
+      const { id } = request.params as { id: string };
+      return ok(await createSalesService(app.supabase!).listQuoteVersions(request.user!, id));
+    },
+  );
+
+  app.post(
+    '/api/v1/finance/quotes/:id/email',
+    { preHandler: [requirePermission(PERMISSIONS.FINANCE_SALES_MANAGE)], schema: { body: quoteEmailBody } },
+    async (request) => {
+      requireDb(app, request);
+      const { id } = request.params as { id: string };
+      return ok(
+        await createSalesService(app.supabase!).emailQuote(
+          request.user!,
+          id,
+          request.body as { to: string; subject?: string; message?: string; saveEmailToCustomer?: boolean },
+          metaOf(request),
+        ),
+      );
     },
   );
 

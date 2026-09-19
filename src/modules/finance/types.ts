@@ -76,12 +76,36 @@ export type FinanceCustomer = {
   stateName: string | null;
   billingAddress: string;
   shippingAddress: string;
+  billingLine1: string;
+  billingLine2: string;
+  billingCity: string;
+  billingPostalCode: string;
+  billingCountry: string;
+  shippingLine1: string;
+  shippingLine2: string;
+  shippingCity: string;
+  shippingStateCode: string | null;
+  shippingStateName: string | null;
+  shippingPostalCode: string;
+  shippingCountry: string;
+  shipToContactName: string;
+  shipToCompanyName: string;
   paymentTermsDays: number;
   currencyCode: string;
   status: FinancePartyStatus;
   notes: string;
   createdAt: string;
   updatedAt: string;
+};
+
+export type FinanceCustomerChangeHistory = {
+  id: string;
+  customerId: string;
+  fieldName: string;
+  oldValue: string | null;
+  newValue: string | null;
+  changedBy: string | null;
+  changedAt: string;
 };
 
 export type FinanceVendor = {
