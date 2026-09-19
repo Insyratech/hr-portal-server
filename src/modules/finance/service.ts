@@ -862,6 +862,58 @@ export function createFinanceService(supabase: SupabaseClient) {
       return updated;
     },
 
+    async deleteVendor(actor: RequestUser, id: string, meta: RequestMeta): Promise<{ id: string; mode: 'deleted' | 'deactivated' }> {
+      if (!canManageParties(actor)) {
+        throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot manage vendors.', 403);
+      }
+      const { data: existing, error: lookupError } = await supabase
+        .from('finance_vendors')
+        .select('id, display_name')
+        .eq('id', id)
+        .maybeSingle();
+      if (lookupError) {
+        throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load vendor.', 500);
+      }
+      if (!existing) {
+        throw new AppError(API_ERROR_CODES.NOT_FOUND, 'Vendor not found.', 404);
+      }
+
+      const { error: deleteError } = await supabase.from('finance_vendors').delete().eq('id', id);
+      if (!deleteError) {
+        await writeAuditLog(supabase, {
+          actorId: actor.employeeId,
+          action: 'finance_vendor.delete',
+          entityType: 'finance_vendor',
+          entityId: id,
+          oldValues: { displayName: existing.display_name },
+          ...meta,
+        });
+        return { id, mode: 'deleted' };
+      }
+
+      // Referenced by purchase docs (ON DELETE RESTRICT) — deactivate instead of failing hard.
+      if (deleteError.code === '23503') {
+        const { error: deactivateError } = await supabase
+          .from('finance_vendors')
+          .update({ status: 'inactive' })
+          .eq('id', id);
+        if (deactivateError) {
+          throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to deactivate vendor.', 500);
+        }
+        await writeAuditLog(supabase, {
+          actorId: actor.employeeId,
+          action: 'finance_vendor.deactivate',
+          entityType: 'finance_vendor',
+          entityId: id,
+          newValues: { status: 'inactive' },
+          ...meta,
+        });
+        return { id, mode: 'deactivated' };
+      }
+
+      throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, deleteError.message || 'Failed to delete vendor.', 500);
+    },
+
     async listItems(actor: RequestUser): Promise<FinanceItem[]> {
       if (!canManageItems(actor)) {
         throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot view items.', 403);

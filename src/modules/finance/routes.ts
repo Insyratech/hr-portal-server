@@ -348,6 +348,16 @@ export async function registerFinanceRoutes(app: FastifyInstance): Promise<void>
     },
   );
 
+  app.delete(
+    '/api/v1/finance/vendors/:id',
+    { preHandler: [requirePermission(PERMISSIONS.FINANCE_PARTIES_MANAGE)] },
+    async (request) => {
+      requireDb(app, request);
+      const { id } = request.params as { id: string };
+      return ok(await createFinanceService(app.supabase!).deleteVendor(request.user!, id, metaOf(request)));
+    },
+  );
+
   app.get(
     '/api/v1/finance/items',
     { preHandler: [requirePermission(PERMISSIONS.FINANCE_ITEMS_MANAGE)] },
