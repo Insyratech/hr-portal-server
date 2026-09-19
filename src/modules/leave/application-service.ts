@@ -24,7 +24,11 @@ import { patternOnDate } from './day-count';
 import { loadStaffById, notifyStaff } from '../notifications/notify-staff';
 import { portalUrl, sendPortalMail } from '../notifications/mail';
 import { syncEmployeeWorkDays } from '../work/daily';
-import { assertHandoverColleagueFree, employeeIdsOnLeave } from './handover-availability';
+import {
+  assertApplicantNotCoveringHandover,
+  assertHandoverColleagueEligible,
+  listSameShiftHandoverColleagues,
+} from './handover-availability';
 import {
   currentLeadEmployeeId,
   leaveWorkflowStillPending,
@@ -595,8 +599,16 @@ export function createLeaveApplicationService(supabase: SupabaseClient) {
           throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Handover colleague was not found.', 400);
         }
         handoverPerson = loaded.data as { id: string; full_name: string; email: string | null; user_id: string | null };
-        await assertHandoverColleagueFree(supabase, handoverPerson.id, input.startDate, input.endDate);
+        await assertHandoverColleagueEligible(
+          supabase,
+          actor.employeeId,
+          handoverPerson.id,
+          input.startDate,
+          input.endDate,
+        );
       }
+
+      await assertApplicantNotCoveringHandover(supabase, actor.employeeId, input.startDate, input.endDate);
 
       const projectStep = await resolveLeaveProjectStep(
         supabase,
@@ -822,8 +834,16 @@ export function createLeaveApplicationService(supabase: SupabaseClient) {
           throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Handover colleague was not found.', 400);
         }
         handoverPerson = loaded.data as { id: string; full_name: string; email: string | null; user_id: string | null };
-        await assertHandoverColleagueFree(supabase, handoverPerson.id, input.startDate, input.endDate);
+        await assertHandoverColleagueEligible(
+          supabase,
+          actor.employeeId,
+          handoverPerson.id,
+          input.startDate,
+          input.endDate,
+        );
       }
+
+      await assertApplicantNotCoveringHandover(supabase, actor.employeeId, input.startDate, input.endDate);
 
       const projectStep = await resolveLeaveProjectStep(
         supabase,
@@ -1165,6 +1185,13 @@ export function createLeaveApplicationService(supabase: SupabaseClient) {
       if (existing.handoverAccepted) {
         return existing;
       }
+      await assertHandoverColleagueEligible(
+        supabase,
+        existing.employeeId,
+        actor.employeeId,
+        existing.startDate,
+        existing.endDate,
+      );
       await approveApprovalRole(supabase, id, 'HANDOVER', actor.employeeId);
 
       const leadId =
@@ -1344,27 +1371,25 @@ export function createLeaveApplicationService(supabase: SupabaseClient) {
     },
 
     async listColleagues(actor: RequestUser, startDate?: string, endDate?: string) {
-      const { data, error } = await supabase
-        .from('employees')
-        .select('id, full_name')
-        .eq('status', 'active')
-        .neq('id', actor.employeeId)
-        .order('full_name');
-      if (error) throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load colleagues.', 500);
       const rangeStart = startDate?.slice(0, 10);
       const rangeEnd = (endDate || startDate)?.slice(0, 10);
-      const busy =
-        rangeStart && rangeEnd ? await employeeIdsOnLeave(supabase, rangeStart, rangeEnd) : new Map<string, { startDate: string; endDate: string }>();
-      return (data ?? []).map((row) => {
-        const id = row.id as string;
-        const clash = busy.get(id);
-        return {
-          id,
+      if (!rangeStart || !rangeEnd) {
+        const { data, error } = await supabase
+          .from('employees')
+          .select('id, full_name')
+          .eq('status', 'active')
+          .neq('id', actor.employeeId)
+          .order('full_name');
+        if (error) throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load colleagues.', 500);
+        return (data ?? []).map((row) => ({
+          id: row.id as string,
           fullName: row.full_name as string,
-          available: !clash,
-          leaveDates: clash ? `${clash.startDate} – ${clash.endDate}` : null,
-        };
-      });
+          available: false,
+          leaveDates: null,
+          unavailableReason: 'Pick leave dates to see same-shift colleagues.',
+        }));
+      }
+      return listSameShiftHandoverColleagues(supabase, actor.employeeId, rangeStart, rangeEnd);
     },
   };
 }
