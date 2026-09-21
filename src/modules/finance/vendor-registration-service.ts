@@ -4,6 +4,7 @@ import { AppError } from '../../shared/errors/app-error';
 import type { RequestUser } from '../../shared/types/request-user';
 import { writeAuditLog } from '../audit/write-audit-log';
 import { canManageFinanceOrg, canManageParties, type RequestMeta } from './access';
+import { normalizeGstin, parseGstin } from './gstin-utils';
 import type {
   FinanceOrgAddress,
   FinanceOrgGstProfile,
@@ -19,6 +20,7 @@ import type {
 const ORG_ID = '00000000-0000-4000-8000-000000000020';
 const LOGO_BUCKET = 'finance-org-logos';
 const DOC_BUCKET = 'finance-vendor-docs';
+const MAX_GST_REGISTRATIONS = 3;
 const MAX_LOGO_BYTES = 2 * 1024 * 1024;
 const MAX_DOC_BYTES = 10 * 1024 * 1024;
 const LOGO_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
@@ -64,12 +66,14 @@ async function signedUrl(supabase: SupabaseClient, bucket: string, path: string 
 }
 
 function mapGstProfile(row: Record<string, unknown>, logoUrl: string | null): FinanceOrgGstProfile {
+  const gstin = (row.gstin as string) ?? '';
+  const legalName = (row.legal_name as string) ?? '';
   return {
     id: row.id as string,
     organizationId: row.organization_id as string,
-    label: (row.label as string) ?? '',
-    gstin: row.gstin as string,
-    legalName: (row.legal_name as string) ?? '',
+    label: (row.label as string) || legalName || gstin,
+    gstin,
+    legalName,
     tradeName: (row.trade_name as string) ?? '',
     cin: (row.cin as string | null) ?? null,
     pan: (row.pan as string | null) ?? null,
@@ -79,6 +83,9 @@ function mapGstProfile(row: Record<string, unknown>, logoUrl: string | null): Fi
     addressLine2: (row.address_line2 as string) ?? '',
     city: (row.city as string) ?? '',
     postalCode: (row.postal_code as string) ?? '',
+    phone: (row.phone as string | null) ?? null,
+    email: (row.email as string | null) ?? null,
+    website: (row.website as string | null) ?? null,
     logoStoragePath: (row.logo_storage_path as string | null) ?? null,
     logoUrl,
     registrationType: (row.registration_type as FinanceOrgGstProfile['registrationType']) ?? null,
@@ -283,7 +290,7 @@ export function createVendorRegistrationService(supabase: SupabaseClient) {
         .select('*')
         .eq('organization_id', ORG_ID)
         .order('is_default', { ascending: false })
-        .order('label');
+        .order('gstin');
       if (error) {
         throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to list GST profiles.', 500);
       }
@@ -296,13 +303,47 @@ export function createVendorRegistrationService(supabase: SupabaseClient) {
 
     async createGstProfile(actor: RequestUser, input: Record<string, unknown>, meta: RequestMeta) {
       if (!canManageFinanceOrg(actor)) {
-        throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot manage GST profiles.', 403);
+        throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot manage GST registrations.', 403);
       }
-      const gstin = asString(input.gstin);
-      if (!gstin) {
-        throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'GSTIN is required.', 400);
+      const gstin = normalizeGstin(asString(input.gstin));
+      const parsed = parseGstin(gstin);
+      if (!parsed.validFormat) {
+        throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, parsed.message, 400);
       }
-      const isDefault = Boolean(input.isDefault);
+      const legalName = asString(input.legalName);
+      if (!legalName) {
+        throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Legal name is required for this GST registration.', 400);
+      }
+      const addressLine1 = asString(input.addressLine1);
+      if (!addressLine1) {
+        throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Registered address is required.', 400);
+      }
+      const city = asString(input.city);
+      if (!city) {
+        throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'City is required.', 400);
+      }
+      const stateCode = asNullableString(input.stateCode as string | null) ?? parsed.stateCode;
+      const stateName = asNullableString(input.stateName as string | null) ?? parsed.stateName;
+
+      const { count, error: countErr } = await supabase
+        .from('finance_org_gst_profiles')
+        .select('id', { count: 'exact', head: true })
+        .eq('organization_id', ORG_ID)
+        .eq('active', true);
+      if (countErr) {
+        throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to check GST registration limit.', 500);
+      }
+      if ((count ?? 0) >= MAX_GST_REGISTRATIONS) {
+        throw new AppError(
+          API_ERROR_CODES.VALIDATION_ERROR,
+          `At most ${MAX_GST_REGISTRATIONS} GST registrations are allowed. Deactivate one before adding another.`,
+          400,
+        );
+      }
+
+      const tradeName = asString(input.tradeName) || legalName;
+      const displayLabel = legalName || gstin;
+      const isDefault = Boolean(input.isDefault) || (count ?? 0) === 0;
       if (isDefault) {
         await supabase
           .from('finance_org_gst_profiles')
@@ -313,19 +354,22 @@ export function createVendorRegistrationService(supabase: SupabaseClient) {
         .from('finance_org_gst_profiles')
         .insert({
           organization_id: ORG_ID,
-          label: asString(input.label) || gstin,
+          label: displayLabel,
           gstin,
-          legal_name: asString(input.legalName),
-          trade_name: asString(input.tradeName),
+          legal_name: legalName,
+          trade_name: tradeName,
           cin: asNullableString(input.cin as string | null),
-          pan: asNullableString(input.pan as string | null),
-          state_code: asNullableString(input.stateCode as string | null),
-          state_name: asNullableString(input.stateName as string | null),
-          address_line1: asString(input.addressLine1),
+          pan: asNullableString(input.pan as string | null) ?? parsed.pan,
+          state_code: stateCode,
+          state_name: stateName,
+          address_line1: addressLine1,
           address_line2: asString(input.addressLine2),
-          city: asString(input.city),
+          city,
           postal_code: asString(input.postalCode),
-          registration_type: input.registrationType ?? null,
+          phone: asNullableString(input.phone as string | null),
+          email: asNullableString(input.email as string | null),
+          website: asNullableString(input.website as string | null),
+          registration_type: input.registrationType ?? 'regular',
           is_default: isDefault,
           active: input.active === undefined ? true : Boolean(input.active),
         })
@@ -335,14 +379,31 @@ export function createVendorRegistrationService(supabase: SupabaseClient) {
         if (error?.code === '23505') {
           throw new AppError(API_ERROR_CODES.CONFLICT, 'This GSTIN is already registered.', 409);
         }
-        throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, error?.message ?? 'Failed to create GST profile.', 500);
+        throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, error?.message ?? 'Failed to create GST registration.', 500);
+      }
+      if (isDefault) {
+        await supabase
+          .from('finance_organizations')
+          .update({
+            gstin,
+            legal_name: legalName,
+            trade_name: tradeName,
+            state_code: stateCode,
+            state_name: stateName,
+            address_line1: addressLine1,
+            address_line2: asString(input.addressLine2),
+            city,
+            postal_code: asString(input.postalCode),
+            gst_registered: true,
+          })
+          .eq('id', ORG_ID);
       }
       await writeAuditLog(supabase, {
         actorId: actor.employeeId,
         action: 'finance_org_gst_profile.create',
         entityType: 'finance_org_gst_profile',
         entityId: data.id as string,
-        newValues: { gstin },
+        newValues: { gstin, legalName },
         ...meta,
       });
       return mapGstProfile(data as Record<string, unknown>, null);
@@ -358,9 +419,25 @@ export function createVendorRegistrationService(supabase: SupabaseClient) {
         throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot manage GST profiles.', 403);
       }
       const patch: Record<string, unknown> = {};
-      if (input.label !== undefined) patch.label = asString(input.label);
-      if (input.gstin !== undefined) patch.gstin = asString(input.gstin);
-      if (input.legalName !== undefined) patch.legal_name = asString(input.legalName);
+      if (input.gstin !== undefined) {
+        const gstin = normalizeGstin(asString(input.gstin));
+        const parsed = parseGstin(gstin);
+        if (!parsed.validFormat) {
+          throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, parsed.message, 400);
+        }
+        patch.gstin = gstin;
+        if (input.stateCode === undefined && parsed.stateCode) patch.state_code = parsed.stateCode;
+        if (input.stateName === undefined && parsed.stateName) patch.state_name = parsed.stateName;
+        if (input.pan === undefined && parsed.pan) patch.pan = parsed.pan;
+      }
+      if (input.legalName !== undefined) {
+        const legalName = asString(input.legalName);
+        if (!legalName) {
+          throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Legal name is required.', 400);
+        }
+        patch.legal_name = legalName;
+        patch.label = legalName;
+      }
       if (input.tradeName !== undefined) patch.trade_name = asString(input.tradeName);
       if (input.cin !== undefined) patch.cin = asNullableString(input.cin as string | null);
       if (input.pan !== undefined) patch.pan = asNullableString(input.pan as string | null);
@@ -370,6 +447,9 @@ export function createVendorRegistrationService(supabase: SupabaseClient) {
       if (input.addressLine2 !== undefined) patch.address_line2 = asString(input.addressLine2);
       if (input.city !== undefined) patch.city = asString(input.city);
       if (input.postalCode !== undefined) patch.postal_code = asString(input.postalCode);
+      if (input.phone !== undefined) patch.phone = asNullableString(input.phone as string | null);
+      if (input.email !== undefined) patch.email = asNullableString(input.email as string | null);
+      if (input.website !== undefined) patch.website = asNullableString(input.website as string | null);
       if (input.registrationType !== undefined) patch.registration_type = input.registrationType;
       if (input.active !== undefined) patch.active = Boolean(input.active);
       if (input.isDefault === true) {
@@ -389,9 +469,29 @@ export function createVendorRegistrationService(supabase: SupabaseClient) {
         .select('*')
         .maybeSingle();
       if (error) {
-        throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, error.message || 'Failed to update GST profile.', 500);
+        if (error.code === '23505') {
+          throw new AppError(API_ERROR_CODES.CONFLICT, 'This GSTIN is already registered.', 409);
+        }
+        throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, error.message || 'Failed to update GST registration.', 500);
       }
-      if (!data) throw new AppError(API_ERROR_CODES.NOT_FOUND, 'GST profile not found.', 404);
+      if (!data) throw new AppError(API_ERROR_CODES.NOT_FOUND, 'GST registration not found.', 404);
+      if (data.is_default) {
+        await supabase
+          .from('finance_organizations')
+          .update({
+            gstin: data.gstin,
+            legal_name: data.legal_name,
+            trade_name: data.trade_name,
+            state_code: data.state_code,
+            state_name: data.state_name,
+            address_line1: data.address_line1,
+            address_line2: data.address_line2,
+            city: data.city,
+            postal_code: data.postal_code,
+            gst_registered: true,
+          })
+          .eq('id', ORG_ID);
+      }
       await writeAuditLog(supabase, {
         actorId: actor.employeeId,
         action: 'finance_org_gst_profile.update',

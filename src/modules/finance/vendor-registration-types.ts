@@ -1,6 +1,7 @@
 export type FinanceOrgGstProfile = {
   id: string;
   organizationId: string;
+  /** Display name derived from legal name / GSTIN — not a separate freeform “branch label”. */
   label: string;
   gstin: string;
   legalName: string;
@@ -13,6 +14,9 @@ export type FinanceOrgGstProfile = {
   addressLine2: string;
   city: string;
   postalCode: string;
+  phone: string | null;
+  email: string | null;
+  website: string | null;
   logoStoragePath: string | null;
   logoUrl: string | null;
   registrationType: 'regular' | 'composition' | 'unregistered' | null;
