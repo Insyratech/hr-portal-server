@@ -28,6 +28,7 @@ import { registerFinanceReportsRoutes } from './modules/finance/reports-routes';
 import { registerFinanceSalesRoutes } from './modules/finance/sales-routes';
 import { registerFinanceVendorRegistrationRoutes } from './modules/finance/vendor-registration-routes';
 import { registerFinanceRoutes } from './modules/finance/routes';
+import { registerFaqRoutes } from './modules/faq/routes';
 import { registerPayrollRoutes } from './modules/payroll/routes';
 import { registerReportRoutes } from './modules/reports/routes';
 import { authPlugin } from './plugins/auth';
@@ -107,6 +108,7 @@ export async function buildApp(env: Env): Promise<FastifyInstance> {
   await registerPolicyRoutes(app);
   await registerNotificationRoutes(app);
   await registerWebPushRoutes(app);
+  await registerFaqRoutes(app);
   await registerPayrollRoutes(app);
   await registerFinanceRoutes(app);
   await registerFinanceProcurementRoutes(app);
