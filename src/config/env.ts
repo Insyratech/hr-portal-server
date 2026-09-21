@@ -26,6 +26,10 @@ export type Env = {
   FINANCE_GSP_CLIENT_ID: string;
   FINANCE_GSP_CLIENT_SECRET: string;
   FINANCE_GSP_GSTIN: string;
+  /** Optional gstinapi.in (or compatible) key for live GSTIN name/address enrichment. */
+  FINANCE_GSTIN_LOOKUP_API_KEY: string;
+  /** Override base URL; default https://www.gstinapi.in */
+  FINANCE_GSTIN_LOOKUP_API_URL: string;
   FINANCE_PAYMENT_GATEWAY_PROVIDER: 'none' | 'razorpay' | 'stripe';
   FINANCE_PAYMENT_GATEWAY_KEY_ID: string;
   FINANCE_PAYMENT_GATEWAY_KEY_SECRET: string;
@@ -94,6 +98,8 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     FINANCE_GSP_CLIENT_ID: source.FINANCE_GSP_CLIENT_ID ?? '',
     FINANCE_GSP_CLIENT_SECRET: source.FINANCE_GSP_CLIENT_SECRET ?? '',
     FINANCE_GSP_GSTIN: source.FINANCE_GSP_GSTIN ?? '',
+    FINANCE_GSTIN_LOOKUP_API_KEY: source.FINANCE_GSTIN_LOOKUP_API_KEY ?? '',
+    FINANCE_GSTIN_LOOKUP_API_URL: source.FINANCE_GSTIN_LOOKUP_API_URL ?? '',
     FINANCE_PAYMENT_GATEWAY_PROVIDER: payProvider,
     FINANCE_PAYMENT_GATEWAY_KEY_ID: source.FINANCE_PAYMENT_GATEWAY_KEY_ID ?? '',
     FINANCE_PAYMENT_GATEWAY_KEY_SECRET: source.FINANCE_PAYMENT_GATEWAY_KEY_SECRET ?? '',

@@ -3,7 +3,7 @@ import { API_ERROR_CODES } from '../../shared/constants/error-codes';
 import { AppError } from '../../shared/errors/app-error';
 import type { RequestUser } from '../../shared/types/request-user';
 import { writeAuditLog } from '../audit/write-audit-log';
-import { canManageParties, canManageSales, canViewSales, type RequestMeta } from './access';
+import { canManageParties, canManageSales, canViewSales, canManageFinanceOrg, type RequestMeta } from './access';
 import {
   postCustomerCreditNoteJournal,
   postCustomerInvoiceJournal,
@@ -28,8 +28,9 @@ import {
   defaultQuoteNotes,
   defaultQuoteTerms,
   istTodayIso,
-  parseGstin,
 } from './gstin-utils';
+import { enrichGstinLookup } from './gstin-lookup';
+import { loadEnv } from '../../config/env';
 import { sendMail } from '../notifications/mail';
 
 const ORG_ID = '00000000-0000-4000-8000-000000000020';
@@ -777,29 +778,15 @@ export function createSalesService(supabase: SupabaseClient) {
     },
 
     async lookupGstin(actor: RequestUser, gstin: string) {
-      if (!canViewSales(actor) && !canManageSales(actor) && !canManageParties(actor)) {
+      if (
+        !canViewSales(actor) &&
+        !canManageSales(actor) &&
+        !canManageParties(actor) &&
+        !canManageFinanceOrg(actor)
+      ) {
         throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot look up GSTIN.', 403);
       }
-      const parsed = parseGstin(gstin);
-      if (!parsed.validFormat) return parsed;
-      const { data: match } = await supabase
-        .from('finance_customers')
-        .select('*')
-        .ilike('gstin', parsed.gstin)
-        .limit(1)
-        .maybeSingle();
-      if (!match) return parsed;
-      const billing = customerAddressSnapshot(match as Record<string, unknown>, 'billing');
-      const shipping =
-        customerAddressSnapshot(match as Record<string, unknown>, 'shipping') || billing;
-      return {
-        ...parsed,
-        legalName: (match.company_name as string) || (match.display_name as string) || parsed.legalName,
-        billingAddress: billing || parsed.billingAddress,
-        shippingAddress: shipping || parsed.shippingAddress,
-        source: 'customer_master' as const,
-        message: `Matched existing customer "${match.display_name as string}". Confirm or edit the address fields.`,
-      };
+      return enrichGstinLookup(supabase, loadEnv(), gstin);
     },
 
     async listQuoteVersions(actor: RequestUser, quoteId: string): Promise<SalesQuoteVersion[]> {

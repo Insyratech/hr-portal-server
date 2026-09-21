@@ -185,6 +185,7 @@ export async function registerFinanceSalesRoutes(app: FastifyInstance): Promise<
           PERMISSIONS.FINANCE_SALES_VIEW,
           PERMISSIONS.FINANCE_SALES_MANAGE,
           PERMISSIONS.FINANCE_PARTIES_MANAGE,
+          PERMISSIONS.FINANCE_ORG_MANAGE,
         ),
       ],
       schema: { body: gstinLookupBody },

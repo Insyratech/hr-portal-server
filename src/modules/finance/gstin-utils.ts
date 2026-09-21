@@ -1,4 +1,4 @@
-/** India GSTIN helpers — parse / validate without external API. */
+/** GSTIN lookup result + local parse. External enrichment lives in gstin-lookup.ts. */
 
 const STATE_BY_CODE: Record<string, string> = {
   '01': 'Jammu and Kashmir',
@@ -41,17 +41,33 @@ const STATE_BY_CODE: Record<string, string> = {
 
 const GSTIN_REGEX = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][A-Z0-9]Z[A-Z0-9]$/;
 
+export type GstinLookupSource =
+  | 'parsed'
+  | 'customer_master'
+  | 'vendor_master'
+  | 'org_master'
+  | 'gst_profile'
+  | 'gst_network';
+
 export type GstinLookupResult = {
   gstin: string;
   validFormat: boolean;
   stateCode: string | null;
   stateName: string | null;
   pan: string | null;
-  /** Suggested trade/legal name when known from our customer master. */
+  /** Legal / company name when known. */
   legalName: string | null;
+  tradeName: string | null;
+  cin: string | null;
+  addressLine1: string | null;
+  addressLine2: string | null;
+  city: string | null;
+  postalCode: string | null;
+  /** Full multiline address for forms that still use a single text field. */
   billingAddress: string | null;
   shippingAddress: string | null;
-  source: 'parsed' | 'customer_master';
+  registrationType: 'regular' | 'composition' | 'unregistered' | null;
+  source: GstinLookupSource;
   message: string;
 };
 
@@ -59,22 +75,51 @@ export function normalizeGstin(raw: string): string {
   return raw.trim().toUpperCase().replace(/\s+/g, '');
 }
 
+export function emptyGstinLookup(gstin: string, message: string): GstinLookupResult {
+  return {
+    gstin,
+    validFormat: false,
+    stateCode: null,
+    stateName: null,
+    pan: null,
+    legalName: null,
+    tradeName: null,
+    cin: null,
+    addressLine1: null,
+    addressLine2: null,
+    city: null,
+    postalCode: null,
+    billingAddress: null,
+    shippingAddress: null,
+    registrationType: null,
+    source: 'parsed',
+    message,
+  };
+}
+
+export function composeBillingAddress(parts: {
+  addressLine1?: string | null;
+  addressLine2?: string | null;
+  city?: string | null;
+  stateName?: string | null;
+  postalCode?: string | null;
+}): string | null {
+  const lines = [
+    parts.addressLine1?.trim(),
+    parts.addressLine2?.trim(),
+    [parts.city?.trim(), parts.stateName?.trim(), parts.postalCode?.trim()].filter(Boolean).join(', '),
+  ].filter(Boolean);
+  return lines.length ? lines.join('\n') : null;
+}
+
 export function parseGstin(raw: string): GstinLookupResult {
   const gstin = normalizeGstin(raw);
   const validFormat = GSTIN_REGEX.test(gstin);
   if (!validFormat || gstin.length !== 15) {
-    return {
+    return emptyGstinLookup(
       gstin,
-      validFormat: false,
-      stateCode: null,
-      stateName: null,
-      pan: null,
-      legalName: null,
-      billingAddress: null,
-      shippingAddress: null,
-      source: 'parsed',
-      message: 'GSTIN format looks invalid. Check and try again, or enter details manually.',
-    };
+      'GSTIN format looks invalid. Check and try again, or enter details manually.',
+    );
   }
   const stateCode = gstin.slice(0, 2);
   const pan = gstin.slice(2, 12);
@@ -86,13 +131,73 @@ export function parseGstin(raw: string): GstinLookupResult {
     stateName,
     pan,
     legalName: null,
+    tradeName: null,
+    cin: null,
+    addressLine1: null,
+    addressLine2: null,
+    city: null,
+    postalCode: null,
     billingAddress: null,
     shippingAddress: null,
+    registrationType: null,
     source: 'parsed',
     message: stateName
-      ? `GSTIN decoded: state ${stateName} (${stateCode}), PAN ${pan}. Confirm or edit address below.`
-      : `GSTIN decoded: state code ${stateCode}, PAN ${pan}. Enter address manually.`,
+      ? `GSTIN decoded: state ${stateName} (${stateCode}), PAN ${pan}. Looking up company details…`
+      : `GSTIN decoded: state code ${stateCode}, PAN ${pan}. Looking up company details…`,
   };
+}
+
+export function mergeGstinLookup(
+  base: GstinLookupResult,
+  patch: Partial<GstinLookupResult>,
+): GstinLookupResult {
+  const next: GstinLookupResult = { ...base };
+  for (const [key, value] of Object.entries(patch) as [keyof GstinLookupResult, GstinLookupResult[keyof GstinLookupResult]][]) {
+    if (value === undefined || value === null) continue;
+    if (typeof value === 'string' && !value.trim()) continue;
+    (next as Record<string, unknown>)[key] = value;
+  }
+  if (!next.billingAddress) {
+    next.billingAddress = composeBillingAddress({
+      addressLine1: next.addressLine1,
+      addressLine2: next.addressLine2,
+      city: next.city,
+      stateName: next.stateName,
+      postalCode: next.postalCode,
+    });
+  }
+  return next;
+}
+
+export function finalizeGstinLookupMessage(result: GstinLookupResult): GstinLookupResult {
+  if (!result.validFormat) return result;
+  const bits: string[] = [];
+  if (result.legalName) bits.push('company name');
+  if (result.tradeName) bits.push('trade name');
+  if (result.cin) bits.push('CIN');
+  if (result.addressLine1 || result.billingAddress) bits.push('address');
+  if (result.pan) bits.push('PAN');
+  if (result.stateName) bits.push(`state ${result.stateName}`);
+
+  let message: string;
+  if (bits.length <= 2 && result.source === 'parsed') {
+    message = result.stateName
+      ? `GSTIN decoded: state ${result.stateName} (${result.stateCode}), PAN ${result.pan}. Enter company name, CIN, and address manually or configure GST network lookup.`
+      : `GSTIN decoded: state code ${result.stateCode}, PAN ${result.pan}. Enter details manually.`;
+  } else if (result.source === 'gst_network') {
+    message = `GST network returned ${bits.join(', ')}. Review and auto-fill or edit.`;
+  } else if (result.source === 'customer_master') {
+    message = `Matched customer master (${bits.join(', ')}). Confirm or edit before continuing.`;
+  } else if (result.source === 'vendor_master') {
+    message = `Matched vendor master (${bits.join(', ')}). Confirm or edit before continuing.`;
+  } else if (result.source === 'gst_profile') {
+    message = `Matched existing GST registration (${bits.join(', ')}). Confirm or edit before continuing.`;
+  } else if (result.source === 'org_master') {
+    message = `Matched organisation profile by PAN/GSTIN (${bits.join(', ')}). Address may differ for this state — confirm.`;
+  } else {
+    message = `Lookup ready: ${bits.join(', ')}. Confirm or edit before continuing.`;
+  }
+  return { ...result, message };
 }
 
 export function istTodayIso(): string {
