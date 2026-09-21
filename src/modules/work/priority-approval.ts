@@ -100,6 +100,53 @@ export async function assertCanApprovePriority(
   }
 }
 
+/** True when the employee belongs to at least one active project. */
+export async function employeeHasActiveProjectMembership(
+  supabase: SupabaseClient,
+  employeeId: string,
+): Promise<boolean> {
+  const { data } = await supabase
+    .from('project_members')
+    .select('project_id, projects ( status )')
+    .eq('employee_id', employeeId);
+  for (const row of data ?? []) {
+    const project = Array.isArray(row.projects) ? row.projects[0] : row.projects;
+    if (project && (project as { status?: string }).status === 'active') return true;
+  }
+  return false;
+}
+
+/**
+ * Employees with no active project may submit REGULAR / SKILL lines without a lead.
+ * PROJECT lines (and any line tied to a project_id) still require a project lead.
+ */
+export function canSkipLeadApproval(
+  priority: PriorityForApproval,
+  hasActiveProjectMembership: boolean,
+): boolean {
+  if (priority.project_id || priority.priority_type === 'PROJECT') {
+    return false;
+  }
+  if (priority.priority_type !== 'REGULAR' && priority.priority_type !== 'SKILL') {
+    return false;
+  }
+  return !hasActiveProjectMembership;
+}
+
+export async function shouldAutoApprovePriorityWithoutLead(
+  supabase: SupabaseClient,
+  priority: PriorityForApproval,
+): Promise<boolean> {
+  if (priority.project_id || priority.priority_type === 'PROJECT') {
+    return false;
+  }
+  if (priority.priority_type !== 'REGULAR' && priority.priority_type !== 'SKILL') {
+    return false;
+  }
+  const onProject = await employeeHasActiveProjectMembership(supabase, priority.employee_id);
+  return canSkipLeadApproval(priority, onProject);
+}
+
 export async function assertHasPriorityApprovers(
   supabase: SupabaseClient,
   priority: PriorityForApproval,

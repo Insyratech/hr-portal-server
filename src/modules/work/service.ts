@@ -23,6 +23,8 @@ import {
   leadPriorityReviewHref,
   loadStaffContactsByIds,
   notifyPriorityApprovers,
+  resolvePriorityApproverIds,
+  shouldAutoApprovePriorityWithoutLead,
   type PriorityForApproval,
 } from './priority-approval';
 import {
@@ -1422,14 +1424,34 @@ export function createWorkService(supabase: SupabaseClient) {
           throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, milestoneError, 400);
         }
       }
-      await assertHasPriorityApprovers(supabase, priorityForApproval(existing));
+
+      const priorityRef = priorityForApproval(existing);
+      const leadIds = await resolvePriorityApproverIds(supabase, priorityRef);
+      const autoApprove =
+        leadIds.length === 0 && (await shouldAutoApprovePriorityWithoutLead(supabase, priorityRef));
+      if (leadIds.length === 0 && !autoApprove) {
+        await assertHasPriorityApprovers(supabase, priorityRef);
+      }
+
+      const nowIso = new Date().toISOString();
       const { data, error } = await supabase
         .from('weekly_priorities')
-        .update({
-          approval_status: 'SUBMITTED',
-          submitted_at: new Date().toISOString(),
-          resubmit_requested_at: null,
-        })
+        .update(
+          autoApprove
+            ? {
+                approval_status: 'APPROVED',
+                submitted_at: nowIso,
+                approved_at: nowIso,
+                approved_by: null,
+                resubmit_requested_at: null,
+                cso_comment: '',
+              }
+            : {
+                approval_status: 'SUBMITTED',
+                submitted_at: nowIso,
+                resubmit_requested_at: null,
+              },
+        )
         .eq('id', id)
         .select('*, projects ( name, code )')
         .single();
@@ -1438,13 +1460,17 @@ export function createWorkService(supabase: SupabaseClient) {
       await writeHistory(supabase, {
         priorityId: id,
         actorId: actor.employeeId,
-        action: wasResubmit ? 'resubmitted' : 'submitted',
+        action: autoApprove ? 'auto_approved' : wasResubmit ? 'resubmitted' : 'submitted',
         oldValues: mapPriority(existing),
         newValues: mapped,
       });
       await writeAuditLog(supabase, {
         actorId: actor.employeeId,
-        action: wasResubmit ? 'weekly_priority.resubmit' : 'weekly_priority.submit',
+        action: autoApprove
+          ? 'weekly_priority.auto_approve'
+          : wasResubmit
+            ? 'weekly_priority.resubmit'
+            : 'weekly_priority.submit',
         entityType: 'weekly_priority',
         entityId: id,
         oldValues: mapPriority(existing),
@@ -1452,13 +1478,12 @@ export function createWorkService(supabase: SupabaseClient) {
         ...meta,
       });
 
-      if (options?.notify === false) {
+      if (autoApprove || options?.notify === false) {
         return mapped;
       }
 
       const employee = await loadStaffById(supabase, existing.employee_id);
       const reviewHref = leadPriorityReviewHref(existing.employee_id);
-      const priorityRef = priorityForApproval(existing);
       if (wasResubmit) {
         await notifyPriorityApprovers(supabase, priorityRef, {
           type: 'work',
