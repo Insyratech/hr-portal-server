@@ -46,6 +46,8 @@ export type FinanceOrgAddress = {
 export type FinanceOrgOfficer = {
   id: string;
   organizationId: string;
+  /** When set, officer belongs to this GST letterhead registration. */
+  orgGstProfileId: string | null;
   role: 'ceo' | 'director' | 'other';
   fullName: string;
   designation: string;

@@ -40,6 +40,9 @@ const gstProfileBody = Type.Object({
   addressLine2: Type.Optional(Type.String()),
   city: Type.Optional(Type.String()),
   postalCode: Type.Optional(Type.String()),
+  phone: Type.Optional(nullableString),
+  email: Type.Optional(nullableString),
+  website: Type.Optional(nullableString),
   registrationType: Type.Optional(registrationType),
   isDefault: Type.Optional(Type.Boolean()),
   active: Type.Optional(Type.Boolean()),
@@ -58,6 +61,9 @@ const gstProfileCreateBody = Type.Object({
   addressLine2: Type.Optional(Type.String()),
   city: Type.Optional(Type.String()),
   postalCode: Type.Optional(Type.String()),
+  phone: Type.Optional(nullableString),
+  email: Type.Optional(nullableString),
+  website: Type.Optional(nullableString),
   registrationType: Type.Optional(registrationType),
   isDefault: Type.Optional(Type.Boolean()),
   active: Type.Optional(Type.Boolean()),
@@ -114,6 +120,7 @@ const officerBody = Type.Object({
   email: Type.Optional(nullableString),
   phone: Type.Optional(nullableString),
   din: Type.Optional(nullableString),
+  orgGstProfileId: Type.Optional(uuidOrNull),
 });
 
 const officerCreateBody = Type.Object({
@@ -123,6 +130,7 @@ const officerCreateBody = Type.Object({
   email: Type.Optional(nullableString),
   phone: Type.Optional(nullableString),
   din: Type.Optional(nullableString),
+  orgGstProfileId: Type.Optional(uuidOrNull),
 });
 
 const principalCustomer = Type.Object({
@@ -292,7 +300,12 @@ export async function registerFinanceVendorRegistrationRoutes(app: FastifyInstan
     { preHandler: [requirePermission(...orgPerms)] },
     async (request) => {
       requireDb(app, request);
-      return ok(await svc().listOfficers(request.user!));
+      const query = request.query as { orgGstProfileId?: string };
+      return ok(
+        await svc().listOfficers(request.user!, {
+          orgGstProfileId: query.orgGstProfileId || undefined,
+        }),
+      );
     },
   );
 

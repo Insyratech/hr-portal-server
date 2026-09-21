@@ -20,7 +20,7 @@ import type {
 const ORG_ID = '00000000-0000-4000-8000-000000000020';
 const LOGO_BUCKET = 'finance-org-logos';
 const DOC_BUCKET = 'finance-vendor-docs';
-const MAX_GST_REGISTRATIONS = 3;
+const MAX_GST_REGISTRATIONS = 4;
 const MAX_LOGO_BYTES = 2 * 1024 * 1024;
 const MAX_DOC_BYTES = 10 * 1024 * 1024;
 const LOGO_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
@@ -119,6 +119,7 @@ function mapOfficer(row: Record<string, unknown>): FinanceOrgOfficer {
   return {
     id: row.id as string,
     organizationId: row.organization_id as string,
+    orgGstProfileId: (row.org_gst_profile_id as string | null) ?? null,
     role: row.role as FinanceOrgOfficer['role'],
     fullName: row.full_name as string,
     designation: (row.designation as string) ?? '',
@@ -626,16 +627,23 @@ export function createVendorRegistrationService(supabase: SupabaseClient) {
       return mapAddress(data as Record<string, unknown>);
     },
 
-    async listOfficers(actor: RequestUser): Promise<FinanceOrgOfficer[]> {
+    async listOfficers(
+      actor: RequestUser,
+      filters?: { orgGstProfileId?: string | null },
+    ): Promise<FinanceOrgOfficer[]> {
       if (!canManageFinanceOrg(actor)) {
         throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot view officers.', 403);
       }
-      const { data, error } = await supabase
+      let query = supabase
         .from('finance_org_officers')
         .select('*')
         .eq('organization_id', ORG_ID)
         .order('role')
         .order('full_name');
+      if (filters?.orgGstProfileId) {
+        query = query.eq('org_gst_profile_id', filters.orgGstProfileId);
+      }
+      const { data, error } = await query;
       if (error) throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to list officers.', 500);
       return ((data ?? []) as Record<string, unknown>[]).map(mapOfficer);
     },
@@ -648,10 +656,23 @@ export function createVendorRegistrationService(supabase: SupabaseClient) {
       if (!fullName) {
         throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Officer name is required.', 400);
       }
+      const orgGstProfileId = asNullableString(input.orgGstProfileId as string | null);
+      if (orgGstProfileId) {
+        const { data: profile } = await supabase
+          .from('finance_org_gst_profiles')
+          .select('id')
+          .eq('id', orgGstProfileId)
+          .eq('organization_id', ORG_ID)
+          .maybeSingle();
+        if (!profile) {
+          throw new AppError(API_ERROR_CODES.NOT_FOUND, 'GST registration not found for officer.', 404);
+        }
+      }
       const { data, error } = await supabase
         .from('finance_org_officers')
         .insert({
           organization_id: ORG_ID,
+          org_gst_profile_id: orgGstProfileId,
           role: (input.role as string) || 'other',
           full_name: fullName,
           designation: asString(input.designation),
@@ -669,7 +690,7 @@ export function createVendorRegistrationService(supabase: SupabaseClient) {
         action: 'finance_org_officer.create',
         entityType: 'finance_org_officer',
         entityId: data.id as string,
-        newValues: { fullName },
+        newValues: { fullName, orgGstProfileId },
         ...meta,
       });
       return mapOfficer(data as Record<string, unknown>);
@@ -686,6 +707,21 @@ export function createVendorRegistrationService(supabase: SupabaseClient) {
       if (input.email !== undefined) patch.email = asNullableString(input.email as string | null);
       if (input.phone !== undefined) patch.phone = asNullableString(input.phone as string | null);
       if (input.din !== undefined) patch.din = asNullableString(input.din as string | null);
+      if (input.orgGstProfileId !== undefined) {
+        const orgGstProfileId = asNullableString(input.orgGstProfileId as string | null);
+        if (orgGstProfileId) {
+          const { data: profile } = await supabase
+            .from('finance_org_gst_profiles')
+            .select('id')
+            .eq('id', orgGstProfileId)
+            .eq('organization_id', ORG_ID)
+            .maybeSingle();
+          if (!profile) {
+            throw new AppError(API_ERROR_CODES.NOT_FOUND, 'GST registration not found for officer.', 404);
+          }
+        }
+        patch.org_gst_profile_id = orgGstProfileId;
+      }
       const { data, error } = await supabase
         .from('finance_org_officers')
         .update(patch)
