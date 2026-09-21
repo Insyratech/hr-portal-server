@@ -25,6 +25,19 @@ import {
 
 type RequestMeta = { ipAddress?: string | null; userAgent?: string | null };
 
+async function loadSharedWeeklyUpdateIds(
+  supabase: SupabaseClient,
+  updateIds: string[],
+): Promise<Set<string>> {
+  const unique = [...new Set(updateIds.filter(Boolean))];
+  if (unique.length === 0) return new Set();
+  const { data } = await supabase
+    .from('weekly_ppt_share_items')
+    .select('update_id')
+    .in('update_id', unique);
+  return new Set((data ?? []).map((row) => row.update_id as string));
+}
+
 type UpdateRow = {
   id: string;
   employee_id: string;
@@ -47,7 +60,7 @@ type UpdateRow = {
   updated_at: string;
 };
 
-function mapUpdate(row: UpdateRow) {
+function mapUpdate(row: UpdateRow, sharedToGm = false) {
   const timing = readWeeklyPptTiming(row);
   return {
     id: row.id,
@@ -62,7 +75,9 @@ function mapUpdate(row: UpdateRow) {
     submittedAt: row.submitted_at,
     timing,
     late: timing === 'late',
-    fileAvailable: Boolean(row.storage_path),
+    /** Emp/CSO may view only until CSO shares the package with GM. */
+    fileAvailable: Boolean(row.storage_path) && !sharedToGm,
+    sharedToGm,
     fileRemovedAt: row.file_removed_at ?? null,
     fileRemovedReason: row.file_removed_reason ?? null,
     emailRecipient: row.email_recipient ?? null,
@@ -116,7 +131,15 @@ export function createWeeklyUpdatesService(supabase: SupabaseClient) {
         .limit(16);
       if (error) throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load weekly update history.', 500);
 
-      const history = ((historyRows ?? []) as UpdateRow[]).map(mapUpdate);
+      const historyRowsTyped = (historyRows ?? []) as UpdateRow[];
+      const sharedIds = await loadSharedWeeklyUpdateIds(
+        supabase,
+        [
+          ...historyRowsTyped.map((row) => row.id),
+          ...(current ? [current.id] : []),
+        ],
+      );
+      const history = historyRowsTyped.map((row) => mapUpdate(row, sharedIds.has(row.id)));
 
       const weeks: {
         weekStart: string;
@@ -153,7 +176,7 @@ export function createWeeklyUpdatesService(supabase: SupabaseClient) {
           deadlineLabel: `Sunday ${deadlineDate} 23:59 IST`,
           lastHourAfterLabel: `Sunday ${deadlineDate} ${WEEKLY_PPT_LAST_HOUR}:00 IST`,
         },
-        current: current ? mapUpdate(current) : null,
+        current: current ? mapUpdate(current, sharedIds.has(current.id)) : null,
         uploadsRemaining: current ? Math.max(0, WEEKLY_PPT_MAX_UPLOADS - current.upload_count) : WEEKLY_PPT_MAX_UPLOADS,
         maxUploads: WEEKLY_PPT_MAX_UPLOADS,
         maxBytes: WEEKLY_PPT_MAX_BYTES,
@@ -240,7 +263,7 @@ export function createWeeklyUpdatesService(supabase: SupabaseClient) {
         if (error || !data) {
           throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to replace weekly update.', 500);
         }
-        mapped = mapUpdate(data as UpdateRow);
+        mapped = mapUpdate(data as UpdateRow, (await loadSharedWeeklyUpdateIds(supabase, [data.id as string])).has(data.id as string));
       } else {
         const { data, error } = await supabase
           .from('weekly_work_updates')
@@ -263,7 +286,7 @@ export function createWeeklyUpdatesService(supabase: SupabaseClient) {
         if (error || !data) {
           throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to register weekly update.', 500);
         }
-        mapped = mapUpdate(data as UpdateRow);
+        mapped = mapUpdate(data as UpdateRow, false);
       }
 
       await writeAuditLog(supabase, {

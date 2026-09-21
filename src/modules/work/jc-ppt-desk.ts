@@ -41,8 +41,20 @@ type EventRow = {
 
 function mapJc(
   row: JcRow,
-  extras?: { employeeName?: string; transferredByName?: string | null; consumedByName?: string | null },
+  extras?: {
+    employeeName?: string;
+    transferredByName?: string | null;
+    consumedByName?: string | null;
+    /** GM inbox still needs the file after transfer; emp/CSO do not. */
+    audience?: 'cso' | 'gm';
+  },
 ) {
+  const audience = extras?.audience ?? 'cso';
+  const hasFile = Boolean(row.storage_path);
+  const fileAvailable =
+    audience === 'gm'
+      ? hasFile && row.status === 'with_gm'
+      : hasFile && row.status === 'uploaded';
   return {
     id: row.id,
     employeeId: row.employee_id,
@@ -52,7 +64,7 @@ function mapJc(
     contentType: row.content_type,
     sizeBytes: row.size_bytes,
     status: row.status,
-    fileAvailable: Boolean(row.storage_path) && (row.status === 'uploaded' || row.status === 'with_gm'),
+    fileAvailable,
     uploadedAt: row.uploaded_at,
     transferredAt: row.transferred_at,
     transferredBy: row.transferred_by,
@@ -316,6 +328,7 @@ export function createJcPptDeskService(supabase: SupabaseClient) {
         },
         pending: pending.map((row) =>
           mapJc(row, {
+            audience: 'cso',
             employeeName: nameById.get(row.employee_id) ?? 'Employee',
             transferredByName: row.transferred_by ? nameById.get(row.transferred_by) ?? null : null,
             consumedByName: row.consumed_by ? nameById.get(row.consumed_by) ?? null : null,
@@ -323,6 +336,7 @@ export function createJcPptDeskService(supabase: SupabaseClient) {
         ),
         withGm: withGm.map((row) =>
           mapJc(row, {
+            audience: 'cso',
             employeeName: nameById.get(row.employee_id) ?? 'Employee',
             transferredByName: row.transferred_by ? nameById.get(row.transferred_by) ?? null : null,
             consumedByName: row.consumed_by ? nameById.get(row.consumed_by) ?? null : null,
@@ -330,6 +344,7 @@ export function createJcPptDeskService(supabase: SupabaseClient) {
         ),
         history: history.map((row) =>
           mapJc(row, {
+            audience: 'cso',
             employeeName: nameById.get(row.employee_id) ?? 'Employee',
             transferredByName: row.transferred_by ? nameById.get(row.transferred_by) ?? null : null,
             consumedByName: row.consumed_by ? nameById.get(row.consumed_by) ?? null : null,
@@ -370,6 +385,7 @@ export function createJcPptDeskService(supabase: SupabaseClient) {
         },
         inbox: inbox.map((row) =>
           mapJc(row, {
+            audience: 'gm',
             employeeName: nameById.get(row.employee_id) ?? 'Employee',
             transferredByName: row.transferred_by ? nameById.get(row.transferred_by) ?? null : null,
             consumedByName: row.consumed_by ? nameById.get(row.consumed_by) ?? null : null,
@@ -377,6 +393,7 @@ export function createJcPptDeskService(supabase: SupabaseClient) {
         ),
         history: history.map((row) =>
           mapJc(row, {
+            audience: 'gm',
             employeeName: nameById.get(row.employee_id) ?? 'Employee',
             transferredByName: row.transferred_by ? nameById.get(row.transferred_by) ?? null : null,
             consumedByName: row.consumed_by ? nameById.get(row.consumed_by) ?? null : null,
@@ -473,10 +490,13 @@ export function createJcPptDeskService(supabase: SupabaseClient) {
           404,
         );
       }
-      if (isCsoDomainOwner(actor) && row.status !== 'uploaded' && row.status !== 'with_gm') {
+      // After transfer to GM, CSO keeps history only — no view/download.
+      if (isCsoDomainOwner(actor) && row.status !== 'uploaded') {
         throw new AppError(
           API_ERROR_CODES.NOT_FOUND,
-          'File is no longer available. Use audit history for the record.',
+          row.status === 'with_gm'
+            ? 'This JC PPT was transferred to General Manager. View is no longer available; history remains.'
+            : 'File is no longer available. Use audit history for the record.',
           404,
         );
       }
@@ -484,7 +504,7 @@ export function createJcPptDeskService(supabase: SupabaseClient) {
         throw new AppError(API_ERROR_CODES.NOT_FOUND, 'File is no longer available.', 404);
       }
 
-      // CSO preview does not consume. GM should use download/email endpoints that remove the file.
+      // CSO view does not consume. GM should use download/email endpoints that remove the file.
       if (isGmDomainOwner(actor) && !isCsoDomainOwner(actor)) {
         throw new AppError(
           API_ERROR_CODES.FORBIDDEN,

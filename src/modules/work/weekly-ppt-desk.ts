@@ -23,6 +23,28 @@ type RequestMeta = { ipAddress?: string | null; userAgent?: string | null };
 
 type FileRemovedReason = 'downloaded' | 'emailed' | 'deleted';
 
+async function loadSharedWeeklyUpdateIds(
+  supabase: SupabaseClient,
+  updateIds: string[],
+): Promise<Set<string>> {
+  const unique = [...new Set(updateIds.filter(Boolean))];
+  if (unique.length === 0) return new Set();
+  const { data } = await supabase
+    .from('weekly_ppt_share_items')
+    .select('update_id')
+    .in('update_id', unique);
+  return new Set((data ?? []).map((row) => row.update_id as string));
+}
+
+async function isWeeklyUpdateSharedToGm(supabase: SupabaseClient, updateId: string): Promise<boolean> {
+  const { data } = await supabase
+    .from('weekly_ppt_share_items')
+    .select('update_id')
+    .eq('update_id', updateId)
+    .limit(1);
+  return (data ?? []).length > 0;
+}
+
 type UpdateRow = {
   id: string;
   employee_id: string;
@@ -45,8 +67,13 @@ type UpdateRow = {
   updated_at: string;
 };
 
-function mapUpdate(row: UpdateRow) {
+function mapUpdate(
+  row: UpdateRow,
+  opts?: { sharedToGm?: boolean; audience?: 'desk' | 'gm' },
+) {
   const timing = readWeeklyPptTiming(row);
+  const sharedToGm = opts?.sharedToGm ?? false;
+  const audience = opts?.audience ?? 'desk';
   return {
     id: row.id,
     employeeId: row.employee_id,
@@ -60,7 +87,10 @@ function mapUpdate(row: UpdateRow) {
     submittedAt: row.submitted_at,
     timing,
     late: timing === 'late',
-    fileAvailable: Boolean(row.storage_path),
+    /** Desk (emp/CSO): hide after share. GM: available while storage remains. */
+    fileAvailable:
+      audience === 'gm' ? Boolean(row.storage_path) : Boolean(row.storage_path) && !sharedToGm,
+    sharedToGm,
     fileRemovedAt: row.file_removed_at,
     fileRemovedBy: row.file_removed_by,
     fileRemovedReason: row.file_removed_reason,
@@ -227,11 +257,18 @@ export function createWeeklyPptDeskService(supabase: SupabaseClient) {
         .select('*')
         .eq('week_start', week.start);
       if (error) throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load weekly updates.', 500);
-      const byEmployee = new Map(((updates ?? []) as UpdateRow[]).map((row) => [row.employee_id, row]));
+      const updateRowsTyped = (updates ?? []) as UpdateRow[];
+      const sharedIds = await loadSharedWeeklyUpdateIds(
+        supabase,
+        updateRowsTyped.map((row) => row.id),
+      );
+      const byEmployee = new Map(updateRowsTyped.map((row) => [row.employee_id, row]));
 
       const people = loop.map((person) => {
         const row = byEmployee.get(person.id) ?? null;
-        const update = row ? mapUpdate(row) : null;
+        const update = row
+          ? mapUpdate(row, { sharedToGm: sharedIds.has(row.id), audience: 'desk' })
+          : null;
         const status: WeeklyPptGlanceStatus = weeklyPptGlanceStatus({
           timing: update?.timing ?? null,
           todayIso: today,
@@ -495,11 +532,17 @@ export function createWeeklyPptDeskService(supabase: SupabaseClient) {
         );
       }
 
-      if (data.employee_id === actor.employeeId) {
-        return signedDownload(data.storage_path as string, data.system_file_name as string);
-      }
+      const isOwner = data.employee_id === actor.employeeId;
+      const isCso = isCsoDomainOwner(actor) && actor.permissions.includes(PERMISSIONS.WORK_VIEW);
 
-      if (isCsoDomainOwner(actor) && actor.permissions.includes(PERMISSIONS.WORK_VIEW)) {
+      if (isOwner || isCso) {
+        if (await isWeeklyUpdateSharedToGm(supabase, updateId)) {
+          throw new AppError(
+            API_ERROR_CODES.NOT_FOUND,
+            'This weekly PPT was shared with General Manager. View is no longer available; history remains on this page.',
+            404,
+          );
+        }
         return signedDownload(data.storage_path as string, data.system_file_name as string);
       }
 

@@ -56,7 +56,8 @@ function mapJc(row: JcRow, extras?: { employeeName?: string; transferredByName?:
     contentType: row.content_type,
     sizeBytes: row.size_bytes,
     status: row.status,
-    fileAvailable: Boolean(row.storage_path) && (row.status === 'uploaded' || row.status === 'with_gm'),
+    /** Employee/CSO may view only while pending with CSO (before transfer to GM). */
+    fileAvailable: Boolean(row.storage_path) && row.status === 'uploaded',
     uploadedAt: row.uploaded_at,
     transferredAt: row.transferred_at,
     transferredBy: row.transferred_by,
@@ -313,10 +314,12 @@ export function createJcPptsService(supabase: SupabaseClient) {
       if (data.employee_id !== actor.employeeId) {
         throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot download this JC PPT.', 403);
       }
-      if (!data.storage_path || (data.status !== 'uploaded' && data.status !== 'with_gm')) {
+      if (!data.storage_path || data.status !== 'uploaded') {
         throw new AppError(
           API_ERROR_CODES.NOT_FOUND,
-          'File is no longer available. Audit history remains on this page.',
+          data.status === 'with_gm'
+            ? 'This JC PPT was transferred to General Manager. View is no longer available; history remains on this page.'
+            : 'File is no longer available. Audit history remains on this page.',
           404,
         );
       }
