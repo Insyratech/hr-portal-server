@@ -46,6 +46,7 @@ const gstProfileBody = Type.Object({
   registrationType: Type.Optional(registrationType),
   isDefault: Type.Optional(Type.Boolean()),
   active: Type.Optional(Type.Boolean()),
+  fiscalYearStartMonth: Type.Optional(Type.Integer({ minimum: 1, maximum: 12 })),
 });
 
 const gstProfileCreateBody = Type.Object({
@@ -67,6 +68,7 @@ const gstProfileCreateBody = Type.Object({
   registrationType: Type.Optional(registrationType),
   isDefault: Type.Optional(Type.Boolean()),
   active: Type.Optional(Type.Boolean()),
+  fiscalYearStartMonth: Type.Optional(Type.Integer({ minimum: 1, maximum: 12 })),
 });
 
 const addressBody = Type.Object({
@@ -292,6 +294,15 @@ export async function registerFinanceVendorRegistrationRoutes(app: FastifyInstan
       requireDb(app, request);
       const { id } = request.params as { id: string };
       return ok(await svc().updateAddress(request.user!, id, request.body as Record<string, unknown>, metaOf(request)));
+    },
+  );
+
+  app.get(
+    '/api/v1/finance/org/employee-options',
+    { preHandler: [requirePermission(...orgPerms)] },
+    async (request) => {
+      requireDb(app, request);
+      return ok(await svc().listEmployeeOptions(request.user!));
     },
   );
 

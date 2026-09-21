@@ -6,6 +6,7 @@ import { writeAuditLog } from '../audit/write-audit-log';
 import { canManageFinanceOrg, canManageParties, type RequestMeta } from './access';
 import { normalizeGstin, parseGstin } from './gstin-utils';
 import type {
+  FinanceEmployeeOption,
   FinanceOrgAddress,
   FinanceOrgGstProfile,
   FinanceOrgOfficer,
@@ -113,6 +114,12 @@ function mapAddress(row: Record<string, unknown>): FinanceOrgAddress {
     createdAt: row.created_at as string,
     updatedAt: row.updated_at as string,
   };
+}
+
+function officerRoleLabel(role: string): string {
+  if (role === 'ceo') return 'CEO';
+  if (role === 'director') return 'Director';
+  return 'Other';
 }
 
 function mapOfficer(row: Record<string, unknown>): FinanceOrgOfficer {
@@ -383,20 +390,34 @@ export function createVendorRegistrationService(supabase: SupabaseClient) {
         throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, error?.message ?? 'Failed to create GST registration.', 500);
       }
       if (isDefault) {
+        const orgPatch: Record<string, unknown> = {
+          gstin,
+          legal_name: legalName,
+          trade_name: tradeName,
+          state_code: stateCode,
+          state_name: stateName,
+          address_line1: addressLine1,
+          address_line2: asString(input.addressLine2),
+          city,
+          postal_code: asString(input.postalCode),
+          gst_registered: true,
+        };
+        if (input.fiscalYearStartMonth !== undefined) {
+          const month = Number(input.fiscalYearStartMonth);
+          if (!Number.isInteger(month) || month < 1 || month > 12) {
+            throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Fiscal year start month must be 1–12.', 400);
+          }
+          orgPatch.fiscal_year_start_month = month;
+        }
+        await supabase.from('finance_organizations').update(orgPatch).eq('id', ORG_ID);
+      } else if (input.fiscalYearStartMonth !== undefined) {
+        const month = Number(input.fiscalYearStartMonth);
+        if (!Number.isInteger(month) || month < 1 || month > 12) {
+          throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Fiscal year start month must be 1–12.', 400);
+        }
         await supabase
           .from('finance_organizations')
-          .update({
-            gstin,
-            legal_name: legalName,
-            trade_name: tradeName,
-            state_code: stateCode,
-            state_name: stateName,
-            address_line1: addressLine1,
-            address_line2: asString(input.addressLine2),
-            city,
-            postal_code: asString(input.postalCode),
-            gst_registered: true,
-          })
+          .update({ fiscal_year_start_month: month })
           .eq('id', ORG_ID);
       }
       await writeAuditLog(supabase, {
@@ -476,22 +497,28 @@ export function createVendorRegistrationService(supabase: SupabaseClient) {
         throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, error.message || 'Failed to update GST registration.', 500);
       }
       if (!data) throw new AppError(API_ERROR_CODES.NOT_FOUND, 'GST registration not found.', 404);
+      const orgPatch: Record<string, unknown> = {};
       if (data.is_default) {
-        await supabase
-          .from('finance_organizations')
-          .update({
-            gstin: data.gstin,
-            legal_name: data.legal_name,
-            trade_name: data.trade_name,
-            state_code: data.state_code,
-            state_name: data.state_name,
-            address_line1: data.address_line1,
-            address_line2: data.address_line2,
-            city: data.city,
-            postal_code: data.postal_code,
-            gst_registered: true,
-          })
-          .eq('id', ORG_ID);
+        orgPatch.gstin = data.gstin;
+        orgPatch.legal_name = data.legal_name;
+        orgPatch.trade_name = data.trade_name;
+        orgPatch.state_code = data.state_code;
+        orgPatch.state_name = data.state_name;
+        orgPatch.address_line1 = data.address_line1;
+        orgPatch.address_line2 = data.address_line2;
+        orgPatch.city = data.city;
+        orgPatch.postal_code = data.postal_code;
+        orgPatch.gst_registered = true;
+      }
+      if (input.fiscalYearStartMonth !== undefined) {
+        const month = Number(input.fiscalYearStartMonth);
+        if (!Number.isInteger(month) || month < 1 || month > 12) {
+          throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Fiscal year start month must be 1–12.', 400);
+        }
+        orgPatch.fiscal_year_start_month = month;
+      }
+      if (Object.keys(orgPatch).length > 0) {
+        await supabase.from('finance_organizations').update(orgPatch).eq('id', ORG_ID);
       }
       await writeAuditLog(supabase, {
         actorId: actor.employeeId,
@@ -627,6 +654,35 @@ export function createVendorRegistrationService(supabase: SupabaseClient) {
       return mapAddress(data as Record<string, unknown>);
     },
 
+    async listEmployeeOptions(actor: RequestUser): Promise<FinanceEmployeeOption[]> {
+      if (!canManageFinanceOrg(actor)) {
+        throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot view employee options.', 403);
+      }
+      const { data, error } = await supabase
+        .from('employees')
+        .select('id, employee_code, full_name, email, phone, designations (name)')
+        .eq('status', 'active')
+        .is('deleted_at', null)
+        .order('full_name');
+      if (error) {
+        throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to list employees.', 500);
+      }
+      return ((data ?? []) as Record<string, unknown>[]).map((row) => {
+        const designations = row.designations as { name: string } | { name: string }[] | null;
+        const designationName = Array.isArray(designations)
+          ? (designations[0]?.name ?? null)
+          : (designations?.name ?? null);
+        return {
+          id: row.id as string,
+          employeeCode: (row.employee_code as string) ?? '',
+          fullName: (row.full_name as string) ?? '',
+          email: (row.email as string) ?? '',
+          phone: (row.phone as string | null) ?? null,
+          designationName,
+        };
+      });
+    },
+
     async listOfficers(
       actor: RequestUser,
       filters?: { orgGstProfileId?: string | null },
@@ -668,14 +724,16 @@ export function createVendorRegistrationService(supabase: SupabaseClient) {
           throw new AppError(API_ERROR_CODES.NOT_FOUND, 'GST registration not found for officer.', 404);
         }
       }
+      const role = (input.role as string) || 'other';
+      const designation = asString(input.designation) || officerRoleLabel(role);
       const { data, error } = await supabase
         .from('finance_org_officers')
         .insert({
           organization_id: ORG_ID,
           org_gst_profile_id: orgGstProfileId,
-          role: (input.role as string) || 'other',
+          role,
           full_name: fullName,
-          designation: asString(input.designation),
+          designation,
           email: asNullableString(input.email as string | null),
           phone: asNullableString(input.phone as string | null),
           din: asNullableString(input.din as string | null),
