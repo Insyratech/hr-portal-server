@@ -15,6 +15,7 @@ const CONTACT_ROLES = [
   ROLE_CODES.CSO,
   ROLE_CODES.GENERAL_MANAGER,
   ROLE_CODES.FINANCE_MANAGER,
+  ROLE_CODES.INVENTORY_MANAGER,
   ROLE_CODES.SUPER_ADMIN,
 ] as const;
 
@@ -25,6 +26,7 @@ const ROLE_LABELS: Record<ContactRole, string> = {
   CSO: 'CSO',
   GENERAL_MANAGER: 'General Manager',
   FINANCE_MANAGER: 'Finance Manager',
+  INVENTORY_MANAGER: 'Inventory Manager',
   SUPER_ADMIN: 'Super Admin',
 };
 
@@ -39,6 +41,7 @@ function allowedContactRoles(actorRoles: string[]): ContactRole[] {
     ROLE_CODES.CSO,
     ROLE_CODES.GENERAL_MANAGER,
     ROLE_CODES.FINANCE_MANAGER,
+    ROLE_CODES.INVENTORY_MANAGER,
   ];
   if (actorRoles.includes(ROLE_CODES.SUPER_ADMIN) || actorRoles.includes(ROLE_CODES.GENERAL_MANAGER)) {
     targets.push(ROLE_CODES.SUPER_ADMIN);

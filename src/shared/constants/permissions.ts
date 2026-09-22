@@ -62,6 +62,18 @@ export const PERMISSIONS = {
   FINANCE_INTEGRATIONS_VIEW: 'finance.integrations.view',
   FINANCE_INTEGRATIONS_MANAGE: 'finance.integrations.manage',
   FINANCE_REPORTS_VIEW: 'finance.reports.view',
+  INVENTORY_OVERVIEW_VIEW: 'inventory.overview.view',
+  INVENTORY_LOCATIONS_MANAGE: 'inventory.locations.manage',
+  INVENTORY_CATEGORIES_MANAGE: 'inventory.categories.manage',
+  INVENTORY_CATALOG_MANAGE: 'inventory.catalog.manage',
+  INVENTORY_AUTHORIZATIONS_MANAGE: 'inventory.authorizations.manage',
+  INVENTORY_LOTS_MANAGE: 'inventory.lots.manage',
+  INVENTORY_LOTS_ADJUST: 'inventory.lots.adjust',
+  INVENTORY_PREP_MANAGE: 'inventory.prep.manage',
+  INVENTORY_PLASTIC_MANAGE: 'inventory.plastic.manage',
+  INVENTORY_PLASTIC_ADJUST: 'inventory.plastic.adjust',
+  INVENTORY_ALERTS_VIEW: 'inventory.alerts.view',
+  INVENTORY_REPORTS_VIEW: 'inventory.reports.view',
 } as const;
 
 export type Permission = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
@@ -72,6 +84,7 @@ export const ROLE_CODES = {
   HR_MANAGER: 'HR_MANAGER',
   CSO: 'CSO',
   FINANCE_MANAGER: 'FINANCE_MANAGER',
+  INVENTORY_MANAGER: 'INVENTORY_MANAGER',
   EMPLOYEE: 'EMPLOYEE',
   /**
    * @deprecated Renamed to GENERAL_MANAGER in migration 027.
@@ -89,9 +102,10 @@ export const SA_ASSIGNABLE_ROLE_CODES: readonly RoleCode[] = [
   ROLE_CODES.GENERAL_MANAGER,
   ROLE_CODES.CSO,
   ROLE_CODES.FINANCE_MANAGER,
+  ROLE_CODES.INVENTORY_MANAGER,
 ];
 
-/** Fixed role UUIDs (must match migrations 001 + 027). */
+/** Fixed role UUIDs (must match migrations 001 + 027 + 071). */
 export const ROLE_IDS = {
   SUPER_ADMIN: '00000000-0000-4000-8000-000000000001',
   GENERAL_MANAGER: '00000000-0000-4000-8000-000000000002',
@@ -99,4 +113,5 @@ export const ROLE_IDS = {
   HR_MANAGER: '00000000-0000-4000-8000-000000000004',
   CSO: '00000000-0000-4000-8000-000000000005',
   FINANCE_MANAGER: '00000000-0000-4000-8000-000000000006',
+  INVENTORY_MANAGER: '00000000-0000-4000-8000-000000000007',
 } as const;

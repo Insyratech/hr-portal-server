@@ -28,6 +28,10 @@ export function isFinanceManager(actor: RequestUser): boolean {
   return actor.roles.includes(ROLE_CODES.FINANCE_MANAGER) && !isSuperAdmin(actor);
 }
 
+export function isInventoryManager(actor: RequestUser): boolean {
+  return actor.roles.includes(ROLE_CODES.INVENTORY_MANAGER) && !isSuperAdmin(actor);
+}
+
 /**
  * @deprecated Use isGeneralManager. Former ADMIN role was renamed to GENERAL_MANAGER.
  */

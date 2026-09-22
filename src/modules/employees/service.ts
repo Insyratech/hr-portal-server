@@ -41,6 +41,7 @@ const MANAGERIAL_ROLE_CODES: ReadonlySet<string> = new Set([
   ROLE_CODES.GENERAL_MANAGER,
   ROLE_CODES.CSO,
   ROLE_CODES.FINANCE_MANAGER,
+  ROLE_CODES.INVENTORY_MANAGER,
   ROLE_CODES.ADMIN,
 ]);
 
@@ -58,6 +59,8 @@ function managerialRoleLabel(code: string): string {
       return 'Chief Scientific Officer';
     case ROLE_CODES.FINANCE_MANAGER:
       return 'Finance Manager';
+    case ROLE_CODES.INVENTORY_MANAGER:
+      return 'Inventory Manager';
     default:
       return code;
   }

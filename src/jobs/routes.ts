@@ -15,6 +15,7 @@ import {
 import { runWorkRetentionPurge } from '../modules/work/retention-purge';
 import { runWorkReminderJobs } from './scheduler';
 import { runAnnualLeaveAllocation, runDailyReminders } from './leave-jobs';
+import { createInventoryAlertsService } from '../modules/inventory/alerts-service';
 
 function requireCronSecret(env: Env) {
   return async (request: FastifyRequest): Promise<void> => {
@@ -84,5 +85,12 @@ export async function registerJobRoutes(app: FastifyInstance, env: Env): Promise
     const body = (request.body ?? {}) as { period?: string };
     const period = body.period && /^\d{4}$/.test(body.period) ? body.period : undefined;
     return ok(await runAnnualLeaveAllocation(supabase, period));
+  });
+
+  app.post('/api/v1/jobs/inventory/alerts/daily', { preHandler: [cronAuth] }, async (request) => {
+    const supabase = requireSupabase(app.supabase);
+    const body = (request.body ?? {}) as { date?: string };
+    const date = body.date && /^\d{4}-\d{2}-\d{2}$/.test(body.date) ? body.date : undefined;
+    return ok(await createInventoryAlertsService(supabase).runDailyAlerts(date));
   });
 }

@@ -4,6 +4,14 @@ import { AppError } from './errors/app-error';
 export const UPLOAD_RATE_WINDOW_MS = 10 * 60 * 1000;
 export const UPLOAD_RATE_MAX = 10;
 
+/** Public inventory kiosk issue POSTs — per IP. */
+export const INVENTORY_SCAN_RATE_WINDOW_MS = 5 * 60 * 1000;
+export const INVENTORY_SCAN_RATE_MAX = 60;
+
+/** Extra guard per IP + token path (stops hammering one label). */
+export const INVENTORY_SCAN_TOKEN_RATE_WINDOW_MS = 60 * 1000;
+export const INVENTORY_SCAN_TOKEN_RATE_MAX = 20;
+
 export type RateWindow = { count: number; resetAt: number };
 
 export function hitRateLimit(

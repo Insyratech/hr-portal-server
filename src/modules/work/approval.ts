@@ -12,6 +12,7 @@ export function skipsWorkApprovalLoop(roles: readonly string[]): boolean {
   if (roles.includes(ROLE_CODES.HR_MANAGER)) return true;
   if (roles.includes(ROLE_CODES.GENERAL_MANAGER) || roles.includes(ROLE_CODES.ADMIN)) return true;
   if (roles.includes(ROLE_CODES.FINANCE_MANAGER)) return true;
+  if (roles.includes(ROLE_CODES.INVENTORY_MANAGER)) return true;
   return false;
 }
 

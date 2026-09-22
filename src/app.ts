@@ -29,12 +29,14 @@ import { registerFinanceSalesRoutes } from './modules/finance/sales-routes';
 import { registerFinanceVendorRegistrationRoutes } from './modules/finance/vendor-registration-routes';
 import { registerFinanceRoutes } from './modules/finance/routes';
 import { registerFaqRoutes } from './modules/faq/routes';
+import { registerInventoryRoutes } from './modules/inventory/routes';
 import { registerPayrollRoutes } from './modules/payroll/routes';
 import { registerReportRoutes } from './modules/reports/routes';
 import { authPlugin } from './plugins/auth';
 import { errorHandlerPlugin } from './plugins/error-handler';
 import { supabasePlugin } from './plugins/supabase';
 import { uploadRateLimitPlugin } from './plugins/upload-rate-limit';
+import { inventoryScanRateLimitPlugin } from './plugins/inventory-scan-rate-limit';
 
 const HEALTH_RESPONSE = Type.Object({
   success: Type.Literal(true),
@@ -61,6 +63,7 @@ export async function buildApp(env: Env): Promise<FastifyInstance> {
   await app.register(supabasePlugin, env);
   await app.register(authPlugin, env);
   await app.register(uploadRateLimitPlugin);
+  await app.register(inventoryScanRateLimitPlugin);
 
   app.get(
     '/health',
@@ -120,6 +123,7 @@ export async function buildApp(env: Env): Promise<FastifyInstance> {
   await registerFinanceIntegrationsRoutes(app);
   await registerFinanceReportsRoutes(app);
   await registerFinanceVendorRegistrationRoutes(app);
+  await registerInventoryRoutes(app);
   await registerReportRoutes(app);
   await registerJobRoutes(app, env);
 

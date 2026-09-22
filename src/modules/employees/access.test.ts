@@ -54,6 +54,7 @@ describe('employee access', () => {
     expect(() => assertCanAssignRoles(superAdmin, [ROLE_CODES.GENERAL_MANAGER])).not.toThrow();
     expect(() => assertCanAssignRoles(superAdmin, [ROLE_CODES.CSO])).not.toThrow();
     expect(() => assertCanAssignRoles(superAdmin, [ROLE_CODES.FINANCE_MANAGER])).not.toThrow();
+    expect(() => assertCanAssignRoles(superAdmin, [ROLE_CODES.INVENTORY_MANAGER])).not.toThrow();
     expect(() => assertCanAssignRoles(superAdmin, [ROLE_CODES.SUPER_ADMIN])).toThrow(
       expect.objectContaining({ code: API_ERROR_CODES.FORBIDDEN }),
     );
