@@ -653,19 +653,6 @@ export function createInventoryLotsService(supabase: SupabaseClient) {
         throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Select an active employee.', 400);
       }
 
-      const { data: auth } = await supabase
-        .from('inventory_authorizations')
-        .select('can_usage')
-        .eq('employee_id', input.employeeId)
-        .maybeSingle();
-      if (!auth?.can_usage) {
-        throw new AppError(
-          API_ERROR_CODES.FORBIDDEN,
-          'Not authorized — ask Inventory Manager.',
-          403,
-        );
-      }
-
       const { data: rpcRows, error: rpcError } = await supabase.rpc('inventory_issue_lot', {
         p_lot_id: lotRow.id,
         p_qty: qty,

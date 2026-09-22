@@ -892,7 +892,7 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
     },
   );
 
-  // Public kiosk — no JWT. Capability via QR token + employee authorization check.
+  // Public kiosk — no JWT. Any active employee may submit usage after picking their name.
   // Token may be a measured lot or a plastic station.
   app.get('/api/v1/inventory/public/scan/:token', async (request) => {
     requireDbOnly(app);
