@@ -1,6 +1,6 @@
 import { loadEnv } from '../config/env';
 
-/** Public HR Portal origin used in emails and auth redirects (no trailing slash). */
+/** Public ERP Portal origin used in emails and auth redirects (no trailing slash). */
 export function portalPublicBase(): string {
   const env = loadEnv();
   if (env.PORTAL_PUBLIC_URL) {

@@ -685,7 +685,7 @@ export function createLeaveApplicationService(supabase: SupabaseClient) {
               `${employee.full_name as string} applied for leave and named you for handover.`,
               combineLeadWithHandover
                 ? 'Accepting also completes the project-lead step because you lead this project.'
-                : 'Review and accept the handover in HR Portal before the next approval step.',
+                : 'Review and accept the handover in ERP Portal before the next approval step.',
             ],
             cta: { label: 'Review and accept', href: portalUrl(`/leave/handover/${createdId}`) },
           });
@@ -966,7 +966,7 @@ export function createLeaveApplicationService(supabase: SupabaseClient) {
               `${employee.full_name as string} updated an existing leave request and named you for handover.`,
               combineLeadWithHandover
                 ? 'Accepting also completes the project-lead step because you lead this project.'
-                : 'Review and accept the handover in HR Portal before the next approval step.',
+                : 'Review and accept the handover in ERP Portal before the next approval step.',
             ],
             cta: { label: 'Review and accept', href: portalUrl(`/leave/handover/${id}`) },
           });

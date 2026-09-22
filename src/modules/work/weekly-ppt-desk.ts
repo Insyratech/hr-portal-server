@@ -179,8 +179,8 @@ export function createWeeklyPptDeskService(supabase: SupabaseClient) {
         const mail = await sendMail({
           to: [emailRecipient],
           subject: `Weekly PPT: ${fileName}`,
-          text: `Attached is the weekly work-update PowerPoint "${fileName}" from the HR Portal.`,
-          html: `<p>Attached is the weekly work-update PowerPoint <strong>${fileName}</strong> from the HR Portal.</p>`,
+          text: `Attached is the weekly work-update PowerPoint "${fileName}" from the ERP Portal.`,
+          html: `<p>Attached is the weekly work-update PowerPoint <strong>${fileName}</strong> from the ERP Portal.</p>`,
           attachments: [{ name: fileName, content: Buffer.from(bytes!).toString('base64') }],
         });
         if (!mail.sent) {

@@ -188,7 +188,7 @@ export async function notifyStaff(
         greeting: `Hi ${person.fullName},`,
         paragraphs: input.paragraphs,
         details: input.details,
-        cta: { label: input.ctaLabel ?? 'Open HR Portal', href },
+        cta: { label: input.ctaLabel ?? 'Open ERP Portal', href },
       });
       if (mail.sent) {
         result.mailed += 1;

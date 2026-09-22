@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { renderPortalEmail } from './email-layout';
+import { PORTAL_BRAND, PORTAL_BRAND_MARK, renderPortalEmail } from './email-layout';
 
 describe('renderPortalEmail', () => {
   it('builds a black-and-white HTML card with a plain-text portal CTA', () => {
@@ -7,11 +7,13 @@ describe('renderPortalEmail', () => {
       eyebrow: 'Profile',
       title: 'Your profile was updated',
       greeting: 'Hi Sandip,',
-      paragraphs: ['An administrator updated your HR Portal profile.'],
+      paragraphs: ['An administrator updated your ERP Portal profile.'],
       cta: { label: 'Sign in', href: 'http://localhost:3000/login' },
     });
 
-    expect(html).toContain('HR PORTAL');
+    expect(html).toContain(PORTAL_BRAND_MARK);
+    expect(html).toContain(`This message was sent by ${PORTAL_BRAND}.`);
+    expect(html).not.toContain('HR PORTAL');
     expect(html).toContain('#111111');
     expect(html).toContain('#ffffff');
     expect(html).toContain('Sign in');

@@ -4,6 +4,10 @@ const INK = '#111111';
 const MUTED = '#737373';
 const BORDER = '#d4d4d4';
 
+/** Product brand in outbound mail chrome — keep aligned with Client / Brevo sender. */
+export const PORTAL_BRAND = 'ERP Portal';
+export const PORTAL_BRAND_MARK = 'ERP PORTAL';
+
 export type PortalMailContent = {
   eyebrow?: string;
   title: string;
@@ -78,7 +82,7 @@ function ctaBlock(cta: { label: string; href: string }): string {
 }
 
 export function renderPortalEmail(content: PortalMailContent): { html: string; text: string } {
-  const eyebrow = escapeHtml((content.eyebrow ?? 'HR PORTAL').toUpperCase());
+  const eyebrow = escapeHtml((content.eyebrow ?? PORTAL_BRAND).toUpperCase());
   const title = escapeHtml(content.title);
   const greeting = content.greeting ? `<p style="margin:0 0 16px;font-size:16px;line-height:1.5;color:${INK};">${escapeHtml(content.greeting)}</p>` : '';
   const body = content.paragraphs
@@ -95,6 +99,8 @@ export function renderPortalEmail(content: PortalMailContent): { html: string; t
       </table>`
     : '';
   const cta = content.cta ? ctaBlock(content.cta) : '';
+  const brandMark = escapeHtml(PORTAL_BRAND_MARK);
+  const brandName = escapeHtml(PORTAL_BRAND);
 
   const html = `<!DOCTYPE html>
 <html lang="en">
@@ -111,7 +117,7 @@ export function renderPortalEmail(content: PortalMailContent): { html: string; t
         <table role="presentation" width="560" cellpadding="0" cellspacing="0" style="width:100%;max-width:560px;background:${WHITE};border:1px solid ${BORDER};box-shadow:0 1px 2px rgba(0,0,0,0.04);">
           <tr>
             <td style="background:${INK};padding:20px 32px;">
-              <p style="margin:0;font-size:11px;letter-spacing:0.18em;text-transform:uppercase;color:${WHITE};">HR PORTAL</p>
+              <p style="margin:0;font-size:11px;letter-spacing:0.18em;text-transform:uppercase;color:${WHITE};">${brandMark}</p>
             </td>
           </tr>
           <tr>
@@ -126,7 +132,7 @@ export function renderPortalEmail(content: PortalMailContent): { html: string; t
           </tr>
           <tr>
             <td style="padding:16px 32px 28px;border-top:1px solid ${BORDER};">
-              <p style="margin:0;font-size:12px;line-height:1.5;color:${MUTED};">This message was sent by HR Portal. Do not reply to this email.</p>
+              <p style="margin:0;font-size:12px;line-height:1.5;color:${MUTED};">This message was sent by ${brandName}. Do not reply to this email.</p>
             </td>
           </tr>
         </table>

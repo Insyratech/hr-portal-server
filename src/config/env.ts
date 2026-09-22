@@ -89,7 +89,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     WORK_CRON_ENABLED: readFlag(source.WORK_CRON_ENABLED, true),
     BREVO_API_KEY: source.BREVO_API_KEY ?? '',
     BREVO_SENDER_EMAIL: source.BREVO_SENDER_EMAIL ?? '',
-    BREVO_SENDER_NAME: source.BREVO_SENDER_NAME ?? 'HR Portal',
+    BREVO_SENDER_NAME: source.BREVO_SENDER_NAME ?? 'ERP Portal',
     VAPID_PUBLIC_KEY: source.VAPID_PUBLIC_KEY ?? '',
     VAPID_PRIVATE_KEY: source.VAPID_PRIVATE_KEY ?? '',
     VAPID_SUBJECT: source.VAPID_SUBJECT ?? '',

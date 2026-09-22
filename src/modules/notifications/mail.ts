@@ -1,5 +1,5 @@
 import { loadEnv } from '../../config/env';
-import { renderPortalEmail, type PortalMailContent } from './email-layout';
+import { PORTAL_BRAND, renderPortalEmail, type PortalMailContent } from './email-layout';
 import { portalPublicUrl } from '../../shared/portal-public-url';
 
 type MailInput = {
@@ -58,7 +58,7 @@ export async function sendMail(input: MailInput): Promise<MailResult> {
       'content-type': 'application/json',
     },
     body: JSON.stringify({
-      sender: { email: env.BREVO_SENDER_EMAIL, name: env.BREVO_SENDER_NAME || 'HR Portal' },
+      sender: { email: env.BREVO_SENDER_EMAIL, name: env.BREVO_SENDER_NAME || PORTAL_BRAND },
       // When per-contact pixel consent is enabled on the Brevo account, false keeps
       // open/click events anonymous. It does not remove href rewriting by itself —
       // portal emails therefore avoid <a href> (see email-layout.ts).

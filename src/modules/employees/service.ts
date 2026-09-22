@@ -234,19 +234,19 @@ export function createEmployeeService(supabase: SupabaseClient, employees: Emplo
         await notifyUser(supabase, {
           userId: created.userId,
           type: 'profile',
-          title: 'Your HR Portal account is ready',
+          title: 'Your ERP Portal account is ready',
           message: 'An administrator created your account. Sign in with the email sent to you and change your password.',
           referenceType: 'employee',
           referenceId: created.id,
         });
         await sendPortalMail({
           to: [created.email],
-          subject: 'Your HR Portal account is ready',
+          subject: 'Your ERP Portal account is ready',
           eyebrow: 'Account',
           title: 'Your account is ready',
           greeting: `Hi ${created.fullName},`,
           paragraphs: [
-            'Your HR Portal account has been created. Use the details below to sign in, then change your password from More → Password.',
+            'Your ERP Portal account has been created. Use the details below to sign in, then change your password from More → Password.',
           ],
           details: [
             { label: 'Work email', value: created.email },
@@ -341,18 +341,18 @@ export function createEmployeeService(supabase: SupabaseClient, employees: Emplo
             userId: updated.userId,
             type: 'profile',
             title: 'Your profile was updated',
-            message: `An administrator updated your HR Portal profile.${statusNote}`,
+            message: `An administrator updated your ERP Portal profile.${statusNote}`,
             referenceType: 'employee',
             referenceId: updated.id,
           });
           await sendPortalMail({
             to: [updated.notificationEmail || updated.email],
-            subject: 'Your HR Portal profile was updated',
+            subject: 'Your ERP Portal profile was updated',
             eyebrow: 'Profile',
             title: 'Your profile was updated',
             greeting: `Hi ${updated.fullName},`,
             paragraphs: [
-              `An administrator updated your HR Portal profile.${statusNote}`,
+              `An administrator updated your ERP Portal profile.${statusNote}`,
               'Sign in to review your details and confirm everything looks correct.',
             ],
             cta: { label: 'Review profile', href: portalUrl },
@@ -609,7 +609,7 @@ export function createEmployeeService(supabase: SupabaseClient, employees: Emplo
         title: 'Your confirmation code',
         greeting: 'Hello',
         paragraphs: [
-          'HR is setting up your HR Portal account. Give them this 4-digit code so they can use this email for updates and login.',
+          'HR is setting up your ERP Portal account. Give them this 4-digit code so they can use this email for updates and login.',
           'The code expires in 10 minutes. If you did not expect this, you can ignore it.',
         ],
         details: [{ label: 'Code', value: code }],

@@ -191,8 +191,8 @@ export function createJcPptDeskService(supabase: SupabaseClient) {
         const mail = await sendMail({
           to: [emailRecipient],
           subject: `JC PPT: ${fileName}`,
-          text: `Attached is the JC PowerPoint "${fileName}" transferred from the HR Portal.`,
-          html: `<p>Attached is the JC PowerPoint <strong>${fileName}</strong> transferred from the HR Portal.</p>`,
+          text: `Attached is the JC PowerPoint "${fileName}" transferred from the ERP Portal.`,
+          html: `<p>Attached is the JC PowerPoint <strong>${fileName}</strong> transferred from the ERP Portal.</p>`,
           attachments: [{ name: fileName, content: Buffer.from(bytes!).toString('base64') }],
         });
         if (!mail.sent) {

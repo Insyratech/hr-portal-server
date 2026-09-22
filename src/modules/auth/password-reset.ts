@@ -25,7 +25,7 @@ export function resolvePasswordResetRedirect(): string {
   return portalPublicUrl('/reset-password');
 }
 
-/** Direct link to the HR Portal reset page — avoids Supabase /auth/v1/verify redirect issues. */
+/** Direct link to the ERP Portal reset page — avoids Supabase /auth/v1/verify redirect issues. */
 export function buildPasswordResetLink(redirectTo: string, hashedToken: string): string {
   const url = new URL(redirectTo);
   url.searchParams.set('token_hash', hashedToken);
@@ -86,12 +86,12 @@ export function createPasswordResetService(supabase: SupabaseClient) {
       const fullName = (employee.full_name as string) || 'there';
       await sendPortalMail({
         to: [email],
-        subject: 'Reset your HR Portal password',
+        subject: 'Reset your ERP Portal password',
         eyebrow: 'Account',
         title: 'Reset your password',
         greeting: `Hi ${fullName},`,
         paragraphs: [
-          'We received a request to reset your HR Portal password. Open the address below to choose a new one.',
+          'We received a request to reset your ERP Portal password. Open the address below to choose a new one.',
           'If you did not ask for this, you can ignore this email. Your password will stay the same.',
         ],
         cta: { label: 'Reset password', href: resetLink },

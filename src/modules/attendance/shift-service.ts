@@ -204,7 +204,7 @@ export function createShiftService(supabase: SupabaseClient) {
           { label: 'Shift', value: shiftName },
           { label: 'Effective from', value: data.effective_from as string },
         ],
-        ctaLabel: 'Open HR Portal',
+        ctaLabel: 'Open ERP Portal',
       });
       return {
         id: data.id as string,
@@ -293,7 +293,7 @@ export function createShiftService(supabase: SupabaseClient) {
           { label: 'Shift', value: shiftName },
           { label: 'Effective from', value: effectiveFrom },
         ],
-        ctaLabel: 'Open HR Portal',
+        ctaLabel: 'Open ERP Portal',
       });
 
       return { id: assignmentId };

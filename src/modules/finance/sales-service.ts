@@ -817,7 +817,7 @@ export function createSalesService(supabase: SupabaseClient) {
           quote.expiryDate ? `Valid until ${quote.expiryDate} (IST).` : '',
           `Grand total: INR ${quote.grandTotal.toFixed(2)}.`,
           '',
-          'You can also view this quote in the HR Portal.',
+          'You can also view this quote in the ERP Portal.',
         ]
           .filter(Boolean)
           .join('\n');
