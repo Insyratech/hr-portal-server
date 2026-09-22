@@ -29,13 +29,7 @@ const alertMode = Type.Union([
   Type.Literal('both'),
 ]);
 
-const locationType = Type.Union([
-  Type.Literal('stock_room'),
-  Type.Literal('store'),
-  Type.Literal('bench'),
-  Type.Literal('freezer'),
-  Type.Literal('other'),
-]);
+const locationType = Type.String({ minLength: 2, maxLength: 40 });
 
 const status = Type.Union([Type.Literal('active'), Type.Literal('inactive')]);
 
@@ -242,7 +236,7 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
             code: string;
             name: string;
             description?: string;
-            locationType?: 'stock_room' | 'store' | 'bench' | 'freezer' | 'other';
+            locationType?: string;
           },
           metaOf(request),
         ),
@@ -266,7 +260,7 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
           request.body as {
             name?: string;
             description?: string;
-            locationType?: 'stock_room' | 'store' | 'bench' | 'freezer' | 'other';
+            locationType?: string;
             status?: 'active' | 'inactive';
           },
           metaOf(request),

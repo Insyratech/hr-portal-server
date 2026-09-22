@@ -27,6 +27,34 @@ import type {
 
 const MAX_QTY_CHIPS = 15;
 
+const PRESET_LOCATION_TYPES = new Set([
+  'stock_room',
+  'store',
+  'bench',
+  'freezer',
+  'other',
+]);
+
+/** Normalize location type to a stable slug (presets kept; custom labels slugified). */
+export function normalizeLocationType(raw: string | undefined, fallback = 'store'): string {
+  const trimmed = (raw ?? '').trim();
+  if (!trimmed) return fallback;
+  if (PRESET_LOCATION_TYPES.has(trimmed)) return trimmed;
+  const slug = trimmed
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 40);
+  if (slug.length < 2 || !/^[a-z][a-z0-9_]*$/.test(slug)) {
+    throw new AppError(
+      API_ERROR_CODES.VALIDATION_ERROR,
+      'Location type must be 2–40 characters (letters, numbers, underscores).',
+      400,
+    );
+  }
+  return slug;
+}
+
 type LocationRow = {
   id: string;
   code: string;
@@ -361,7 +389,7 @@ export function createInventoryService(supabase: SupabaseClient) {
           code,
           name,
           description: (input.description ?? '').trim(),
-          location_type: input.locationType ?? 'store',
+          location_type: normalizeLocationType(input.locationType),
         })
         .select('*')
         .single();
@@ -400,7 +428,9 @@ export function createInventoryService(supabase: SupabaseClient) {
       const patch: Record<string, unknown> = {};
       if (input.name !== undefined) patch.name = input.name.trim();
       if (input.description !== undefined) patch.description = input.description.trim();
-      if (input.locationType !== undefined) patch.location_type = input.locationType;
+      if (input.locationType !== undefined) {
+        patch.location_type = normalizeLocationType(input.locationType);
+      }
       if (input.status !== undefined) patch.status = input.status;
       if (Object.keys(patch).length === 0) {
         throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'No location fields to update.', 400);

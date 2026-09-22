@@ -1,6 +1,7 @@
 export type InventoryAlertMode = 'reorder' | 'velocity' | 'both';
 export type InventoryDeductionMode = 'measured' | 'box';
-export type InventoryLocationType = 'stock_room' | 'store' | 'bench' | 'freezer' | 'other';
+/** Preset or custom slug (e.g. stock_room, incubator). */
+export type InventoryLocationType = string;
 export type InventoryStatus = 'active' | 'inactive';
 
 export type InventoryLocation = {
