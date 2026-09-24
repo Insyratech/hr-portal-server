@@ -212,7 +212,7 @@ async function prioritiesReadyForDaily(
     .eq('plan_id', plan.id);
   const active = (data ?? []).filter((row) => !CLOSED_PRIORITY.has(row.status as string));
   if (active.length === 0) return false;
-  return active.every((row) => ((row.approval_status as string) ?? 'DRAFT') === 'APPROVED');
+  return active.some((row) => ((row.approval_status as string) ?? 'DRAFT') === 'APPROVED');
 }
 
 async function openPriorities(supabase: SupabaseClient, planId: string) {
@@ -332,7 +332,7 @@ export async function runMondayPriorityReminders(
       paragraphs: [
         'Add at least one work goal (R&D project or regular work). Skill development is optional.',
         'Submit everything together for project lead approval before end of Monday. If you are on leave today, submit when you are back.',
-        'Daily updates unlock after every priority line is approved.',
+        'Daily updates unlock for each approved priority — you do not have to wait for every line.',
       ],
       details: [
         { label: 'This week', value: `${week.start} – ${week.end}` },

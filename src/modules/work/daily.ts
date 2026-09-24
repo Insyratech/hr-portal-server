@@ -6,7 +6,7 @@ import { addUtcDays, formatIsoDate, parseIsoDate } from '../leave/day-count';
 import { loadWorkingDays } from '../leave/support';
 import { loadDayContext } from './day-context';
 import { targetEmployeeId } from './access';
-import { dailyPrioritiesGate, skipsWorkApprovalLoop } from './approval';
+import { canLogDailyAgainstPriority, dailyPrioritiesGate, skipsWorkApprovalLoop } from './approval';
 import type { DayContext, WorkDayStatus } from './types';
 import { weekBounds } from './week-bounds';
 
@@ -206,6 +206,11 @@ export function createDailyWorkService(supabase: SupabaseClient) {
           ? dailyPrioritiesGate(priorities)
           : { ok: true as const, reason: null };
       const dayRequired = context.required;
+      const loggedIds = new Set(
+        (submitted?.entries ?? [])
+          .map((entry) => entry.priorityId)
+          .filter((id): id is string => Boolean(id)),
+      );
       return {
         context,
         formOpen: own && dayRequired && gate.ok,
@@ -213,7 +218,13 @@ export function createDailyWorkService(supabase: SupabaseClient) {
         approvalBlockReason: own && dayRequired && !gate.ok ? gate.reason : null,
         prioritiesApproved: gate.ok,
         week,
-        priorities,
+        priorities: priorities.map((item) => ({
+          ...item,
+          canLogDaily: canLogDailyAgainstPriority(item.approvalStatus, {
+            exempt,
+            alreadyLogged: loggedIds.has(item.id),
+          }),
+        })),
         submitted,
       };
     },
@@ -229,12 +240,19 @@ export function createDailyWorkService(supabase: SupabaseClient) {
         throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Add a short note on at least one thing you did.', 400);
       }
       const { priorities } = await loadWeekPriorities(supabase, actor.employeeId, isoDate);
-      if (!skipsWorkApprovalLoop(actor.roles)) {
+      const exempt = skipsWorkApprovalLoop(actor.roles);
+      if (!exempt) {
         const gate = dailyPrioritiesGate(priorities);
         if (!gate.ok) {
           throw new AppError(API_ERROR_CODES.CONFLICT, gate.reason ?? 'Waiting for project lead approval on priorities.', 409);
         }
       }
+      const submitted = await loadSubmitted(supabase, actor.employeeId, isoDate);
+      const loggedIds = new Set(
+        (submitted?.entries ?? [])
+          .map((entry) => entry.priorityId)
+          .filter((id): id is string => Boolean(id)),
+      );
       const byId = new Map(priorities.map((item) => [item.id, item]));
       const tomorrow = input.tomorrow?.trim() ?? '';
 
@@ -262,6 +280,18 @@ export function createDailyWorkService(supabase: SupabaseClient) {
         const priority = byId.get(item.priorityId);
         if (!priority) {
           throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'That priority is not on this week’s plan.', 400);
+        }
+        if (
+          !canLogDailyAgainstPriority(priority.approvalStatus, {
+            exempt,
+            alreadyLogged: loggedIds.has(priority.id),
+          })
+        ) {
+          throw new AppError(
+            API_ERROR_CODES.VALIDATION_ERROR,
+            `“${priority.title}” is not approved yet. Log work only against approved priorities.`,
+            400,
+          );
         }
         rows.push({
           day_id: dayId,

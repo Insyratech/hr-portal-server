@@ -3,6 +3,7 @@ import {
   aggregatePriorityApproval,
   canEditPriorityContent,
   canEditPriorityExecution,
+  canLogDailyAgainstPriority,
   dailyPrioritiesGate,
   skipsWorkApprovalLoop,
   weekAllowsSkillSubmit,
@@ -21,8 +22,11 @@ describe('work priority approval helpers', () => {
     expect(skipsWorkApprovalLoop(['EMPLOYEE'])).toBe(false);
   });
 
-  it('blocks daily updates until every active priority is approved', () => {
+  it('unlocks daily updates when any active priority is approved', () => {
     expect(dailyPrioritiesGate([])).toMatchObject({ ok: false });
+    expect(
+      dailyPrioritiesGate([{ status: 'NOT_STARTED', approvalStatus: 'DRAFT' }]),
+    ).toMatchObject({ ok: false, reason: expect.stringMatching(/submit them for project lead/i) });
     expect(
       dailyPrioritiesGate([{ status: 'NOT_STARTED', approvalStatus: 'SUBMITTED' }]),
     ).toMatchObject({ ok: false, reason: expect.stringMatching(/Waiting for project lead/i) });
@@ -32,6 +36,16 @@ describe('work priority approval helpers', () => {
         { status: 'CANCELLED', approvalStatus: 'DRAFT' },
       ]),
     ).toMatchObject({ ok: true });
+    expect(
+      dailyPrioritiesGate([
+        { status: 'NOT_STARTED', approvalStatus: 'APPROVED' },
+        { status: 'IN_PROGRESS', approvalStatus: 'SUBMITTED' },
+      ]),
+    ).toMatchObject({ ok: true });
+    expect(canLogDailyAgainstPriority('SUBMITTED')).toBe(false);
+    expect(canLogDailyAgainstPriority('APPROVED')).toBe(true);
+    expect(canLogDailyAgainstPriority('SUBMITTED', { alreadyLogged: true })).toBe(true);
+    expect(canLogDailyAgainstPriority('DRAFT', { exempt: true })).toBe(true);
   });
 
   it('locks content edits after submit and unlocks execution after approve', () => {

@@ -65,10 +65,26 @@ export function dailyPrioritiesGate(
       reason: 'Set your priorities and submit them for project lead approval before today’s update.',
     };
   }
-  if (active.some((row) => row.approvalStatus !== 'APPROVED')) {
+  if (active.some((row) => row.approvalStatus === 'APPROVED')) {
+    return { ok: true, reason: null };
+  }
+  if (active.some((row) => row.approvalStatus === 'SUBMITTED' || row.approvalStatus === 'RESUBMIT_REQUESTED')) {
     return { ok: false, reason: 'Waiting for project lead approval on priorities.' };
   }
-  return { ok: true, reason: null };
+  return {
+    ok: false,
+    reason: 'Set your priorities and submit them for project lead approval before today’s update.',
+  };
+}
+
+/** Daily notes can be logged against an approved line (or kept if already saved today). */
+export function canLogDailyAgainstPriority(
+  approvalStatus: string,
+  options?: { exempt?: boolean; alreadyLogged?: boolean },
+): boolean {
+  if (options?.exempt) return true;
+  if (options?.alreadyLogged) return true;
+  return approvalStatus === 'APPROVED';
 }
 
 export function canEditPriorityContent(approvalStatus: string): boolean {

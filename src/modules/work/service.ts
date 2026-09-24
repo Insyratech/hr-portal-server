@@ -1666,13 +1666,13 @@ export function createWorkService(supabase: SupabaseClient) {
       await notifyStaff(supabase, employee, {
         type: 'work',
         title: 'Priority approved',
-        message: `${approverName} approved “${mapped.title}”. You can use it in today’s work update once every priority for the week is approved.`,
+        message: `${approverName} approved “${mapped.title}”. You can log today’s work update against this approved priority.`,
         referenceType: 'weekly_priority',
         referenceId: id,
         eyebrow: 'Work',
         paragraphs: [
           `Your priority “${mapped.title}” was approved by ${approverName}.`,
-          'When every priority for this week is approved, you can start today’s work update.',
+          'You can start today’s work update against approved priorities, even if other lines are still with your project lead.',
         ],
         details: [{ label: 'Priority', value: mapped.title }],
         ctaLabel: 'Open priorities',
@@ -1728,8 +1728,8 @@ export function createWorkService(supabase: SupabaseClient) {
             : `${approved.length} priorities approved`,
         message:
           approved.length === 1
-            ? `${approverName} approved “${approved[0].title}”. You can use it in today’s work update once every priority for the week is approved.`
-            : `${approverName} approved ${approved.length} of your weekly priorities.`,
+            ? `${approverName} approved “${approved[0].title}”. You can log today’s work update against this approved priority.`
+            : `${approverName} approved ${approved.length} of your weekly priorities. You can log today’s work update against the approved lines.`,
         referenceType: 'weekly_plan',
         referenceId: employeeId,
         eyebrow: 'Work',
@@ -1738,7 +1738,7 @@ export function createWorkService(supabase: SupabaseClient) {
             ? `Your priority “${approved[0].title}” was approved by ${approverName}.`
             : `${approverName} approved ${approved.length} priorities for this week.`,
           titles,
-          'When every priority for this week is approved, you can start today’s work update.',
+          'You can start today’s work update against approved priorities, even if other lines are still with your project lead.',
         ],
         details: [
           { label: 'Count', value: String(approved.length) },
