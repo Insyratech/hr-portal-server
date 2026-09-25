@@ -10,6 +10,7 @@ import type { LeaveDuration, LeaveTypeFlags } from './types';
 import {
   canApprove,
   canSeeAllApplications,
+  canSeeLeavePresence,
   insertNotification,
   loadActivePolicy,
   loadHolidayDates,
@@ -24,6 +25,7 @@ import { patternOnDate } from './day-count';
 import { loadStaffById, notifyStaff } from '../notifications/notify-staff';
 import { portalUrl, sendPortalMail } from '../notifications/mail';
 import { syncEmployeeWorkDays } from '../work/daily';
+import { zonedClock } from '../work/ist-clock';
 import {
   assertApplicantNotCoveringHandover,
   assertHandoverColleagueEligible,
@@ -444,6 +446,30 @@ export function createLeaveApplicationService(supabase: SupabaseClient) {
       const { data, error } = await selectLeaveApplications((columns) => fetchScoped(columns));
       if (error) {
         throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, error.message || 'Failed to load leave applications.', 500);
+      }
+      const rows = await hydrateProjectEmbed(
+        supabase,
+        await hydrateHandoverIds(supabase, (data ?? []) as unknown as ApplicationRow[]),
+      );
+      const names = await loadEmployeeNames(supabase, rows);
+      return rows.map((row) => mapApplicationWithNames(row, names));
+    },
+
+    async listPresence(actor: RequestUser) {
+      if (!canSeeLeavePresence(actor)) {
+        throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot view who is out.', 403);
+      }
+      const today = zonedClock(new Date()).isoDate;
+      const { data, error } = await selectLeaveApplications((columns) =>
+        supabase
+          .from('leave_applications')
+          .select(columns)
+          .in('status', ['APPROVED', 'PENDING'])
+          .gte('end_date', today)
+          .order('start_date', { ascending: true }),
+      );
+      if (error) {
+        throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, error.message || 'Failed to load who is out.', 500);
       }
       const rows = await hydrateProjectEmbed(
         supabase,

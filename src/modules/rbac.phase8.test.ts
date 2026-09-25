@@ -5,7 +5,7 @@ import type { RequestUser } from '../shared/types/request-user';
 import { createCompanyService } from './companies/service';
 import { createEmployeeService } from './employees/service';
 import type { EmployeeRepository } from './employees/repository';
-import { canApprove } from './leave/support';
+import { canApprove, canSeeLeavePresence } from './leave/support';
 import { createOrganizationService } from './organization/service';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
@@ -108,5 +108,18 @@ describe('phase 1 role restructure RBAC', () => {
     expect(canApprove(hrManager)).toBe(true);
     expect(canApprove(superAdmin)).toBe(false);
     expect(canApprove(generalManager)).toBe(false);
+  });
+
+  it('lets GM, HR, and Super Admin see who is out', () => {
+    expect(canSeeLeavePresence(generalManager)).toBe(true);
+    expect(canSeeLeavePresence(hrManager)).toBe(true);
+    expect(canSeeLeavePresence(superAdmin)).toBe(true);
+    expect(
+      canSeeLeavePresence({
+        ...generalManager,
+        roles: [ROLE_CODES.EMPLOYEE],
+        permissions: [PERMISSIONS.LEAVE_VIEW],
+      }),
+    ).toBe(false);
   });
 });

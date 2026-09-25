@@ -1,7 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { API_ERROR_CODES } from '../../shared/constants/error-codes';
 import { PERMISSIONS } from '../../shared/constants/permissions';
-import { isHrDomainOwner } from '../../shared/domain-owners';
+import { isGmDomainOwner, isHrDomainOwner, isSuperAdminOwner } from '../../shared/domain-owners';
 import { AppError } from '../../shared/errors/app-error';
 import type { RequestUser } from '../../shared/types/request-user';
 import { writeAuditLog } from '../audit/write-audit-log';
@@ -221,6 +221,11 @@ export function canApprove(user: RequestUser): boolean {
 
 export function canSeeAllApplications(user: RequestUser): boolean {
   return canApprove(user) || canManageAllocations(user);
+}
+
+/** Org-wide who-is-out (GM / HR / Super Admin). Does not grant approve or full inbox access. */
+export function canSeeLeavePresence(user: RequestUser): boolean {
+  return isHrDomainOwner(user) || isGmDomainOwner(user) || isSuperAdminOwner(user);
 }
 
 export function canManageTypes(user: RequestUser): boolean {
