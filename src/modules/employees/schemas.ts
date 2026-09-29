@@ -62,6 +62,8 @@ export const employeeBody = Type.Object({
 export const employeePatchBody = Type.Object({
   employeeCode: Type.Optional(Type.String({ minLength: 1 })),
   fullName: Type.Optional(Type.String({ minLength: 1 })),
+  email: Type.Optional(Type.String({ minLength: 5, maxLength: 254, pattern: '.+@.+\\..+' })),
+  emailVerificationToken: Type.Optional(Type.String({ minLength: 8 })),
   phone: Type.Optional(Type.Union([Type.String(), Type.Null()])),
   notificationEmail: Type.Optional(Type.Union([Type.String(), Type.Null()])),
   dateOfBirth: Type.Optional(Type.Union([Type.String(), Type.Null()])),

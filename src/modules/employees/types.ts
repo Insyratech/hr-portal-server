@@ -103,6 +103,9 @@ export type CreateEmployeeInput = {
 export type UpdateEmployeeInput = {
   employeeCode?: string;
   fullName?: string;
+  /** New login email — requires emailVerificationToken after OTP to the new address. */
+  email?: string;
+  emailVerificationToken?: string;
   phone?: string | null;
   notificationEmail?: string | null;
   dateOfBirth?: string | null;

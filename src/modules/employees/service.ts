@@ -128,6 +128,19 @@ export function createEmployeeService(supabase: SupabaseClient, employees: Emplo
     return data.user.id;
   }
 
+  async function updateAuthEmail(userId: string, email: string): Promise<void> {
+    const { error } = await supabase.auth.admin.updateUserById(userId, {
+      email,
+      email_confirm: true,
+    });
+    if (error) {
+      if (error.message.toLowerCase().includes('already')) {
+        throw new AppError(API_ERROR_CODES.CONFLICT, 'An account with this email already exists.', 409);
+      }
+      throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, error.message || 'Failed to update login email.', 500);
+    }
+  }
+
   return {
     async list(actor: RequestUser, filters: { query?: string; status?: EmployeeStatus }): Promise<EmployeeRecord[]> {
       const canList =
@@ -281,9 +294,31 @@ export function createEmployeeService(supabase: SupabaseClient, employees: Emplo
         }
       }
 
+      const nextEmail =
+        input.email !== undefined ? normalizeWorkEmail(input.email) : null;
+      const emailChanged =
+        nextEmail !== null && nextEmail !== normalizeWorkEmail(existing.email);
+
+      if (emailChanged && nextEmail) {
+        consumeWorkEmailVerification(actor.employeeId, nextEmail, input.emailVerificationToken);
+        const emailClash = await employees.findByEmail(nextEmail);
+        if (emailClash && emailClash.id !== id) {
+          throw new AppError(API_ERROR_CODES.CONFLICT, 'An employee with this email already exists.', 409);
+        }
+        if (!existing.userId) {
+          throw new AppError(
+            API_ERROR_CODES.VALIDATION_ERROR,
+            'This employee has no login account to update.',
+            400,
+          );
+        }
+        await updateAuthEmail(existing.userId, nextEmail);
+      }
+
       const patch: Record<string, unknown> = {};
       if (input.employeeCode !== undefined) patch.employee_code = input.employeeCode;
       if (input.fullName !== undefined) patch.full_name = input.fullName;
+      if (emailChanged && nextEmail) patch.email = nextEmail;
       if (input.phone !== undefined) patch.phone = emptyToNull(input.phone);
       if (input.notificationEmail !== undefined) patch.notification_email = emptyToNull(input.notificationEmail);
       if (input.dateOfBirth !== undefined) patch.date_of_birth = toDateColumn(input.dateOfBirth, 'Date of birth');
@@ -303,7 +338,18 @@ export function createEmployeeService(supabase: SupabaseClient, employees: Emplo
       }
 
       if (Object.keys(patch).length > 0) {
-        await employees.update(id, patch);
+        try {
+          await employees.update(id, patch);
+        } catch (cause) {
+          if (emailChanged && nextEmail && existing.userId) {
+            try {
+              await updateAuthEmail(existing.userId, normalizeWorkEmail(existing.email));
+            } catch {
+              /* Best-effort revert of auth email if directory write failed. */
+            }
+          }
+          throw cause;
+        }
       }
 
       const updated = await employees.findById(id);
@@ -320,11 +366,13 @@ export function createEmployeeService(supabase: SupabaseClient, employees: Emplo
           oldValues: {
             employeeCode: existing.employeeCode,
             fullName: existing.fullName,
+            email: existing.email,
             status: existing.status,
           },
           newValues: {
             employeeCode: updated.employeeCode,
             fullName: updated.fullName,
+            email: updated.email,
             status: updated.status,
           },
           ipAddress: meta.ipAddress,
@@ -337,26 +385,55 @@ export function createEmployeeService(supabase: SupabaseClient, employees: Emplo
           const portalUrl = portalLoginUrl();
           const statusNote =
             existing.status !== updated.status ? ` Your status is now ${updated.status}.` : '';
+          const emailNote = emailChanged
+            ? ` Your login email is now ${updated.email}. Use this address to sign in.`
+            : '';
           await notifyUser(supabase, {
             userId: updated.userId,
             type: 'profile',
-            title: 'Your profile was updated',
-            message: `An administrator updated your ERP Portal profile.${statusNote}`,
+            title: emailChanged ? 'Your login email was changed' : 'Your profile was updated',
+            message: `An administrator updated your ERP Portal profile.${emailNote}${statusNote}`,
             referenceType: 'employee',
             referenceId: updated.id,
           });
           await sendPortalMail({
             to: [updated.notificationEmail || updated.email],
-            subject: 'Your ERP Portal profile was updated',
+            subject: emailChanged
+              ? 'Your ERP Portal login email was changed'
+              : 'Your ERP Portal profile was updated',
             eyebrow: 'Profile',
-            title: 'Your profile was updated',
+            title: emailChanged ? 'Your login email was changed' : 'Your profile was updated',
             greeting: `Hi ${updated.fullName},`,
             paragraphs: [
-              `An administrator updated your ERP Portal profile.${statusNote}`,
+              `An administrator updated your ERP Portal profile.${emailNote}${statusNote}`,
               'Sign in to review your details and confirm everything looks correct.',
             ],
+            details: emailChanged
+              ? [
+                  { label: 'Previous email', value: existing.email },
+                  { label: 'New login email', value: updated.email },
+                ]
+              : undefined,
             cta: { label: 'Review profile', href: portalUrl },
           });
+          if (emailChanged && normalizeWorkEmail(existing.email) !== normalizeWorkEmail(updated.email)) {
+            try {
+              await sendPortalMail({
+                to: [existing.email],
+                subject: 'Your ERP Portal login email was changed',
+                eyebrow: 'Profile',
+                title: 'Login email changed',
+                greeting: `Hi ${updated.fullName},`,
+                paragraphs: [
+                  `An administrator changed the login email for your ERP Portal account from ${existing.email} to ${updated.email}.`,
+                  'If you did not expect this, contact Super Admin or HR immediately.',
+                ],
+                cta: { label: 'Open portal', href: portalUrl },
+              });
+            } catch {
+              /* Old inbox notice is best-effort. */
+            }
+          }
         } catch {
           /* Profile is saved even if mail or in-app notify is unavailable. */
         }
@@ -609,7 +686,7 @@ export function createEmployeeService(supabase: SupabaseClient, employees: Emplo
         title: 'Your confirmation code',
         greeting: 'Hello',
         paragraphs: [
-          'HR is setting up your ERP Portal account. Give them this 4-digit code so they can use this email for updates and login.',
+          'An administrator is confirming this email for an ERP Portal login. Give them this 4-digit code so they can finish creating or updating the account.',
           'The code expires in 10 minutes. If you did not expect this, you can ignore it.',
         ],
         details: [{ label: 'Code', value: code }],
