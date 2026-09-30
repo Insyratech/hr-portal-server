@@ -44,7 +44,8 @@ export async function registerLeaveRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/v1/leaves/presence', { preHandler: [requireAuth()] }, async (request) => {
     const supabase = requireSupabase(app.supabase);
     if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
-    return ok(await createLeaveApplicationService(supabase).listPresence(request.user));
+    const query = request.query as { asOf?: string };
+    return ok(await createLeaveApplicationService(supabase).listPresence(request.user, query.asOf));
   });
 
   app.post(

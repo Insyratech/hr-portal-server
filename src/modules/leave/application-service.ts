@@ -27,6 +27,11 @@ import { portalUrl, sendPortalMail } from '../notifications/mail';
 import { syncEmployeeWorkDays } from '../work/daily';
 import { zonedClock } from '../work/ist-clock';
 import {
+  presencePastFrom,
+  resolvePresenceAsOf,
+  splitPresenceApplications,
+} from './leave-presence';
+import {
   assertApplicantNotCoveringHandover,
   assertHandoverColleagueEligible,
   listSameShiftHandoverColleagues,
@@ -455,17 +460,18 @@ export function createLeaveApplicationService(supabase: SupabaseClient) {
       return rows.map((row) => mapApplicationWithNames(row, names));
     },
 
-    async listPresence(actor: RequestUser) {
+    async listPresence(actor: RequestUser, asOfInput?: string) {
       if (!canSeeLeavePresence(actor)) {
         throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot view who is out.', 403);
       }
-      const today = zonedClock(new Date()).isoDate;
+      const asOf = resolvePresenceAsOf(asOfInput, zonedClock(new Date()).isoDate);
+      const pastFrom = presencePastFrom(asOf);
       const { data, error } = await selectLeaveApplications((columns) =>
         supabase
           .from('leave_applications')
           .select(columns)
-          .in('status', ['APPROVED', 'PENDING'])
-          .gte('end_date', today)
+          .eq('status', 'APPROVED')
+          .gte('end_date', pastFrom)
           .order('start_date', { ascending: true }),
       );
       if (error) {
@@ -476,7 +482,15 @@ export function createLeaveApplicationService(supabase: SupabaseClient) {
         await hydrateHandoverIds(supabase, (data ?? []) as unknown as ApplicationRow[]),
       );
       const names = await loadEmployeeNames(supabase, rows);
-      return rows.map((row) => mapApplicationWithNames(row, names));
+      const applications = rows.map((row) => mapApplicationWithNames(row, names));
+      const split = splitPresenceApplications(applications, asOf);
+      return {
+        asOf,
+        pastFrom,
+        onLeave: split.onLeave,
+        upcoming: split.upcoming,
+        past: split.past,
+      };
     },
 
     async getApplication(actor: RequestUser, id: string) {
