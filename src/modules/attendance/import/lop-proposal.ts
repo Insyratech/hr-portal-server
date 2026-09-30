@@ -1,4 +1,5 @@
 import type { DeriveAttendanceResult } from '../types';
+import { DEFAULT_GRACE_MINUTES } from '../punch-clock';
 
 export type HrAction = 'FULL_LOP' | 'HALF_LOP' | 'NO_LOP' | 'EXCLUDE';
 
@@ -44,12 +45,17 @@ export function proposeLop(input: {
   const earlyExitMinutes = input.derived.earlyExitMinutes;
   const slot = input.permissionSlot === 'END' ? 'END' : 'START';
   const startCovered = slot === 'START' && lateMinutes > 0 && input.permissionMinutes >= lateMinutes;
-  const endCovered = slot === 'END' && earlyExitMinutes > 0 && input.permissionMinutes >= earlyExitMinutes;
-  /** Flexible duration shortfall is stored as earlyExitMinutes; any approved slot can cover it. */
+  const endCovered =
+    slot === 'END' &&
+    earlyExitMinutes > 0 &&
+    input.permissionMinutes > 0 &&
+    Math.max(0, earlyExitMinutes - input.permissionMinutes) <= DEFAULT_GRACE_MINUTES;
+  /** Flexible duration shortfall is stored as earlyExitMinutes; any approved slot can cover it (incl. residual within grace). */
   const flexibleDurationCovered =
     input.derived.scheduledIn === null &&
     earlyExitMinutes > 0 &&
-    input.permissionMinutes >= earlyExitMinutes;
+    input.permissionMinutes > 0 &&
+    Math.max(0, earlyExitMinutes - input.permissionMinutes) <= DEFAULT_GRACE_MINUTES;
   const permissionCovered =
     Boolean(input.derived.permissionApplied) || startCovered || endCovered || flexibleDurationCovered;
 

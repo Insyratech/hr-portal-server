@@ -104,9 +104,15 @@ export function deriveAttendance(input: DeriveAttendanceInput): DeriveAttendance
     const presentAt = Math.max(halfThreshold, input.shift.minimumDurationMinutes - grace);
     const shortfall = Math.max(0, presentAt - workedMinutes);
     const credited = workedMinutes + permissionMinutes;
-    const permissionApplied = shortfall > 0 && permissionMinutes >= shortfall;
+    const leftover = Math.max(0, presentAt - credited);
+    /**
+     * Approved permission fills duration shortfall. If a few minutes remain after
+     * that credit, forgive them within grace so END/START permission works for
+     * every flexible shift (Morning, Flexible 9H, etc.).
+     */
+    const permissionApplied = permissionMinutes > 0 && shortfall > 0 && leftover <= grace;
     let status: DeriveAttendanceResult['status'] = 'PRESENT';
-    if (credited >= presentAt) {
+    if (credited >= presentAt || permissionApplied) {
       status = 'PRESENT';
     } else if (credited >= halfThreshold) {
       status = 'HALF_DAY';
@@ -117,7 +123,7 @@ export function deriveAttendance(input: DeriveAttendanceInput): DeriveAttendance
       status,
       workedMinutes,
       lateMinutes: 0,
-      /** Duration shortfall vs required−grace — used so END/any permission can clear LOP. */
+      /** Pre-permission shortfall vs required−grace — proposeLop / audits. */
       earlyExitMinutes: shortfall,
       overtimeMinutes,
       scheduledIn: null,
@@ -137,19 +143,24 @@ export function deriveAttendance(input: DeriveAttendanceInput): DeriveAttendance
       : 0;
 
   const lateCovered = lateMinutes > 0 && permissionMinutes >= lateMinutes;
-  const earlyCovered = earlyExitMinutes > 0 && permissionMinutes >= earlyExitMinutes;
+  const earlyCovered =
+    earlyExitMinutes > 0 &&
+    permissionMinutes > 0 &&
+    Math.max(0, earlyExitMinutes - permissionMinutes) <= grace;
   if (lateCovered) lateMinutes = 0;
   if (earlyCovered) earlyExitMinutes = 0;
-  const permissionApplied = lateCovered || earlyCovered;
 
   const presentAt = Math.max(halfThreshold, input.shift.minimumDurationMinutes - grace);
-  const credited = workedMinutes + (permissionApplied ? permissionMinutes : 0);
+  const credited = workedMinutes + permissionMinutes;
+  const leftover = Math.max(0, presentAt - credited);
+  const durationCovered = permissionMinutes > 0 && (credited >= presentAt || leftover <= grace);
+  const permissionApplied = lateCovered || earlyCovered || durationCovered;
 
   let status: DeriveAttendanceResult['status'] = 'PRESENT';
 
   if (credited < halfThreshold) {
     status = 'ABSENT';
-  } else if (credited < presentAt || earlyExitMinutes > 0) {
+  } else if (earlyExitMinutes > 0 || (!durationCovered && credited < presentAt)) {
     status = 'HALF_DAY';
   } else if (lateMinutes > 0) {
     status =

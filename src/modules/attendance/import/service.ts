@@ -194,7 +194,7 @@ async function refreshOpenImportDayReviews(
   const punches = new Map<string, { inTime: string | null; outTime: string | null }>();
   for (const row of punchRows ?? []) {
     const employeeId = row.employee_id as string;
-    const iso = row.attendance_date as string;
+    const iso = dateOnly(String(row.attendance_date));
     punches.set(`${employeeId}:${iso}`, {
       inTime: (row.raw_in as string | null) ?? null,
       outTime: (row.raw_out as string | null) ?? null,
@@ -239,7 +239,7 @@ async function refreshOpenImportDayReviews(
   for (const row of reviews) {
     if (String(row.reason ?? '').trim()) continue;
     const employeeId = row.employee_id as string;
-    const iso = row.attendance_date as string;
+    const iso = dateOnly(String(row.attendance_date));
     const shift = shiftForDay(assignments, shiftById, overrides, employeeId, iso);
     const punch = punches.get(`${employeeId}:${iso}`);
     const leave = leaveOnDate(leaves ?? [], employeeId, iso);
@@ -313,17 +313,24 @@ async function refreshOpenImportDayReviews(
 const refreshedImportIds = new Set<string>();
 const refreshedEmployeeKeys = new Set<string>();
 
+function refreshCacheKey(importId: string, employeeId?: string): string {
+  return employeeId
+    ? `${ATTENDANCE_RULES_VERSION}:${importId}:${employeeId}`
+    : `${ATTENDANCE_RULES_VERSION}:${importId}`;
+}
+
 async function maybeRefreshOpenImportRules(
   supabase: SupabaseClient,
   imp: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
   const importId = imp.id as string;
   if (!needsRulesRefresh(imp)) return imp;
-  if (refreshedImportIds.has(importId)) {
+  const cacheKey = refreshCacheKey(importId);
+  if (refreshedImportIds.has(cacheKey)) {
     return { ...imp, rules_version: ATTENDANCE_RULES_VERSION };
   }
   await refreshOpenImportDayReviews(supabase, importId, imp.period as string);
-  refreshedImportIds.add(importId);
+  refreshedImportIds.add(cacheKey);
   return { ...imp, rules_version: ATTENDANCE_RULES_VERSION };
 }
 
@@ -436,8 +443,9 @@ export function createAttendanceImportService(supabase: SupabaseClient) {
 
       // Refresh only this employee (~31 days) so card opens stay fast even when month is stale.
       if (needsRulesRefresh(imp)) {
-        const employeeKey = `${importId}:${employeeId}`;
-        if (!refreshedImportIds.has(importId) && !refreshedEmployeeKeys.has(employeeKey)) {
+        const employeeKey = refreshCacheKey(importId, employeeId);
+        const importKey = refreshCacheKey(importId);
+        if (!refreshedImportIds.has(importKey) && !refreshedEmployeeKeys.has(employeeKey)) {
           await refreshOpenImportDayReviews(supabase, importId, imp.period as string, {
             employeeId,
             stampVersion: false,
@@ -698,7 +706,7 @@ export function createAttendanceImportService(supabase: SupabaseClient) {
         }
       }
 
-      refreshedImportIds.add(created.id as string);
+      refreshedImportIds.add(refreshCacheKey(created.id as string));
 
       await writeAuditLog(supabase, {
         actorId: actor.employeeId,
@@ -970,14 +978,19 @@ export function createAttendanceImportService(supabase: SupabaseClient) {
   };
 }
 
+function dateOnly(value: string): string {
+  return String(value).slice(0, 10);
+}
+
 function leaveOnDate(
   rows: Record<string, unknown>[],
   employeeId: string,
   iso: string,
 ): LeaveOverlay | null {
+  const day = dateOnly(iso);
   const row = rows.find((item) => {
     if (item.employee_id !== employeeId) return false;
-    return (item.start_date as string) <= iso && (item.end_date as string) >= iso;
+    return dateOnly(String(item.start_date)) <= day && dateOnly(String(item.end_date)) >= day;
   });
   if (!row) return null;
   const type = firstRel(row.leave_types as { name: string; paid: boolean } | { name: string; paid: boolean }[]);
@@ -993,8 +1006,12 @@ function approvedPermission(
   employeeId: string,
   iso: string,
 ): { minutes: number; slot: 'START' | 'END' } {
+  const day = dateOnly(iso);
   const match = rows.find(
-    (row) => row.employee_id === employeeId && row.permission_date === iso && row.status === 'APPROVED',
+    (row) =>
+      row.employee_id === employeeId &&
+      dateOnly(String(row.permission_date)) === day &&
+      row.status === 'APPROVED',
   );
   if (!match) {
     return { minutes: 0, slot: 'START' };

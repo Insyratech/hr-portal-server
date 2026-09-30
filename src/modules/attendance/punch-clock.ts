@@ -8,7 +8,7 @@ export const DEFAULT_GRACE_MINUTES = 15;
  * Bump when deriveAttendance / proposeLop / skew / grace / permission credit change.
  * Open imports refresh once when rules_version is behind this value.
  */
-export const ATTENDANCE_RULES_VERSION = 2;
+export const ATTENDANCE_RULES_VERSION = 3;
 
 export function effectiveGraceMinutes(shiftGracePeriodMinutes: number): number {
   return Math.max(shiftGracePeriodMinutes, DEFAULT_GRACE_MINUTES);

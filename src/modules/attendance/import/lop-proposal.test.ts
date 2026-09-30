@@ -240,4 +240,69 @@ describe('proposeLop', () => {
       permissionCovered: true,
     });
   });
+
+  it('covers flexible morning short day with END permission when residual is within grace', () => {
+    const flexibleMorning = {
+      startTime: '00:00',
+      endTime: '23:59',
+      minimumDurationMinutes: 540,
+      gracePeriodMinutes: 0,
+      lateThresholdMinutes: 0,
+      earlyExitThresholdMinutes: 0,
+      flexible: true,
+    };
+    // 06:01–13:36 = 7h35m; 1h END permission; leftover after credit within 15m grace → PRESENT / NO_LOP
+    const derived = deriveAttendance({
+      isoDate: '2026-09-17',
+      workingDays: monSat,
+      holidayDates: [],
+      onApprovedLeave: false,
+      shift: flexibleMorning,
+      actualIn: combineDateAndTime('2026-09-17', '06:01'),
+      actualOut: combineDateAndTime('2026-09-17', '13:36'),
+      permissionMinutes: 60,
+    });
+    expect(derived.workedMinutes).toBe(455);
+    expect(derived.status).toBe('PRESENT');
+    expect(derived.permissionApplied).toBe(true);
+    expect(
+      proposeLop({
+        derived,
+        permissionMinutes: 60,
+        permissionSlot: 'END',
+        leave: null,
+      }),
+    ).toMatchObject({
+      proposedLop: 0,
+      finalLop: 0,
+      hrAction: 'NO_LOP',
+      permissionCovered: true,
+    });
+  });
+
+  it('does not clear flexible half-day when permission leaves a large residual shortfall', () => {
+    const flexible = {
+      startTime: '00:00',
+      endTime: '23:59',
+      minimumDurationMinutes: 540,
+      gracePeriodMinutes: 0,
+      lateThresholdMinutes: 0,
+      earlyExitThresholdMinutes: 0,
+      flexible: true,
+    };
+    const derived = deriveAttendance({
+      isoDate: '2026-09-17',
+      workingDays: monSat,
+      holidayDates: [],
+      onApprovedLeave: false,
+      shift: flexible,
+      actualIn: combineDateAndTime('2026-09-17', '06:01'),
+      actualOut: combineDateAndTime('2026-09-17', '12:01'),
+      permissionMinutes: 60,
+    });
+    expect(derived.workedMinutes).toBe(360);
+    expect(derived.status).toBe('HALF_DAY');
+    expect(derived.permissionApplied).toBe(false);
+    expect(proposeLop({ derived, permissionMinutes: 60, permissionSlot: 'END', leave: null }).proposedLop).toBe(0.5);
+  });
 });
