@@ -4,6 +4,12 @@ export const PUNCH_CLOCK_SKEW_MINUTES = 9;
 /** Minimum late / duration grace for every shift (minutes). */
 export const DEFAULT_GRACE_MINUTES = 15;
 
+/**
+ * Bump when deriveAttendance / proposeLop / skew / grace / permission credit change.
+ * Open imports refresh once when rules_version is behind this value.
+ */
+export const ATTENDANCE_RULES_VERSION = 2;
+
 export function effectiveGraceMinutes(shiftGracePeriodMinutes: number): number {
   return Math.max(shiftGracePeriodMinutes, DEFAULT_GRACE_MINUTES);
 }

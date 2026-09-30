@@ -8,7 +8,7 @@ import { writeAuditLog } from '../../audit/write-audit-log';
 import { portalUrl } from '../../notifications/mail';
 import { listActiveStaff, notifyStaff } from '../../notifications/notify-staff';
 import { combineDateAndTime, deriveAttendance } from '../rule-engine';
-import { adjustPunchClock } from '../punch-clock';
+import { ATTENDANCE_RULES_VERSION, adjustPunchClock } from '../punch-clock';
 import { toShiftDefinition, type ShiftRow } from '../support';
 import { loadHolidayDates, loadWorkingDays } from '../../leave/support';
 import { listWorkWeekRows } from '../work-week';
@@ -106,27 +106,90 @@ async function supersedePeriod(supabase: SupabaseClient, period: string): Promis
     .neq('status', 'REJECTED');
 }
 
+function importRulesVersion(row: Record<string, unknown>): number {
+  return Number(row.rules_version ?? 0);
+}
+
+function needsRulesRefresh(imp: Record<string, unknown>): boolean {
+  const status = imp.status as string;
+  if (status !== 'IN_REVIEW' && status !== 'PARSED') return false;
+  return importRulesVersion(imp) < ATTENDANCE_RULES_VERSION;
+}
+
+function dayReviewChanged(
+  row: Record<string, unknown>,
+  next: {
+    status: string;
+    shift_name: string | null;
+    actual_in: string | null;
+    actual_out: string | null;
+    worked_minutes: number | null;
+    late_minutes: number;
+    permission_minutes: number;
+    permission_covered: boolean;
+    leave_type_name: string | null;
+    leave_paid: boolean | null;
+    leave_duration: string | null;
+    proposed_lop: number;
+    final_lop: number;
+    hr_action: string | null;
+    needs_hr_decision: boolean;
+    skipped_from_lop: boolean;
+  },
+): boolean {
+  const sameIso = (value: unknown, expected: string | null) => {
+    if (!expected) return value == null || value === '';
+    if (value == null) return false;
+    return new Date(String(value)).toISOString() === expected;
+  };
+  return !(
+    row.status === next.status &&
+    (row.shift_name ?? null) === next.shift_name &&
+    sameIso(row.actual_in, next.actual_in) &&
+    sameIso(row.actual_out, next.actual_out) &&
+    Number(row.worked_minutes ?? 0) === Number(next.worked_minutes ?? 0) &&
+    Number(row.late_minutes ?? 0) === next.late_minutes &&
+    Number(row.permission_minutes ?? 0) === next.permission_minutes &&
+    Boolean(row.permission_covered) === next.permission_covered &&
+    (row.leave_type_name ?? null) === next.leave_type_name &&
+    (row.leave_paid ?? null) === next.leave_paid &&
+    (row.leave_duration ?? null) === next.leave_duration &&
+    Number(row.proposed_lop ?? 0) === next.proposed_lop &&
+    Number(row.final_lop ?? 0) === next.final_lop &&
+    (row.hr_action ?? null) === next.hr_action &&
+    Boolean(row.needs_hr_decision) === next.needs_hr_decision &&
+    Boolean(row.skipped_from_lop) === next.skipped_from_lop
+  );
+}
+
 /**
- * Re-apply attendance rules + approved permissions on open imports.
- * Keeps days where HR typed an override reason.
+ * Re-apply attendance rules + approved permissions on open imports (batched).
+ * Keeps days where HR typed an override reason. Call only when rules_version is behind.
+ * Pass employeeId to refresh a single card without stamping the import.
  */
 async function refreshOpenImportDayReviews(
   supabase: SupabaseClient,
   importId: string,
   periodKey: string,
+  options?: { employeeId?: string; stampVersion?: boolean },
 ): Promise<void> {
   const period = parsePeriod(periodKey);
-  const { data: reviews, error: reviewError } = await supabase
-    .from('attendance_day_reviews')
-    .select('*')
-    .eq('import_id', importId);
+  let reviewQuery = supabase.from('attendance_day_reviews').select('*').eq('import_id', importId);
+  if (options?.employeeId) {
+    reviewQuery = reviewQuery.eq('employee_id', options.employeeId);
+  }
+  const { data: reviews, error: reviewError } = await reviewQuery;
   if (reviewError || !reviews?.length) return;
 
-  const { data: punchRows } = await supabase
+  let punchQuery = supabase
     .from('attendance_import_rows')
     .select('employee_id, attendance_date, raw_in, raw_out')
     .eq('import_id', importId)
     .not('employee_id', 'is', null);
+  if (options?.employeeId) {
+    punchQuery = punchQuery.eq('employee_id', options.employeeId);
+  }
+  const { data: punchRows } = await punchQuery;
 
   const punches = new Map<string, { inTime: string | null; outTime: string | null }>();
   for (const row of punchRows ?? []) {
@@ -141,25 +204,38 @@ async function refreshOpenImportDayReviews(
   const workingDays = await loadWorkingDays(supabase);
   const holidayDates = await loadHolidayDates(supabase);
   const workWeeks = await listWorkWeekRows(supabase);
-  const { data: leaves } = await supabase
+  let leaveQuery = supabase
     .from('leave_applications')
     .select('employee_id, start_date, end_date, duration, leave_types (name, paid)')
     .eq('status', 'APPROVED')
     .lte('start_date', period.end)
     .gte('end_date', period.start);
-  const { data: permissions } = await supabase
+  if (options?.employeeId) {
+    leaveQuery = leaveQuery.eq('employee_id', options.employeeId);
+  }
+  const { data: leaves } = await leaveQuery;
+  let permissionQuery = supabase
     .from('work_permissions')
     .select('employee_id, permission_date, minutes, status, slot')
     .gte('permission_date', period.start)
     .lte('permission_date', period.end);
-  const { data: assignmentRows } = await supabase
+  if (options?.employeeId) {
+    permissionQuery = permissionQuery.eq('employee_id', options.employeeId);
+  }
+  const { data: permissions } = await permissionQuery;
+  let assignmentQuery = supabase
     .from('shift_assignments')
     .select('employee_id, effective_from, effective_to, shifts (*)');
+  if (options?.employeeId) {
+    assignmentQuery = assignmentQuery.eq('employee_id', options.employeeId);
+  }
+  const { data: assignmentRows } = await assignmentQuery;
   const assignments = (assignmentRows ?? []) as AssignmentRow[];
   const overrides = await listApprovedShiftOverrides(supabase, period.start, period.end);
   const { data: allShifts } = await supabase.from('shifts').select('*');
   const shiftById = new Map(((allShifts ?? []) as ShiftRow[]).map((row) => [row.id, row]));
 
+  const updates: Record<string, unknown>[] = [];
   for (const row of reviews) {
     if (String(row.reason ?? '').trim()) continue;
     const employeeId = row.employee_id as string;
@@ -189,28 +265,66 @@ async function refreshOpenImportDayReviews(
       permissionSlot: permission.slot,
       leave,
     });
-    await supabase
-      .from('attendance_day_reviews')
-      .update({
-        status: derived.status,
-        shift_name: shift?.name ?? null,
-        actual_in: actualIn?.toISOString() ?? null,
-        actual_out: actualOut?.toISOString() ?? null,
-        worked_minutes: derived.workedMinutes,
-        late_minutes: derived.lateMinutes,
-        permission_minutes: permission.minutes,
-        permission_covered: proposal.permissionCovered,
-        leave_type_name: leave?.typeName ?? null,
-        leave_paid: leave ? leave.paid : null,
-        leave_duration: leave?.duration ?? null,
-        proposed_lop: proposal.proposedLop,
-        final_lop: proposal.finalLop,
-        hr_action: proposal.hrAction,
-        needs_hr_decision: proposal.needsHrDecision,
-        skipped_from_lop: proposal.skippedFromLop,
-      })
-      .eq('id', row.id);
+    const next = {
+      status: derived.status,
+      shift_name: shift?.name ?? null,
+      actual_in: actualIn?.toISOString() ?? null,
+      actual_out: actualOut?.toISOString() ?? null,
+      worked_minutes: derived.workedMinutes,
+      late_minutes: derived.lateMinutes,
+      permission_minutes: permission.minutes,
+      permission_covered: proposal.permissionCovered,
+      leave_type_name: leave?.typeName ?? null,
+      leave_paid: leave ? leave.paid : null,
+      leave_duration: leave?.duration ?? null,
+      proposed_lop: Number(proposal.proposedLop ?? 0),
+      final_lop: Number(proposal.finalLop ?? 0),
+      hr_action: proposal.hrAction,
+      needs_hr_decision: proposal.needsHrDecision,
+      skipped_from_lop: proposal.skippedFromLop,
+    };
+    if (!dayReviewChanged(row, next)) continue;
+    updates.push({ id: row.id as string, ...next });
   }
+
+  for (let i = 0; i < updates.length; i += 25) {
+    const chunk = updates.slice(i, i + 25);
+    const results = await Promise.all(
+      chunk.map(({ id, ...fields }) =>
+        supabase.from('attendance_day_reviews').update(fields).eq('id', id as string),
+      ),
+    );
+    const failed = results.find((result) => result.error);
+    if (failed?.error) {
+      throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to refresh attendance day reviews.', 500);
+    }
+  }
+
+  if (options?.stampVersion !== false && !options?.employeeId) {
+    const { error: stampError } = await supabase
+      .from('attendance_imports')
+      .update({ rules_version: ATTENDANCE_RULES_VERSION })
+      .eq('id', importId);
+    // Ignore missing-column until migration 079 is applied; in-memory cache still gates repeats.
+    void stampError;
+  }
+}
+
+const refreshedImportIds = new Set<string>();
+const refreshedEmployeeKeys = new Set<string>();
+
+async function maybeRefreshOpenImportRules(
+  supabase: SupabaseClient,
+  imp: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const importId = imp.id as string;
+  if (!needsRulesRefresh(imp)) return imp;
+  if (refreshedImportIds.has(importId)) {
+    return { ...imp, rules_version: ATTENDANCE_RULES_VERSION };
+  }
+  await refreshOpenImportDayReviews(supabase, importId, imp.period as string);
+  refreshedImportIds.add(importId);
+  return { ...imp, rules_version: ATTENDANCE_RULES_VERSION };
 }
 
 function clock(iso: string | null): string | null {
@@ -233,12 +347,9 @@ export function createAttendanceImportService(supabase: SupabaseClient) {
 
     async get(actor: RequestUser, id: string) {
       requireView(actor);
-      const { data: imp, error } = await supabase.from('attendance_imports').select('*').eq('id', id).maybeSingle();
-      if (error || !imp) throw new AppError(API_ERROR_CODES.NOT_FOUND, 'Import not found.', 404);
-
-      if (imp.status === 'IN_REVIEW' || imp.status === 'PARSED') {
-        await refreshOpenImportDayReviews(supabase, id, imp.period as string);
-      }
+      const { data: rawImp, error } = await supabase.from('attendance_imports').select('*').eq('id', id).maybeSingle();
+      if (error || !rawImp) throw new AppError(API_ERROR_CODES.NOT_FOUND, 'Import not found.', 404);
+      const imp = await maybeRefreshOpenImportRules(supabase, rawImp as Record<string, unknown>);
 
       const { data: rowData } = await supabase.from('attendance_import_rows').select('*').eq('import_id', id);
       const { data: reviews } = await supabase
@@ -247,7 +358,14 @@ export function createAttendanceImportService(supabase: SupabaseClient) {
         .eq('import_id', id)
         .order('attendance_date');
 
-      const employeeIds = [...new Set((reviews ?? []).map((row) => row.employee_id as string))];
+      const daysByEmployee = new Map<string, Record<string, unknown>[]>();
+      for (const row of reviews ?? []) {
+        const employeeId = row.employee_id as string;
+        const list = daysByEmployee.get(employeeId);
+        if (list) list.push(row);
+        else daysByEmployee.set(employeeId, [row]);
+      }
+      const employeeIds = [...daysByEmployee.keys()];
       const { data: employees } = employeeIds.length
         ? await supabase
             .from('employees')
@@ -264,17 +382,17 @@ export function createAttendanceImportService(supabase: SupabaseClient) {
         .lte('permission_date', period.end);
       const usedByEmployee = new Map<string, number>();
       for (const row of monthPermissions ?? []) {
-        const id = row.employee_id as string;
+        const employeeId = row.employee_id as string;
         usedByEmployee.set(
-          id,
-          (usedByEmployee.get(id) ?? 0) +
+          employeeId,
+          (usedByEmployee.get(employeeId) ?? 0) +
             quotaUsed([{ minutes: Number(row.minutes), status: row.status as string }]),
         );
       }
       const cards = employeeIds
         .map((employeeId) => {
           const emp = employeeMap.get(employeeId);
-          const days = (reviews ?? []).filter((row) => row.employee_id === employeeId);
+          const days = daysByEmployee.get(employeeId) ?? [];
           return mapCard(emp, days, period.monthName, usedByEmployee.get(employeeId) ?? 0);
         })
         .sort((a, b) => b.openFlags - a.openFlags || a.fullName.localeCompare(b.fullName));
@@ -307,10 +425,59 @@ export function createAttendanceImportService(supabase: SupabaseClient) {
     },
 
     async getCard(actor: RequestUser, importId: string, employeeId: string) {
-      const bundle = await this.get(actor, importId);
-      const card = bundle.cards.find((item) => item.employeeId === employeeId);
-      if (!card) throw new AppError(API_ERROR_CODES.NOT_FOUND, 'Review card not found.', 404);
-      return { import: bundle.import, card };
+      requireView(actor);
+      const { data: rawImp, error } = await supabase
+        .from('attendance_imports')
+        .select('*')
+        .eq('id', importId)
+        .maybeSingle();
+      if (error || !rawImp) throw new AppError(API_ERROR_CODES.NOT_FOUND, 'Import not found.', 404);
+      const imp = rawImp as Record<string, unknown>;
+
+      // Refresh only this employee (~31 days) so card opens stay fast even when month is stale.
+      if (needsRulesRefresh(imp)) {
+        const employeeKey = `${importId}:${employeeId}`;
+        if (!refreshedImportIds.has(importId) && !refreshedEmployeeKeys.has(employeeKey)) {
+          await refreshOpenImportDayReviews(supabase, importId, imp.period as string, {
+            employeeId,
+            stampVersion: false,
+          });
+          refreshedEmployeeKeys.add(employeeKey);
+        }
+      }
+
+      const { data: reviews } = await supabase
+        .from('attendance_day_reviews')
+        .select('*')
+        .eq('import_id', importId)
+        .eq('employee_id', employeeId)
+        .order('attendance_date');
+      if (!reviews?.length) throw new AppError(API_ERROR_CODES.NOT_FOUND, 'Review card not found.', 404);
+
+      const { data: emp } = await supabase
+        .from('employees')
+        .select('id, employee_code, full_name, companies (name)')
+        .eq('id', employeeId)
+        .maybeSingle();
+
+      const period = parsePeriod(imp.period as string);
+      const { data: monthPermissions } = await supabase
+        .from('work_permissions')
+        .select('minutes, status')
+        .eq('employee_id', employeeId)
+        .gte('permission_date', period.start)
+        .lte('permission_date', period.end);
+      const used = quotaUsed(
+        (monthPermissions ?? []).map((row) => ({
+          minutes: Number(row.minutes),
+          status: row.status as string,
+        })),
+      );
+
+      return {
+        import: mapImport(imp),
+        card: mapCard((emp as EmployeeRow | null) ?? undefined, reviews, period.monthName, used),
+      };
     },
 
     async upload(
@@ -514,13 +681,24 @@ export function createAttendanceImportService(supabase: SupabaseClient) {
 
       const { data: updated, error: statusError } = await supabase
         .from('attendance_imports')
-        .update({ status: 'IN_REVIEW' })
+        .update({ status: 'IN_REVIEW', rules_version: ATTENDANCE_RULES_VERSION })
         .eq('id', created.id)
         .select('*')
         .single();
       if (statusError || !updated) {
-        throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to mark import for review.', 500);
+        // Fallback if rules_version column is not migrated yet.
+        const { data: fallback, error: fallbackError } = await supabase
+          .from('attendance_imports')
+          .update({ status: 'IN_REVIEW' })
+          .eq('id', created.id)
+          .select('*')
+          .single();
+        if (fallbackError || !fallback) {
+          throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to mark import for review.', 500);
+        }
       }
+
+      refreshedImportIds.add(created.id as string);
 
       await writeAuditLog(supabase, {
         actorId: actor.employeeId,
