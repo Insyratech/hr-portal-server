@@ -8,6 +8,7 @@ import { writeAuditLog } from '../../audit/write-audit-log';
 import { portalUrl } from '../../notifications/mail';
 import { listActiveStaff, notifyStaff } from '../../notifications/notify-staff';
 import { combineDateAndTime, deriveAttendance } from '../rule-engine';
+import { adjustPunchClock } from '../punch-clock';
 import { toShiftDefinition, type ShiftRow } from '../support';
 import { loadHolidayDates, loadWorkingDays } from '../../leave/support';
 import { listWorkWeekRows } from '../work-week';
@@ -105,6 +106,113 @@ async function supersedePeriod(supabase: SupabaseClient, period: string): Promis
     .neq('status', 'REJECTED');
 }
 
+/**
+ * Re-apply attendance rules + approved permissions on open imports.
+ * Keeps days where HR typed an override reason.
+ */
+async function refreshOpenImportDayReviews(
+  supabase: SupabaseClient,
+  importId: string,
+  periodKey: string,
+): Promise<void> {
+  const period = parsePeriod(periodKey);
+  const { data: reviews, error: reviewError } = await supabase
+    .from('attendance_day_reviews')
+    .select('*')
+    .eq('import_id', importId);
+  if (reviewError || !reviews?.length) return;
+
+  const { data: punchRows } = await supabase
+    .from('attendance_import_rows')
+    .select('employee_id, attendance_date, raw_in, raw_out')
+    .eq('import_id', importId)
+    .not('employee_id', 'is', null);
+
+  const punches = new Map<string, { inTime: string | null; outTime: string | null }>();
+  for (const row of punchRows ?? []) {
+    const employeeId = row.employee_id as string;
+    const iso = row.attendance_date as string;
+    punches.set(`${employeeId}:${iso}`, {
+      inTime: (row.raw_in as string | null) ?? null,
+      outTime: (row.raw_out as string | null) ?? null,
+    });
+  }
+
+  const workingDays = await loadWorkingDays(supabase);
+  const holidayDates = await loadHolidayDates(supabase);
+  const workWeeks = await listWorkWeekRows(supabase);
+  const { data: leaves } = await supabase
+    .from('leave_applications')
+    .select('employee_id, start_date, end_date, duration, leave_types (name, paid)')
+    .eq('status', 'APPROVED')
+    .lte('start_date', period.end)
+    .gte('end_date', period.start);
+  const { data: permissions } = await supabase
+    .from('work_permissions')
+    .select('employee_id, permission_date, minutes, status, slot')
+    .gte('permission_date', period.start)
+    .lte('permission_date', period.end);
+  const { data: assignmentRows } = await supabase
+    .from('shift_assignments')
+    .select('employee_id, effective_from, effective_to, shifts (*)');
+  const assignments = (assignmentRows ?? []) as AssignmentRow[];
+  const overrides = await listApprovedShiftOverrides(supabase, period.start, period.end);
+  const { data: allShifts } = await supabase.from('shifts').select('*');
+  const shiftById = new Map(((allShifts ?? []) as ShiftRow[]).map((row) => [row.id, row]));
+
+  for (const row of reviews) {
+    if (String(row.reason ?? '').trim()) continue;
+    const employeeId = row.employee_id as string;
+    const iso = row.attendance_date as string;
+    const shift = shiftForDay(assignments, shiftById, overrides, employeeId, iso);
+    const punch = punches.get(`${employeeId}:${iso}`);
+    const leave = leaveOnDate(leaves ?? [], employeeId, iso);
+    const permission = approvedPermission(permissions ?? [], employeeId, iso);
+    const rawIn = punch?.inTime ? combineDateAndTime(iso, punch.inTime) : null;
+    const rawOut = punch?.outTime ? combineDateAndTime(iso, punch.outTime) : null;
+    const actualIn = adjustPunchClock(rawIn);
+    const actualOut = adjustPunchClock(rawOut);
+    const derived = deriveAttendance({
+      isoDate: iso,
+      workingDays,
+      holidayDates,
+      weekPattern: patternOnDate(workWeeks, employeeId, iso),
+      onApprovedLeave: Boolean(leave),
+      shift: shift ? toShiftDefinition(shift) : null,
+      actualIn,
+      actualOut,
+      permissionMinutes: permission.minutes,
+    });
+    const proposal = proposeLop({
+      derived,
+      permissionMinutes: permission.minutes,
+      permissionSlot: permission.slot,
+      leave,
+    });
+    await supabase
+      .from('attendance_day_reviews')
+      .update({
+        status: derived.status,
+        shift_name: shift?.name ?? null,
+        actual_in: actualIn?.toISOString() ?? null,
+        actual_out: actualOut?.toISOString() ?? null,
+        worked_minutes: derived.workedMinutes,
+        late_minutes: derived.lateMinutes,
+        permission_minutes: permission.minutes,
+        permission_covered: proposal.permissionCovered,
+        leave_type_name: leave?.typeName ?? null,
+        leave_paid: leave ? leave.paid : null,
+        leave_duration: leave?.duration ?? null,
+        proposed_lop: proposal.proposedLop,
+        final_lop: proposal.finalLop,
+        hr_action: proposal.hrAction,
+        needs_hr_decision: proposal.needsHrDecision,
+        skipped_from_lop: proposal.skippedFromLop,
+      })
+      .eq('id', row.id);
+  }
+}
+
 function clock(iso: string | null): string | null {
   if (!iso) return null;
   return iso.slice(11, 16);
@@ -127,6 +235,10 @@ export function createAttendanceImportService(supabase: SupabaseClient) {
       requireView(actor);
       const { data: imp, error } = await supabase.from('attendance_imports').select('*').eq('id', id).maybeSingle();
       if (error || !imp) throw new AppError(API_ERROR_CODES.NOT_FOUND, 'Import not found.', 404);
+
+      if (imp.status === 'IN_REVIEW' || imp.status === 'PARSED') {
+        await refreshOpenImportDayReviews(supabase, id, imp.period as string);
+      }
 
       const { data: rowData } = await supabase.from('attendance_import_rows').select('*').eq('import_id', id);
       const { data: reviews } = await supabase
@@ -349,8 +461,10 @@ export function createAttendanceImportService(supabase: SupabaseClient) {
           const punch = punches.get(`${emp.id}:${iso}`);
           const leave = leaveOnDate(leaves ?? [], emp.id, iso);
           const permission = approvedPermission(permissions ?? [], emp.id, iso);
-          const actualIn = punch?.inTime ? combineDateAndTime(iso, punch.inTime) : null;
-          const actualOut = punch?.outTime ? combineDateAndTime(iso, punch.outTime) : null;
+          const rawIn = punch?.inTime ? combineDateAndTime(iso, punch.inTime) : null;
+          const rawOut = punch?.outTime ? combineDateAndTime(iso, punch.outTime) : null;
+          const actualIn = adjustPunchClock(rawIn);
+          const actualOut = adjustPunchClock(rawOut);
           const derived = deriveAttendance({
             isoDate: iso,
             workingDays,
@@ -360,6 +474,7 @@ export function createAttendanceImportService(supabase: SupabaseClient) {
             shift: shift ? toShiftDefinition(shift) : null,
             actualIn,
             actualOut,
+            permissionMinutes: permission.minutes,
           });
           const proposal = proposeLop({
             derived,

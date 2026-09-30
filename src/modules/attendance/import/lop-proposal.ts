@@ -31,6 +31,7 @@ export function lopFromAction(action: HrAction): number {
  * LOP overlay on deriveAttendance. Weekly offs/holidays never become LOP.
  * Miss punch always waits for HR. Never auto half-day for miss punch.
  * Late waits for HR only on fixed shifts (status LATE), not on flexible hours.
+ * Approved permission minutes that already cleared shortfall in deriveAttendance set permissionCovered.
  */
 export function proposeLop(input: {
   derived: DeriveAttendanceResult;
@@ -44,7 +45,13 @@ export function proposeLop(input: {
   const slot = input.permissionSlot === 'END' ? 'END' : 'START';
   const startCovered = slot === 'START' && lateMinutes > 0 && input.permissionMinutes >= lateMinutes;
   const endCovered = slot === 'END' && earlyExitMinutes > 0 && input.permissionMinutes >= earlyExitMinutes;
-  const permissionCovered = startCovered || endCovered;
+  /** Flexible duration shortfall is stored as earlyExitMinutes; any approved slot can cover it. */
+  const flexibleDurationCovered =
+    input.derived.scheduledIn === null &&
+    earlyExitMinutes > 0 &&
+    input.permissionMinutes >= earlyExitMinutes;
+  const permissionCovered =
+    Boolean(input.derived.permissionApplied) || startCovered || endCovered || flexibleDurationCovered;
 
   if (status === 'HOLIDAY' || status === 'WEEK_OFF') {
     return {
@@ -93,7 +100,7 @@ export function proposeLop(input: {
     };
   }
 
-  if (status === 'LATE' && !startCovered) {
+  if (status === 'LATE' && !permissionCovered) {
     return {
       proposedLop: null,
       finalLop: null,
@@ -104,7 +111,7 @@ export function proposeLop(input: {
     };
   }
 
-  if (endCovered && (status === 'HALF_DAY' || status === 'LATE' || status === 'PRESENT')) {
+  if (permissionCovered && (status === 'HALF_DAY' || status === 'LATE' || status === 'PRESENT')) {
     return {
       proposedLop: 0,
       finalLop: 0,
@@ -116,6 +123,16 @@ export function proposeLop(input: {
   }
 
   if (status === 'ABSENT') {
+    if (permissionCovered) {
+      return {
+        proposedLop: 0,
+        finalLop: 0,
+        hrAction: 'NO_LOP',
+        needsHrDecision: false,
+        skippedFromLop: false,
+        permissionCovered: true,
+      };
+    }
     return {
       proposedLop: 1,
       finalLop: 1,

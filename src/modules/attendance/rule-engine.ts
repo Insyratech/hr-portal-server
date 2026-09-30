@@ -1,4 +1,5 @@
 import { isWorkingDate, parseIsoDate } from '../leave/day-count';
+import { effectiveGraceMinutes } from './punch-clock';
 import type { DeriveAttendanceInput, DeriveAttendanceResult, ShiftDefinition } from './types';
 
 function parseTimeParts(time: string): { hours: number; minutes: number } {
@@ -27,6 +28,7 @@ export function scheduledBounds(isoDate: string, shift: ShiftDefinition): { sche
  * Single attendance formula used on Excel import and read.
  * Weekly off: personal week pattern if set, otherwise weekdays missing from org workingDays.
  * MISSING_PUNCH is a status only; HR chooses LOP (no auto half-day).
+ * Approved permission minutes credit flexible duration shortfalls and fixed late/early exits.
  */
 export function deriveAttendance(input: DeriveAttendanceInput): DeriveAttendanceResult {
   const empty: DeriveAttendanceResult = {
@@ -37,6 +39,7 @@ export function deriveAttendance(input: DeriveAttendanceInput): DeriveAttendance
     overtimeMinutes: 0,
     scheduledIn: null,
     scheduledOut: null,
+    permissionApplied: false,
   };
 
   if (input.onApprovedLeave) {
@@ -93,13 +96,19 @@ export function deriveAttendance(input: DeriveAttendanceInput): DeriveAttendance
 
   const workedMinutes = minutesBetween(input.actualIn, input.actualOut);
   const halfThreshold = Math.floor(input.shift.minimumDurationMinutes / 2);
+  const permissionMinutes = Math.max(0, input.permissionMinutes ?? 0);
+  const grace = effectiveGraceMinutes(input.shift.gracePeriodMinutes);
   const overtimeMinutes = Math.max(0, workedMinutes - input.shift.minimumDurationMinutes);
 
   if (input.shift.flexible) {
+    const presentAt = Math.max(halfThreshold, input.shift.minimumDurationMinutes - grace);
+    const shortfall = Math.max(0, presentAt - workedMinutes);
+    const credited = workedMinutes + permissionMinutes;
+    const permissionApplied = shortfall > 0 && permissionMinutes >= shortfall;
     let status: DeriveAttendanceResult['status'] = 'PRESENT';
-    if (workedMinutes >= input.shift.minimumDurationMinutes) {
+    if (credited >= presentAt) {
       status = 'PRESENT';
-    } else if (workedMinutes >= halfThreshold) {
+    } else if (credited >= halfThreshold) {
       status = 'HALF_DAY';
     } else {
       status = 'ABSENT';
@@ -108,16 +117,18 @@ export function deriveAttendance(input: DeriveAttendanceInput): DeriveAttendance
       status,
       workedMinutes,
       lateMinutes: 0,
-      earlyExitMinutes: 0,
+      /** Duration shortfall vs required−grace — used so END/any permission can clear LOP. */
+      earlyExitMinutes: shortfall,
       overtimeMinutes,
       scheduledIn: null,
       scheduledOut: null,
+      permissionApplied,
     };
   }
 
   const { scheduledIn, scheduledOut } = scheduledBounds(input.isoDate, input.shift);
 
-  const graceEnd = new Date(scheduledIn.getTime() + input.shift.gracePeriodMinutes * 60_000);
+  const graceEnd = new Date(scheduledIn.getTime() + grace * 60_000);
   let lateMinutes = Math.max(0, minutesBetween(graceEnd, input.actualIn));
   const earlyCutoff = new Date(scheduledOut.getTime() - input.shift.earlyExitThresholdMinutes * 60_000);
   let earlyExitMinutes =
@@ -125,11 +136,20 @@ export function deriveAttendance(input: DeriveAttendanceInput): DeriveAttendance
       ? minutesBetween(input.actualOut, scheduledOut)
       : 0;
 
+  const lateCovered = lateMinutes > 0 && permissionMinutes >= lateMinutes;
+  const earlyCovered = earlyExitMinutes > 0 && permissionMinutes >= earlyExitMinutes;
+  if (lateCovered) lateMinutes = 0;
+  if (earlyCovered) earlyExitMinutes = 0;
+  const permissionApplied = lateCovered || earlyCovered;
+
+  const presentAt = Math.max(halfThreshold, input.shift.minimumDurationMinutes - grace);
+  const credited = workedMinutes + (permissionApplied ? permissionMinutes : 0);
+
   let status: DeriveAttendanceResult['status'] = 'PRESENT';
 
-  if (workedMinutes < halfThreshold) {
+  if (credited < halfThreshold) {
     status = 'ABSENT';
-  } else if (workedMinutes < input.shift.minimumDurationMinutes || earlyExitMinutes > 0) {
+  } else if (credited < presentAt || earlyExitMinutes > 0) {
     status = 'HALF_DAY';
   } else if (lateMinutes > 0) {
     status =
@@ -148,5 +168,6 @@ export function deriveAttendance(input: DeriveAttendanceInput): DeriveAttendance
     overtimeMinutes,
     scheduledIn,
     scheduledOut,
+    permissionApplied,
   };
 }

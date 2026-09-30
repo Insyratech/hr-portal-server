@@ -98,7 +98,8 @@ describe('deriveAttendance', () => {
       actualOut: combineDateAndTime('2026-08-21', '17:25'),
     });
     expect(result.workedMinutes).toBe(540);
-    expect(result.lateMinutes).toBe(15);
+    // Floor grace is 15m even when the shift stores 10m.
+    expect(result.lateMinutes).toBe(10);
     expect(result.status).toBe('LATE');
   });
 

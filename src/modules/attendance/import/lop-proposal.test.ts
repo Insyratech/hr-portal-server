@@ -46,16 +46,17 @@ describe('proposeLop', () => {
     expect(proposal.hrAction).toBeNull();
   });
 
-  it('proposes no LOP when 45m late is covered by 1h permission', () => {
+  it('proposes no LOP when late beyond grace is covered by 1h permission', () => {
     const derived = derive('2026-08-24', '09:55', '18:55');
-    expect(derived.lateMinutes).toBe(45);
+    // 09:00 start + 15m floor grace → late from 09:15 = 40m
+    expect(derived.lateMinutes).toBe(40);
     const proposal = proposeLop({ derived, permissionMinutes: 60, leave: null });
     expect(proposal.needsHrDecision).toBe(false);
     expect(proposal.proposedLop).toBe(0);
     expect(proposal.permissionCovered).toBe(true);
   });
 
-  it('asks HR when 45m late has 0 permission', () => {
+  it('asks HR when late beyond grace has 0 permission', () => {
     const derived = derive('2026-08-24', '09:55', '18:55');
     const proposal = proposeLop({ derived, permissionMinutes: 0, leave: null });
     expect(proposal.needsHrDecision).toBe(true);
@@ -200,5 +201,43 @@ describe('proposeLop', () => {
     expect(proposal.permissionCovered).toBe(true);
     expect(proposal.proposedLop).toBe(0);
     expect(proposal.needsHrDecision).toBe(false);
+  });
+
+  it('covers flexible short day when approved permission fills the required hours', () => {
+    const flexible = {
+      startTime: '00:00',
+      endTime: '23:59',
+      minimumDurationMinutes: 540,
+      gracePeriodMinutes: 0,
+      lateThresholdMinutes: 0,
+      earlyExitThresholdMinutes: 0,
+      flexible: true,
+    };
+    const derived = deriveAttendance({
+      isoDate: '2026-09-12',
+      workingDays: monSat,
+      holidayDates: [],
+      onApprovedLeave: false,
+      shift: flexible,
+      actualIn: combineDateAndTime('2026-09-12', '09:18'),
+      actualOut: combineDateAndTime('2026-09-12', '17:18'),
+      permissionMinutes: 60,
+    });
+    expect(derived.workedMinutes).toBe(480);
+    expect(derived.status).toBe('PRESENT');
+    expect(derived.permissionApplied).toBe(true);
+    expect(
+      proposeLop({
+        derived,
+        permissionMinutes: 60,
+        permissionSlot: 'END',
+        leave: null,
+      }),
+    ).toMatchObject({
+      proposedLop: 0,
+      finalLop: 0,
+      hrAction: 'NO_LOP',
+      permissionCovered: true,
+    });
   });
 });

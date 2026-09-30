@@ -31,6 +31,8 @@ export type DeriveAttendanceInput = {
   shift: ShiftDefinition | null;
   actualIn: Date | null;
   actualOut: Date | null;
+  /** Approved work-permission minutes for this day (monthly 120m quota). */
+  permissionMinutes?: number;
 };
 
 export type DeriveAttendanceResult = {
@@ -41,4 +43,6 @@ export type DeriveAttendanceResult = {
   overtimeMinutes: number;
   scheduledIn: Date | null;
   scheduledOut: Date | null;
+  /** True when approved permission minutes filled a duration / late shortfall. */
+  permissionApplied?: boolean;
 };
