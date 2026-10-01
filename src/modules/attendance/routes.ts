@@ -32,6 +32,10 @@ const decideBody = Type.Object({
   reason: Type.Optional(Type.String()),
 });
 
+const confirmBody = Type.Object({
+  salarySlipEmployeeIds: Type.Array(Type.String({ format: 'uuid' }), { minItems: 1 }),
+});
+
 export async function registerAttendanceRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/v1/attendance/me', { preHandler: [requireAuth()] }, async (request) => {
     const supabase = requireSupabase(app.supabase);
@@ -113,11 +117,22 @@ export async function registerAttendanceRoutes(app: FastifyInstance): Promise<vo
 
   app.post(
     '/api/v1/attendance/imports/:id/confirm',
-    { preHandler: [requirePermission(PERMISSIONS.ATTENDANCE_MANAGE)] },
+    {
+      preHandler: [requirePermission(PERMISSIONS.ATTENDANCE_MANAGE)],
+      schema: { body: confirmBody },
+    },
     async (request) => {
       if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
       const { id } = request.params as { id: string };
-      return ok(await createAttendanceImportService(requireSupabase(app.supabase)).confirm(request.user, id, metaOf(request)));
+      const body = request.body as { salarySlipEmployeeIds: string[] };
+      return ok(
+        await createAttendanceImportService(requireSupabase(app.supabase)).confirm(
+          request.user,
+          id,
+          body,
+          metaOf(request),
+        ),
+      );
     },
   );
 

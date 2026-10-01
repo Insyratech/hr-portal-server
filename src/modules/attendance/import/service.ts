@@ -774,7 +774,12 @@ export function createAttendanceImportService(supabase: SupabaseClient) {
       return mapDay(data);
     },
 
-    async confirm(actor: RequestUser, id: string, meta: RequestMeta) {
+    async confirm(
+      actor: RequestUser,
+      id: string,
+      input: { salarySlipEmployeeIds: string[] },
+      meta: RequestMeta,
+    ) {
       requireManage(actor);
       const bundle = await this.get(actor, id);
       if (bundle.import.status === 'CONFIRMED') {
@@ -792,6 +797,25 @@ export function createAttendanceImportService(supabase: SupabaseClient) {
       }
       if (await payrollPublished(supabase, bundle.import.period)) {
         throw new AppError(API_ERROR_CODES.CONFLICT, 'Payroll for this month is published.', 409);
+      }
+
+      const allowedIds = new Set(bundle.cards.map((card) => card.employeeId));
+      const salarySlipEmployeeIds = [...new Set(input.salarySlipEmployeeIds)];
+      if (salarySlipEmployeeIds.length === 0) {
+        throw new AppError(
+          API_ERROR_CODES.VALIDATION_ERROR,
+          'Select at least one employee for salary slips before confirming.',
+          400,
+        );
+      }
+      for (const employeeId of salarySlipEmployeeIds) {
+        if (!allowedIds.has(employeeId)) {
+          throw new AppError(
+            API_ERROR_CODES.VALIDATION_ERROR,
+            'Salary slip selection includes an employee who is not on this import.',
+            400,
+          );
+        }
       }
 
       const { data: reviews, error } = await supabase.from('attendance_day_reviews').select('*').eq('import_id', id);
@@ -850,7 +874,11 @@ export function createAttendanceImportService(supabase: SupabaseClient) {
 
       const { data: confirmed, error: confirmError } = await supabase
         .from('attendance_imports')
-        .update({ status: 'CONFIRMED', confirmed_at: new Date().toISOString() })
+        .update({
+          status: 'CONFIRMED',
+          confirmed_at: new Date().toISOString(),
+          salary_slip_employee_ids: salarySlipEmployeeIds,
+        })
         .eq('id', id)
         .select('*')
         .single();
@@ -863,7 +891,11 @@ export function createAttendanceImportService(supabase: SupabaseClient) {
         action: 'attendance.import.confirm',
         entityType: 'attendance_import',
         entityId: id,
-        newValues: { period: bundle.import.period },
+        newValues: {
+          period: bundle.import.period,
+          salarySlipEmployeeIds,
+          salarySlipCount: salarySlipEmployeeIds.length,
+        },
         ...meta,
       });
 
@@ -1035,6 +1067,7 @@ function approvedPermission(
 }
 
 function mapImport(row: Record<string, unknown>) {
+  const slipIds = row.salary_slip_employee_ids;
   return {
     id: row.id as string,
     period: row.period as string,
@@ -1043,6 +1076,7 @@ function mapImport(row: Record<string, unknown>) {
     status: row.status as string,
     uploadedBy: row.uploaded_by as string,
     confirmedAt: (row.confirmed_at as string | null) ?? null,
+    salarySlipEmployeeIds: Array.isArray(slipIds) ? (slipIds as string[]) : null,
     createdAt: row.created_at as string,
   };
 }

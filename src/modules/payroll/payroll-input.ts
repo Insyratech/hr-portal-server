@@ -94,9 +94,19 @@ export async function loadPayrollInput(supabase: SupabaseClient, importId: strin
     .eq('import_id', imp.id);
   if (reviewError) throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load attendance reviews.', 500);
 
-  const employeeIds = [...new Set((reviews ?? []).map((row) => row.employee_id as string))];
+  const reviewEmployeeIds = [...new Set((reviews ?? []).map((row) => row.employee_id as string))];
+  const slipSelection = imp.salary_slip_employee_ids;
+  const employeeIds = Array.isArray(slipSelection)
+    ? reviewEmployeeIds.filter((id) => (slipSelection as string[]).includes(id))
+    : reviewEmployeeIds;
   if (employeeIds.length === 0) {
-    throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'This import has no employee reviews to pay.', 400);
+    throw new AppError(
+      API_ERROR_CODES.VALIDATION_ERROR,
+      Array.isArray(slipSelection)
+        ? 'No employees were selected for salary slips on this attendance confirm.'
+        : 'This import has no employee reviews to pay.',
+      400,
+    );
   }
 
   const [{ data: employeeRows }, { data: compensationRows }, { data: payments }, { data: types }] = await Promise.all([
