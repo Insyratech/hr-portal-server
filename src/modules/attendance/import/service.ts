@@ -834,6 +834,7 @@ export function createAttendanceImportService(supabase: SupabaseClient) {
         const employeeId = row.employee_id as string;
         const attendanceDate = row.attendance_date as string;
         const shift = shiftForDay(assignments, shiftById, overrides, employeeId, attendanceDate);
+        const status = freezeAttendanceStatus(row.status as string);
         const payload = {
           employee_id: employeeId,
           attendance_date: attendanceDate,
@@ -841,35 +842,24 @@ export function createAttendanceImportService(supabase: SupabaseClient) {
           actual_in: row.actual_in,
           actual_out: row.actual_out,
           worked_minutes: row.worked_minutes,
-          status: row.status,
-          late_minutes: row.late_minutes,
+          status,
+          late_minutes: Number(row.late_minutes ?? 0),
           early_exit_minutes: 0,
           overtime_minutes: 0,
         };
-        const { data: existing } = await supabase
+        const { data: upserted, error: ups } = await supabase
           .from('attendance_records')
+          .upsert(payload, { onConflict: 'employee_id,attendance_date' })
           .select('id')
-          .eq('employee_id', employeeId)
-          .eq('attendance_date', attendanceDate)
-          .maybeSingle();
-        if (existing) {
-          const { data: updated, error: upd } = await supabase
-            .from('attendance_records')
-            .update(payload)
-            .eq('id', existing.id)
-            .select('id')
-            .single();
-          if (upd || !updated) throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to freeze attendance.', 500);
-          await supabase.from('attendance_day_reviews').update({ attendance_record_id: updated.id }).eq('id', row.id);
-        } else {
-          const { data: inserted, error: ins } = await supabase
-            .from('attendance_records')
-            .insert(payload)
-            .select('id')
-            .single();
-          if (ins || !inserted) throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to freeze attendance.', 500);
-          await supabase.from('attendance_day_reviews').update({ attendance_record_id: inserted.id }).eq('id', row.id);
+          .single();
+        if (ups || !upserted) {
+          throw new AppError(
+            API_ERROR_CODES.INTERNAL_ERROR,
+            `Failed to freeze attendance for ${attendanceDate} (${status})${ups?.message ? `: ${ups.message}` : '.'}`,
+            500,
+          );
         }
+        await supabase.from('attendance_day_reviews').update({ attendance_record_id: upserted.id }).eq('id', row.id);
       }
 
       const { data: confirmed, error: confirmError } = await supabase
@@ -1064,6 +1054,24 @@ function approvedPermission(
     minutes: Number(match.minutes),
     slot: match.slot === 'END' ? 'END' : 'START',
   };
+}
+
+/** Statuses allowed on attendance_records (must match DB check constraint). */
+const FROZEN_ATTENDANCE_STATUSES = new Set([
+  'PRESENT',
+  'ABSENT',
+  'LATE',
+  'HALF_DAY',
+  'LEAVE',
+  'HOLIDAY',
+  'WEEK_OFF',
+  'MISSING_PUNCH',
+  'NO_SHIFT',
+]);
+
+function freezeAttendanceStatus(status: string): string {
+  if (FROZEN_ATTENDANCE_STATUSES.has(status)) return status;
+  return 'ABSENT';
 }
 
 function mapImport(row: Record<string, unknown>) {
