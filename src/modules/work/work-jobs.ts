@@ -679,7 +679,7 @@ export async function runWeeklyPptCsoDigest(
         missingNames.length
           ? `Missing: ${missingNames.join(', ')}${missing > missingNames.length ? '…' : ''}`
           : '',
-        'Open Weekly work updates to download or share with General Manager.',
+        'Open Weekly work updates to review submission status. Weekly PPTs go to General Manager on upload.',
       ].filter(Boolean),
       details: [
         { label: 'Week', value: `${week.start} – ${week.end}` },

@@ -1,12 +1,12 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { API_ERROR_CODES } from '../../shared/constants/error-codes';
-import { PERMISSIONS, ROLE_CODES } from '../../shared/constants/permissions';
+import { PERMISSIONS } from '../../shared/constants/permissions';
 import { assertCsoDomainOwner, assertGmDomainOwner, isCsoDomainOwner } from '../../shared/domain-owners';
 import { AppError } from '../../shared/errors/app-error';
 import type { RequestUser } from '../../shared/types/request-user';
 import { writeAuditLog } from '../audit/write-audit-log';
-import { portalUrl, sendMail } from '../notifications/mail';
-import { listActiveStaff, listStaffByRole, loadStaffById, notifyStaff } from '../notifications/notify-staff';
+import { sendMail } from '../notifications/mail';
+import { listActiveStaff } from '../notifications/notify-staff';
 import { skipsWorkApprovalLoop, weeklyPptGlanceStatus, type WeeklyPptGlanceStatus } from './approval';
 import { loadEmployeeRoleMap } from './employee-roles';
 import { formatIsoDateInZone } from './ist-clock';
@@ -18,6 +18,7 @@ import {
   sundayOfPptWeek,
   type WeeklyPptTiming,
 } from './ppt-week';
+import { WEEKLY_PPT_DIRECT_TO_GM_NOTE, syncWeekWeeklyPptsToGm } from './weekly-ppt-route';
 
 type RequestMeta = { ipAddress?: string | null; userAgent?: string | null };
 
@@ -321,7 +322,10 @@ export function createWeeklyPptDeskService(supabase: SupabaseClient) {
           weekStart: row.week_start as string,
           weekEnd: row.week_end as string,
           sharedBy: row.shared_by as string,
-          sharedByName: sharerName.get(row.shared_by as string) ?? 'CSO',
+          sharedByName:
+            (row.note as string) === WEEKLY_PPT_DIRECT_TO_GM_NOTE
+              ? 'Direct from employees'
+              : (sharerName.get(row.shared_by as string) ?? 'CSO'),
           sharedAt: row.shared_at as string,
           fileCount: row.file_count as number,
           note: row.note as string,
@@ -335,89 +339,32 @@ export function createWeeklyPptDeskService(supabase: SupabaseClient) {
       const week =
         weekStart && /^\d{4}-\d{2}-\d{2}$/.test(weekStart) ? pptWeekBounds(weekStart) : pptWeekBounds(today);
 
-      const { data: updates, error } = await supabase
-        .from('weekly_work_updates')
-        .select('*')
-        .eq('week_start', week.start);
-      if (error) throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load weekly updates.', 500);
-      const rows = (updates ?? []) as UpdateRow[];
-      if (rows.length === 0) {
-        throw new AppError(
-          API_ERROR_CODES.VALIDATION_ERROR,
-          'No weekly PPTs submitted for this week yet. Nothing to share.',
-          400,
-        );
-      }
-
-      const { data: share, error: shareError } = await supabase
-        .from('weekly_ppt_shares')
-        .insert({
-          week_start: week.start,
-          week_end: week.end,
-          shared_by: actor.employeeId,
-          file_count: rows.length,
-          note: '',
-        })
-        .select('id, week_start, week_end, shared_at, file_count')
-        .single();
-      if (shareError || !share) {
-        throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to create the share package.', 500);
-      }
-
-      const { error: itemsError } = await supabase.from('weekly_ppt_share_items').insert(
-        rows.map((row) => ({ share_id: share.id, update_id: row.id })),
-      );
-      if (itemsError) {
-        await supabase.from('weekly_ppt_shares').delete().eq('id', share.id);
-        throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to attach files to the share.', 500);
-      }
+      // Weekly PPTs route to GM on upload. This syncs any pre-deploy / missed rows into the GM package.
+      const synced = await syncWeekWeeklyPptsToGm(supabase, {
+        weekStart: week.start,
+        weekEnd: week.end,
+        actorEmployeeId: actor.employeeId,
+      });
 
       await writeAuditLog(supabase, {
         actorId: actor.employeeId,
-        action: 'weekly_ppt_share.create',
+        action: 'weekly_ppt_share.sync_to_gm',
         entityType: 'weekly_ppt_share',
-        entityId: share.id as string,
-        newValues: { weekStart: week.start, fileCount: rows.length },
+        entityId: synced.shareId,
+        newValues: { weekStart: week.start, added: synced.added, total: synced.total },
         ...meta,
-      });
-
-      const cso = await loadStaffById(supabase, actor.employeeId);
-      const gmStaff = await listStaffByRole(supabase, ROLE_CODES.GENERAL_MANAGER);
-      const href = portalUrl(`/gm/weekly-updates?shareId=${encodeURIComponent(share.id as string)}`);
-      const fileLines = rows
-        .slice(0, 12)
-        .map((row) => row.system_file_name)
-        .join('; ');
-      await notifyStaff(supabase, gmStaff, {
-        type: 'work',
-        title: 'CSO shared this week’s work-update PPTs',
-        message: `${cso?.fullName ?? 'CSO'} shared ${rows.length} weekly PPT${rows.length === 1 ? '' : 's'} for ${week.start} – ${week.end}.`,
-        referenceType: 'weekly_ppt_share',
-        referenceId: share.id as string,
-        eyebrow: 'Weekly updates',
-        paragraphs: [
-          `${cso?.fullName ?? 'CSO'} shared the weekly work-update deck package for ${week.start} – ${week.end}.`,
-          `Files included: ${rows.length}. Open Shared weekly updates to download.`,
-          fileLines ? `Sample names: ${fileLines}${rows.length > 12 ? '…' : ''}` : '',
-        ].filter(Boolean),
-        details: [
-          { label: 'Week', value: `${week.start} – ${week.end}` },
-          { label: 'Files', value: String(rows.length) },
-          { label: 'Shared by', value: cso?.fullName ?? 'CSO' },
-        ],
-        ctaLabel: 'Open shared PPTs',
-        ctaHref: href,
       });
 
       return {
         share: {
-          id: share.id as string,
-          weekStart: share.week_start as string,
-          weekEnd: share.week_end as string,
-          sharedAt: share.shared_at as string,
-          fileCount: share.file_count as number,
+          id: synced.shareId,
+          weekStart: week.start,
+          weekEnd: week.end,
+          sharedAt: new Date().toISOString(),
+          fileCount: synced.total,
         },
-        recipients: gmStaff.length,
+        recipients: synced.added > 0 ? 1 : 0,
+        added: synced.added,
       };
     },
 
@@ -506,7 +453,10 @@ export function createWeeklyPptDeskService(supabase: SupabaseClient) {
             weekStart: row.week_start as string,
             weekEnd: row.week_end as string,
             sharedBy: row.shared_by as string,
-            sharedByName: sharerName.get(row.shared_by as string) ?? 'CSO',
+            sharedByName:
+              (row.note as string) === WEEKLY_PPT_DIRECT_TO_GM_NOTE
+                ? 'Direct from employees'
+                : (sharerName.get(row.shared_by as string) ?? 'CSO'),
             sharedAt: row.shared_at as string,
             fileCount: row.file_count as number,
             note: row.note as string,
@@ -539,7 +489,7 @@ export function createWeeklyPptDeskService(supabase: SupabaseClient) {
         if (await isWeeklyUpdateSharedToGm(supabase, updateId)) {
           throw new AppError(
             API_ERROR_CODES.NOT_FOUND,
-            'This weekly PPT was shared with General Manager. View is no longer available; history remains on this page.',
+            'This weekly PPT is with General Manager. View is no longer available; history remains on this page.',
             404,
           );
         }

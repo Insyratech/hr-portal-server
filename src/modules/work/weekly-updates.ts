@@ -22,6 +22,7 @@ import {
   weeklyPptTiming,
   type WeeklyPptTiming,
 } from './ppt-week';
+import { routeWeeklyPptToGm } from './weekly-ppt-route';
 
 type RequestMeta = { ipAddress?: string | null; userAgent?: string | null };
 
@@ -75,7 +76,7 @@ function mapUpdate(row: UpdateRow, sharedToGm = false) {
     submittedAt: row.submitted_at,
     timing,
     late: timing === 'late',
-    /** Emp/CSO may view only until CSO shares the package with GM. */
+    /** Emp may view until the file is routed to GM (automatic on upload). */
     fileAvailable: Boolean(row.storage_path) && !sharedToGm,
     sharedToGm,
     fileRemovedAt: row.file_removed_at ?? null,
@@ -236,6 +237,7 @@ export function createWeeklyUpdatesService(supabase: SupabaseClient) {
       }
 
       let mapped;
+      const isReplace = Boolean(existing);
       if (existing) {
         if (existing.storage_path) {
           await supabase.storage.from(WEEKLY_PPT_BUCKET).remove([existing.storage_path]);
@@ -263,7 +265,7 @@ export function createWeeklyUpdatesService(supabase: SupabaseClient) {
         if (error || !data) {
           throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to replace weekly update.', 500);
         }
-        mapped = mapUpdate(data as UpdateRow, (await loadSharedWeeklyUpdateIds(supabase, [data.id as string])).has(data.id as string));
+        mapped = mapUpdate(data as UpdateRow, false);
       } else {
         const { data, error } = await supabase
           .from('weekly_work_updates')
@@ -289,9 +291,21 @@ export function createWeeklyUpdatesService(supabase: SupabaseClient) {
         mapped = mapUpdate(data as UpdateRow, false);
       }
 
+      // Weekly PPT goes straight to GM (JC PPT still uses CSO transfer).
+      await routeWeeklyPptToGm(supabase, {
+        updateId: mapped.id,
+        weekStart: week.start,
+        weekEnd: week.end,
+        employeeId: actor.employeeId,
+        employeeName: fullName,
+        systemFileName: mapped.systemFileName,
+        isReplace,
+      });
+      mapped = { ...mapped, sharedToGm: true, fileAvailable: false };
+
       await writeAuditLog(supabase, {
         actorId: actor.employeeId,
-        action: existing ? 'weekly_work_update.replace' : 'weekly_work_update.create',
+        action: isReplace ? 'weekly_work_update.replace' : 'weekly_work_update.create',
         entityType: 'weekly_work_update',
         entityId: mapped.id,
         newValues: mapped,
