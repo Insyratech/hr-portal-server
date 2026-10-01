@@ -237,11 +237,19 @@ async function refreshOpenImportDayReviews(
 
   const updates: Record<string, unknown>[] = [];
   for (const row of reviews) {
-    // Keep manager overrides (action and/or typed reason).
-    if (String(row.reason ?? '').trim() || row.hr_action) continue;
     const employeeId = row.employee_id as string;
     const iso = dateOnly(String(row.attendance_date));
     const shift = shiftForDay(assignments, shiftById, overrides, employeeId, iso);
+    const shiftName = shift?.name ?? null;
+
+    // Preserve manager LOP decisions, but always keep shift label in sync with assignments.
+    if (String(row.reason ?? '').trim() || row.hr_action) {
+      if ((row.shift_name ?? null) !== shiftName) {
+        updates.push({ id: row.id as string, shift_name: shiftName });
+      }
+      continue;
+    }
+
     const punch = punches.get(`${employeeId}:${iso}`);
     const leave = leaveOnDate(leaves ?? [], employeeId, iso);
     const permission = approvedPermission(permissions ?? [], employeeId, iso);
@@ -268,7 +276,7 @@ async function refreshOpenImportDayReviews(
     });
     const next = {
       status: derived.status,
-      shift_name: shift?.name ?? null,
+      shift_name: shiftName,
       actual_in: actualIn?.toISOString() ?? null,
       actual_out: actualOut?.toISOString() ?? null,
       worked_minutes: derived.workedMinutes,
@@ -1076,6 +1084,17 @@ function mapPublishedDay(row: Record<string, unknown>) {
   };
 }
 
+function resolveCardShiftName(days: { attendanceDate: string; shiftName: string | null }[]): string | null {
+  let best: { date: string; name: string } | null = null;
+  for (const day of days) {
+    if (!day.shiftName) continue;
+    if (!best || day.attendanceDate > best.date) {
+      best = { date: day.attendanceDate, name: day.shiftName };
+    }
+  }
+  return best?.name ?? null;
+}
+
 function mapCard(
   emp: EmployeeRow | undefined,
   days: Record<string, unknown>[],
@@ -1091,7 +1110,7 @@ function mapCard(
   const finalLop = mapped.reduce((sum, day) => sum + (day.finalLop ?? 0), 0);
   const proposedLop = mapped.reduce((sum, day) => sum + effectiveDayLop(day), 0);
   const openFlags = untouchedFlagCount(mapped.map((day) => ({ needsHrDecision: day.needsHrDecision, hrAction: day.hrAction })));
-  const shiftName = mapped.find((day) => day.shiftName)?.shiftName ?? null;
+  const shiftName = resolveCardShiftName(mapped);
   const employeeId = emp?.id ?? mapped[0]?.employeeId ?? '';
   return {
     id: employeeId,
