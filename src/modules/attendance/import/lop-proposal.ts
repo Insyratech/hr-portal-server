@@ -28,6 +28,16 @@ export function lopFromAction(action: HrAction): number {
   return 0;
 }
 
+/** Day amount shown in Proposed LOP totals after any manager decision. */
+export function effectiveDayLop(day: {
+  hrAction: string | null;
+  proposedLop: number | null;
+  finalLop: number | null;
+}): number {
+  if (day.hrAction) return day.finalLop ?? 0;
+  return day.proposedLop ?? day.finalLop ?? 0;
+}
+
 /**
  * LOP overlay on deriveAttendance. Weekly offs/holidays never become LOP.
  * Miss punch always waits for HR. Never auto half-day for miss punch.

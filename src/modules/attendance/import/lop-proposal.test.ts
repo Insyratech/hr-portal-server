@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { combineDateAndTime, deriveAttendance } from '../rule-engine';
 import type { DeriveAttendanceResult, ShiftDefinition } from '../types';
-import { proposeLop, untouchedFlagCount } from './lop-proposal';
+import { proposeLop, untouchedFlagCount, effectiveDayLop, lopFromAction } from './lop-proposal';
 
 const morning: ShiftDefinition = {
   startTime: '09:00',
@@ -304,5 +304,19 @@ describe('proposeLop', () => {
     expect(derived.status).toBe('HALF_DAY');
     expect(derived.permissionApplied).toBe(false);
     expect(proposeLop({ derived, permissionMinutes: 60, permissionSlot: 'END', leave: null }).proposedLop).toBe(0.5);
+  });
+
+  it('uses decided final LOP for effective totals after EXCLUDE / NO_LOP', () => {
+    expect(
+      effectiveDayLop({ hrAction: null, proposedLop: 0.5, finalLop: 0.5 }),
+    ).toBe(0.5);
+    expect(
+      effectiveDayLop({ hrAction: 'EXCLUDE', proposedLop: 0.5, finalLop: 0 }),
+    ).toBe(0);
+    expect(
+      effectiveDayLop({ hrAction: 'NO_LOP', proposedLop: 0.5, finalLop: 0 }),
+    ).toBe(0);
+    expect(lopFromAction('EXCLUDE')).toBe(0);
+    expect(lopFromAction('HALF_LOP')).toBe(0.5);
   });
 });

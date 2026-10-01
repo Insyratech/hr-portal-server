@@ -16,7 +16,7 @@ import { patternOnDate } from '../../leave/day-count';
 import { MONTHLY_QUOTA_MINUTES, remainingLabel, remainingMinutes, quotaUsed } from '../../work-permissions/quota';
 import { firstAndLast, parseBiometricGrid } from './parser';
 import { buildEmployeeLookup, matchEmployee } from './employee-match';
-import { lopFromAction, proposeLop, untouchedFlagCount, type HrAction, type LeaveOverlay } from './lop-proposal';
+import { lopFromAction, proposeLop, untouchedFlagCount, effectiveDayLop, type HrAction, type LeaveOverlay } from './lop-proposal';
 import { datesInPeriod, parsePeriod } from './period';
 import { decodeBase64File, gridFromXlsx, bufferForStorage } from './workbook';
 import { listApprovedShiftOverrides } from '../../shift-changes/service';
@@ -237,7 +237,8 @@ async function refreshOpenImportDayReviews(
 
   const updates: Record<string, unknown>[] = [];
   for (const row of reviews) {
-    if (String(row.reason ?? '').trim()) continue;
+    // Keep manager overrides (action and/or typed reason).
+    if (String(row.reason ?? '').trim() || row.hr_action) continue;
     const employeeId = row.employee_id as string;
     const iso = dateOnly(String(row.attendance_date));
     const shift = shiftForDay(assignments, shiftById, overrides, employeeId, iso);
@@ -744,7 +745,10 @@ export function createAttendanceImportService(supabase: SupabaseClient) {
         .update({
           hr_action: input.action,
           reason: input.reason?.trim() || null,
+          // Keep proposed in sync with the decided amount so month/card totals update.
+          proposed_lop: finalLop,
           final_lop: finalLop,
+          needs_hr_decision: false,
         })
         .eq('id', reviewId)
         .select('*')
@@ -756,7 +760,7 @@ export function createAttendanceImportService(supabase: SupabaseClient) {
         action: 'attendance.import.lop_override',
         entityType: 'attendance_day_review',
         entityId: reviewId,
-        newValues: { action: input.action, finalLop },
+        newValues: { action: input.action, finalLop, proposedLop: finalLop },
         ...meta,
       });
       return mapDay(data);
@@ -1085,6 +1089,7 @@ function mapCard(
     (day) => day.status !== 'WEEK_OFF' && day.status !== 'HOLIDAY' && day.status !== 'NO_SHIFT',
   ).length;
   const finalLop = mapped.reduce((sum, day) => sum + (day.finalLop ?? 0), 0);
+  const proposedLop = mapped.reduce((sum, day) => sum + effectiveDayLop(day), 0);
   const openFlags = untouchedFlagCount(mapped.map((day) => ({ needsHrDecision: day.needsHrDecision, hrAction: day.hrAction })));
   const shiftName = mapped.find((day) => day.shiftName)?.shiftName ?? null;
   const employeeId = emp?.id ?? mapped[0]?.employeeId ?? '';
@@ -1110,7 +1115,7 @@ function mapCard(
       .filter((day) => day.permissionMinutes > 0)
       .map((day) => ({ date: day.attendanceDate, minutes: day.permissionMinutes })),
     days: mapped,
-    proposedLop: mapped.reduce((sum, day) => sum + (day.proposedLop ?? 0), 0),
+    proposedLop,
     finalLop,
     payableDays: Math.max(0, workingDaysCount - finalLop),
     workingDaysCount,
