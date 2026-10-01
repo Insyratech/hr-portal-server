@@ -11,6 +11,7 @@ import { createWorkAnalyticsService } from './analytics';
 import { createDailyWorkService } from './daily';
 import { createLeadDeskService } from './lead-desk';
 import { createLeadPermissionsService } from './lead-permissions';
+import { createMonthlyWorkReportService } from './monthly-report';
 import { createWorkOverviewService } from './overview';
 import { createProjectUpdatesService } from './project-updates';
 import { createWorkService } from './service';
@@ -215,6 +216,54 @@ export async function registerWorkRoutes(app: FastifyInstance): Promise<void> {
           departmentId: query.departmentId,
           employeeId: query.employeeId,
         }),
+      );
+    },
+  );
+
+  app.get(
+    '/api/v1/work/monthly-report/people',
+    { preHandler: [requirePermission(PERMISSIONS.WORK_VIEW, PERMISSIONS.WORK_ASSIGN)] },
+    async (request) => {
+      if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
+      return ok(await createMonthlyWorkReportService(requireSupabase(app.supabase)).listPeople(request.user));
+    },
+  );
+
+  app.get(
+    '/api/v1/work/monthly-report/months',
+    { preHandler: [requirePermission(PERMISSIONS.WORK_VIEW, PERMISSIONS.WORK_ASSIGN)] },
+    async (request) => {
+      if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
+      const query = request.query as { employeeId?: string; months?: string };
+      if (!query.employeeId) {
+        throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'employeeId is required.', 400);
+      }
+      const monthsBack = query.months && /^\d+$/.test(query.months) ? Number(query.months) : 12;
+      return ok(
+        await createMonthlyWorkReportService(requireSupabase(app.supabase)).listMonths(
+          request.user,
+          query.employeeId,
+          monthsBack,
+        ),
+      );
+    },
+  );
+
+  app.get(
+    '/api/v1/work/monthly-report',
+    { preHandler: [requirePermission(PERMISSIONS.WORK_VIEW, PERMISSIONS.WORK_ASSIGN)] },
+    async (request) => {
+      if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
+      const query = request.query as { employeeId?: string; month?: string };
+      if (!query.employeeId || !query.month) {
+        throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'employeeId and month are required.', 400);
+      }
+      return ok(
+        await createMonthlyWorkReportService(requireSupabase(app.supabase)).getDetail(
+          request.user,
+          query.employeeId,
+          query.month,
+        ),
       );
     },
   );
