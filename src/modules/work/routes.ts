@@ -234,17 +234,10 @@ export async function registerWorkRoutes(app: FastifyInstance): Promise<void> {
     { preHandler: [requirePermission(PERMISSIONS.WORK_VIEW, PERMISSIONS.WORK_ASSIGN)] },
     async (request) => {
       if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
-      const query = request.query as { employeeId?: string; months?: string };
-      if (!query.employeeId) {
-        throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'employeeId is required.', 400);
-      }
+      const query = request.query as { months?: string };
       const monthsBack = query.months && /^\d+$/.test(query.months) ? Number(query.months) : 12;
       return ok(
-        await createMonthlyWorkReportService(requireSupabase(app.supabase)).listMonths(
-          request.user,
-          query.employeeId,
-          monthsBack,
-        ),
+        await createMonthlyWorkReportService(requireSupabase(app.supabase)).listPeriods(request.user, monthsBack),
       );
     },
   );

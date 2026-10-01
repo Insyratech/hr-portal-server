@@ -95,125 +95,25 @@ export function createMonthlyWorkReportService(supabase: SupabaseClient) {
       return { employees };
     },
 
-    async listMonths(actor: RequestUser, employeeId: string, monthsBack = 12) {
+    /** Calendar months available to open (no per-employee stats). */
+    async listPeriods(actor: RequestUser, monthsBack = 12) {
       requireTeamView(actor);
-      const employee = await loadEmployeeOrThrow(supabase, employeeId);
       const today = formatIsoDate(new Date());
       const range = defaultMonthRange(today, Math.min(Math.max(monthsBack, 1), 18));
       const months = monthKeysInclusive(range.from, range.to).reverse();
-      const rangeStart = monthBounds(range.from).start;
-      const rangeEnd = monthBounds(range.to).end;
-      const weekStarts = mondaysOverlapping(rangeStart, rangeEnd);
-
-      const empty: Record<string, unknown>[] = [];
-      const [pptRes, planRes, dayRes, jcRes, memberRes] = await Promise.all([
-        weekStarts.length === 0
-          ? Promise.resolve({ data: empty, error: null })
-          : supabase
-              .from('weekly_work_updates')
-              .select('week_start, submission_timing, late, submitted_at')
-              .eq('employee_id', employeeId)
-              .in('week_start', weekStarts),
-        weekStarts.length === 0
-          ? Promise.resolve({ data: empty, error: null })
-          : supabase
-              .from('weekly_plans')
-              .select('id, week_start, weekly_priorities ( id, approval_status, status, priority_type, milestone_id )')
-              .eq('employee_id', employeeId)
-              .in('week_start', weekStarts),
-        supabase
-          .from('daily_work_days')
-          .select('work_date, status, submitted_at')
-          .eq('employee_id', employeeId)
-          .gte('work_date', rangeStart)
-          .lte('work_date', rangeEnd),
-        supabase
-          .from('jc_ppts')
-          .select('id, uploaded_at, status')
-          .eq('employee_id', employeeId)
-          .gte('uploaded_at', `${rangeStart}T00:00:00.000Z`)
-          .lte('uploaded_at', `${rangeEnd}T23:59:59.999Z`),
-        supabase
-          .from('project_members')
-          .select('project_id, projects ( id, name, code, status, lead_employee_id )')
-          .eq('employee_id', employeeId),
-      ]);
-      if (pptRes.error) throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load weekly PPTs.', 500);
-      if (planRes.error) throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load weekly priorities.', 500);
-      if (dayRes.error) throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load daily work.', 500);
-      if (jcRes.error) throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load JC uploads.', 500);
-      if (memberRes.error) throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load projects.', 500);
-
-      const pptByWeek = new Map((pptRes.data ?? []).map((row) => [row.week_start as string, row]));
-      const planByWeek = new Map(
-        (planRes.data ?? []).map((row) => [
-          row.week_start as string,
-          {
-            id: row.id as string,
-            priorities: (row.weekly_priorities as PriorityRow[] | null) ?? [],
-          },
-        ]),
-      );
-
-      const projects = (memberRes.data ?? [])
-        .map((row) => {
-          const project = firstRel(
-            row.projects as
-              | { id: string; name: string; code: string; status: string; lead_employee_id: string | null }
-              | { id: string; name: string; code: string; status: string; lead_employee_id: string | null }[]
-              | null,
-          );
-          if (!project || project.status !== 'active') return null;
-          return { name: project.name, code: project.code };
-        })
-        .filter((row): row is { name: string; code: string } => Boolean(row));
-
-      const rows = months.map((period) => {
-        const monthBoundsValue = monthBounds(period);
-        const monthWeeks = mondaysOverlapping(monthBoundsValue.start, monthBoundsValue.end);
-        let pptUploaded = 0;
-        let weeksWithPriorities = 0;
-        let weeksWithApproved = 0;
-        for (const weekStart of monthWeeks) {
-          if (pptByWeek.has(weekStart)) pptUploaded += 1;
-          const plan = planByWeek.get(weekStart);
-          const live = (plan?.priorities ?? []).filter((p) => p.status !== 'CANCELLED');
-          if (live.length > 0) weeksWithPriorities += 1;
-          if (live.some((p) => p.approval_status === 'APPROVED')) weeksWithApproved += 1;
-        }
-
-        let dailyRequired = 0;
-        let dailySubmitted = 0;
-        for (const day of dayRes.data ?? []) {
-          const workDate = String(day.work_date).slice(0, 10);
-          if (workDate < monthBoundsValue.start || workDate > monthBoundsValue.end) continue;
-          const status = day.status as string;
-          if (status === 'COMPLETED' || status === 'MISSING') {
-            dailyRequired += 1;
-            if (day.submitted_at) dailySubmitted += 1;
-          }
-        }
-
-        const jcUploads = (jcRes.data ?? []).filter((row) => {
-          const uploaded = String(row.uploaded_at).slice(0, 10);
-          return uploaded >= monthBoundsValue.start && uploaded <= monthBoundsValue.end;
-        }).length;
-
-        return {
-          period,
-          pptUploaded,
-          pptExpected: monthWeeks.length,
-          weeksWithPriorities,
-          weeksWithApproved,
-          weeksTotal: monthWeeks.length,
-          dailySubmitted,
-          dailyRequired,
-          jcUploads,
-          projects: projects.map((p) => p.name),
-        };
-      });
-
-      return { employee, months: rows };
+      return {
+        months: months.map((period) => {
+          const bounds = monthBounds(period);
+          const weeks = mondaysOverlapping(bounds.start, bounds.end).length;
+          const [year, mon] = period.split('-').map(Number);
+          const label = new Date(Date.UTC(year, mon - 1, 1)).toLocaleString('en-US', {
+            month: 'long',
+            year: 'numeric',
+            timeZone: 'UTC',
+          });
+          return { period, label, weekCount: weeks };
+        }),
+      };
     },
 
     async getDetail(actor: RequestUser, employeeId: string, monthRaw: string) {
