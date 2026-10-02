@@ -379,15 +379,20 @@ function mapRun(row: Record<string, unknown>) {
 async function mapSlip(supabase: SupabaseClient, row: Record<string, unknown>, period: string) {
   const bounds = period ? parsePeriod(period) : null;
   const employeeId = row.employee_id as string;
-  const { data: payment } = await supabase
-    .from('employee_payment')
-    .select('pan, bank_account_number, bank_name, ifsc')
-    .eq('employee_id', employeeId)
-    .maybeSingle();
+  const [{ data: payment }, { data: employee }] = await Promise.all([
+    supabase
+      .from('employee_payment')
+      .select('pan, bank_account_number, bank_name, ifsc')
+      .eq('employee_id', employeeId)
+      .maybeSingle(),
+    supabase.from('employees').select('joining_date').eq('id', employeeId).maybeSingle(),
+  ]);
   const visible = (live: string | null | undefined, stored: string | null) => {
     const value = live?.trim() || stored?.trim() || '';
     return value || null;
   };
+  const joiningRaw = (employee?.joining_date as string | null | undefined) ?? null;
+  const joiningDate = joiningRaw ? String(joiningRaw).slice(0, 10) : null;
   return {
     id: row.id as string,
     runId: row.run_id as string,
@@ -397,6 +402,7 @@ async function mapSlip(supabase: SupabaseClient, row: Record<string, unknown>, p
     employeeCode: row.employee_code as string,
     employeeName: row.employee_name as string,
     designationName: (row.designation_name as string | null) ?? null,
+    joiningDate,
     departmentName: (row.department_name as string | null) ?? null,
     companyName: row.company_name as string,
     companyAddress: row.company_address as string,
