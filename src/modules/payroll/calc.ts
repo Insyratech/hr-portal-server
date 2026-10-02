@@ -74,9 +74,10 @@ export function grossPay(c: CompensationParts): number {
 /**
  * Monthly package stays the same for 28/29/30/31-day months.
  * Daily rate = monthly gross ÷ calendar days in the period.
- * Non-working amount = daily rate × (calendar days − working days) — not LOP.
+ * When payable days equal the calendar month, pay the full monthly gross (no round-off residue).
+ * Otherwise payable = daily rate × working days; non-working = monthly − payable (not LOP).
  * LOP amount = daily rate × final LOP days (attendance).
- * Net = monthly gross − non-working − PT − TDS − Welfare − KPI − Other − LOP.
+ * Net = payable − PT − TDS − Welfare − KPI − Other − LOP.
  */
 export function calculateSlipMoney(input: {
   compensation: CompensationParts;
@@ -98,8 +99,21 @@ export function calculateSlipMoney(input: {
   const workingDays = Math.min(Math.max(0, input.workingDays), calendarDays);
   const nonWorkingDays = roundMoney(calendarDays - workingDays);
   const dailyRate = roundMoney(monthlyGross / calendarDays);
-  const payableGross = roundMoney(dailyRate * workingDays);
-  const nonWorkingAmount = roundMoney(monthlyGross - payableGross);
+
+  let payableGross: number;
+  let nonWorkingAmount: number;
+  if (nonWorkingDays === 0) {
+    // Full month: avoid dailyRate × days round-off (e.g. 52000/30 × 30 → 51999.90).
+    payableGross = monthlyGross;
+    nonWorkingAmount = 0;
+  } else if (workingDays === 0) {
+    payableGross = 0;
+    nonWorkingAmount = monthlyGross;
+  } else {
+    payableGross = roundMoney(dailyRate * workingDays);
+    nonWorkingAmount = roundMoney(monthlyGross - payableGross);
+  }
+
   const lopAmount = roundMoney(dailyRate * input.lopDays);
   const deductions =
     input.compensation.professionalTax +

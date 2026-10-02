@@ -106,6 +106,32 @@ describe('calculateSlipMoney', () => {
     expect(result.net).toBe(29677.36);
   });
 
+  it('full month with uneven daily rate has zero non-working amount', () => {
+    const result = calculateSlipMoney({
+      compensation: {
+        basic: 26000,
+        da: 10400,
+        hra: 11700,
+        fuel: 3900,
+        incentives: 0,
+        other: 0,
+        professionalTax: 200,
+        tds: 0,
+        employeeWelfare: 500,
+        kpi: 0,
+        otherDeductions: 0,
+      },
+      calendarDays: 30,
+      workingDays: 30,
+      lopDays: 0,
+    });
+    expect(result.gross).toBe(52000);
+    expect(result.dailyRate).toBe(1733.33);
+    expect(result.nonWorkingDays).toBe(0);
+    expect(result.nonWorkingAmount).toBe(0);
+    expect(result.net).toBe(51300);
+  });
+
   it('subtracts LOP and statutory deductions from monthly gross', () => {
     const result = calculateSlipMoney({
       compensation: {

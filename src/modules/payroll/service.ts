@@ -408,6 +408,21 @@ async function mapSlip(supabase: SupabaseClient, row: Record<string, unknown>, p
   };
   const joiningRaw = (employee?.joining_date as string | null | undefined) ?? null;
   const joiningDate = joiningRaw ? String(joiningRaw).slice(0, 10) : null;
+  const calendarDays = Number(row.calendar_days);
+  const workingDays = Number(row.working_days ?? row.calendar_days);
+  const nonWorkingDays = roundMoney(calendarDays - workingDays);
+  const gross = Number(row.gross);
+  const dailyRate = Number(row.daily_rate);
+  const lopAmount = Number(row.lop_amount);
+  const professionalTax = Number(row.professional_tax);
+  const tds = Number(row.tds);
+  const employeeWelfare = Number(row.employee_welfare);
+  const kpi = Number(row.kpi);
+  const otherDeductions = Number(row.other_deductions);
+  const nonWorkingAmount =
+    nonWorkingDays === 0 ? 0 : roundMoney(gross - roundMoney(dailyRate * workingDays));
+  const statutory = professionalTax + tds + employeeWelfare + kpi + otherDeductions;
+  const net = roundMoney(gross - nonWorkingAmount - statutory - lopAmount);
   return {
     id: row.id as string,
     runId: row.run_id as string,
@@ -436,24 +451,20 @@ async function mapSlip(supabase: SupabaseClient, row: Record<string, unknown>, p
     fuel: Number(row.fuel),
     incentives: Number(row.incentives),
     other: Number(row.other_earnings),
-    professionalTax: Number(row.professional_tax),
-    tds: Number(row.tds),
-    employeeWelfare: Number(row.employee_welfare),
-    kpi: Number(row.kpi),
-    otherDeductions: Number(row.other_deductions),
-    calendarDays: Number(row.calendar_days),
-    workingDays: Number(row.working_days ?? row.calendar_days),
-    gross: Number(row.gross),
-    dailyRate: Number(row.daily_rate),
-    nonWorkingDays: roundMoney(
-      Number(row.calendar_days) - Number(row.working_days ?? row.calendar_days),
-    ),
-    nonWorkingAmount: roundMoney(
-      Number(row.gross) - roundMoney(Number(row.daily_rate) * Number(row.working_days ?? row.calendar_days)),
-    ),
+    professionalTax,
+    tds,
+    employeeWelfare,
+    kpi,
+    otherDeductions,
+    calendarDays,
+    workingDays,
+    gross,
+    dailyRate,
+    nonWorkingDays,
+    nonWorkingAmount,
     lopDays: Number(row.lop_days),
-    lopAmount: Number(row.lop_amount),
-    net: Number(row.net),
+    lopAmount,
+    net,
     particulars: (row.particulars as LeaveParticulars) ?? emptyParticulars(),
   };
 }
