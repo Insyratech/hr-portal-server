@@ -1,5 +1,3 @@
-import { maskSecret } from '../employees/payment-mask';
-
 export type CompensationParts = {
   basic: number;
   da: number;
@@ -136,10 +134,14 @@ export function snapshotPayment(input: {
   bankNameMasked: string | null;
   ifscMasked: string | null;
 } {
+  const trim = (value: string | null | undefined) => {
+    const next = value?.trim() ?? '';
+    return next || null;
+  };
   return {
-    panMasked: maskSecret(input.pan),
-    bankAccountMasked: maskSecret(input.bankAccountNumber),
-    bankNameMasked: input.bankName?.trim() ? '••••' : null,
-    ifscMasked: maskSecret(input.ifsc),
+    panMasked: trim(input.pan),
+    bankAccountMasked: trim(input.bankAccountNumber),
+    bankNameMasked: trim(input.bankName),
+    ifscMasked: trim(input.ifsc),
   };
 }

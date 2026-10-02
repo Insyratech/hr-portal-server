@@ -378,10 +378,20 @@ function mapRun(row: Record<string, unknown>) {
 
 async function mapSlip(supabase: SupabaseClient, row: Record<string, unknown>, period: string) {
   const bounds = period ? parsePeriod(period) : null;
+  const employeeId = row.employee_id as string;
+  const { data: payment } = await supabase
+    .from('employee_payment')
+    .select('pan, bank_account_number, bank_name, ifsc')
+    .eq('employee_id', employeeId)
+    .maybeSingle();
+  const visible = (live: string | null | undefined, stored: string | null) => {
+    const value = live?.trim() || stored?.trim() || '';
+    return value || null;
+  };
   return {
     id: row.id as string,
     runId: row.run_id as string,
-    employeeId: row.employee_id as string,
+    employeeId,
     period,
     monthLabel: bounds?.label ?? period,
     employeeCode: row.employee_code as string,
@@ -392,10 +402,13 @@ async function mapSlip(supabase: SupabaseClient, row: Record<string, unknown>, p
     companyAddress: row.company_address as string,
     companyLogoPath: (row.company_logo_path as string | null) ?? null,
     companyLogoUrl: await signedLogo(supabase, (row.company_logo_path as string | null) ?? null),
-    panMasked: (row.pan_masked as string | null) ?? null,
-    bankAccountMasked: (row.bank_account_masked as string | null) ?? null,
-    bankNameMasked: (row.bank_name_masked as string | null) ?? null,
-    ifscMasked: (row.ifsc_masked as string | null) ?? null,
+    panMasked: visible(payment?.pan as string | null, (row.pan_masked as string | null) ?? null),
+    bankAccountMasked: visible(
+      payment?.bank_account_number as string | null,
+      (row.bank_account_masked as string | null) ?? null,
+    ),
+    bankNameMasked: visible(payment?.bank_name as string | null, (row.bank_name_masked as string | null) ?? null),
+    ifscMasked: visible(payment?.ifsc as string | null, (row.ifsc_masked as string | null) ?? null),
     basic: Number(row.basic),
     da: Number(row.da),
     hra: Number(row.hra),
