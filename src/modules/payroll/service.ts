@@ -12,6 +12,7 @@ import {
   calculateSlipMoney,
   emptyParticulars,
   mergeCompensation,
+  roundMoney,
   snapshotPayment,
   type CompensationParts,
   type LeaveParticulars,
@@ -24,6 +25,7 @@ type RequestMeta = { ipAddress?: string | null; userAgent?: string | null };
 
 export type PayrollAdjustment = {
   employeeId: string;
+  workingDays?: number;
 } & Partial<Pick<CompensationParts, PayrollAdjustableKey>>;
 
 type CalculateInput = {
@@ -222,9 +224,21 @@ export function createPayrollService(supabase: SupabaseClient) {
         const compensation = mergeCompensation(baseCompensation, adjustment);
         const days = reviews.filter((row) => row.employee_id === emp.id);
         const particulars = buildParticulars(days, typeByName);
+        const rawWorkingDays =
+          adjustment?.workingDays !== undefined && Number.isFinite(adjustment.workingDays)
+            ? Number(adjustment.workingDays)
+            : calendarDays;
+        if (rawWorkingDays < 0 || rawWorkingDays > calendarDays) {
+          throw new AppError(
+            API_ERROR_CODES.VALIDATION_ERROR,
+            `Working days for ${emp.full_name as string} must be between 0 and ${calendarDays}.`,
+            400,
+          );
+        }
         const money = calculateSlipMoney({
           compensation,
           calendarDays,
+          workingDays: rawWorkingDays,
           lopDays: particulars.totalLop,
         });
         const payment = snapshotPayment({
@@ -266,6 +280,7 @@ export function createPayrollService(supabase: SupabaseClient) {
           kpi: compensation.kpi,
           other_deductions: compensation.otherDeductions,
           calendar_days: calendarDays,
+          working_days: money.workingDays,
           gross: money.gross,
           daily_rate: money.dailyRate,
           lop_days: particulars.totalLop,
@@ -427,8 +442,15 @@ async function mapSlip(supabase: SupabaseClient, row: Record<string, unknown>, p
     kpi: Number(row.kpi),
     otherDeductions: Number(row.other_deductions),
     calendarDays: Number(row.calendar_days),
+    workingDays: Number(row.working_days ?? row.calendar_days),
     gross: Number(row.gross),
     dailyRate: Number(row.daily_rate),
+    nonWorkingDays: roundMoney(
+      Number(row.calendar_days) - Number(row.working_days ?? row.calendar_days),
+    ),
+    nonWorkingAmount: roundMoney(
+      Number(row.gross) - roundMoney(Number(row.daily_rate) * Number(row.working_days ?? row.calendar_days)),
+    ),
     lopDays: Number(row.lop_days),
     lopAmount: Number(row.lop_amount),
     net: Number(row.net),

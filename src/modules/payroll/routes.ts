@@ -10,6 +10,11 @@ import { createPayrollService, type PayrollAdjustment } from './service';
 
 const compensationAdjustment = Type.Object({
   employeeId: Type.String({ minLength: 1 }),
+  workingDays: Type.Optional(Type.Number({ minimum: 0 })),
+  basic: Type.Optional(Type.Number()),
+  da: Type.Optional(Type.Number()),
+  hra: Type.Optional(Type.Number()),
+  fuel: Type.Optional(Type.Number()),
   incentives: Type.Optional(Type.Number()),
   other: Type.Optional(Type.Number()),
   professionalTax: Type.Optional(Type.Number()),

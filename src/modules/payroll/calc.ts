@@ -26,7 +26,12 @@ export type LeaveParticulars = {
   totalLop: number;
 };
 
+/** All compensation fields can be overridden on the calculate screen for this run. */
 export const PAYROLL_ADJUSTABLE_KEYS = [
+  'basic',
+  'da',
+  'hra',
+  'fuel',
   'incentives',
   'other',
   'professionalTax',
@@ -44,7 +49,10 @@ export function mergeCompensation(
 ): CompensationParts {
   if (!override) return base;
   return {
-    ...base,
+    basic: override.basic ?? base.basic,
+    da: override.da ?? base.da,
+    hra: override.hra ?? base.hra,
+    fuel: override.fuel ?? base.fuel,
     incentives: override.incentives ?? base.incentives,
     other: override.other ?? base.other,
     professionalTax: override.professionalTax ?? base.professionalTax,
@@ -64,23 +72,34 @@ export function grossPay(c: CompensationParts): number {
 }
 
 /**
- * Daily rate = Gross ÷ calendar days in the period.
- * LOP amount = daily rate × final LOP days.
- * Net = Gross − PT − TDS − Welfare − KPI − Other − LOP amount.
+ * Monthly package stays the same for 28/29/30/31-day months.
+ * Daily rate = monthly gross ÷ calendar days in the period.
+ * Non-working amount = daily rate × (calendar days − working days) — not LOP.
+ * LOP amount = daily rate × final LOP days (attendance).
+ * Net = monthly gross − non-working − PT − TDS − Welfare − KPI − Other − LOP.
  */
 export function calculateSlipMoney(input: {
   compensation: CompensationParts;
   calendarDays: number;
+  workingDays: number;
   lopDays: number;
 }): {
+  monthlyGross: number;
   gross: number;
   dailyRate: number;
+  nonWorkingDays: number;
+  nonWorkingAmount: number;
   lopAmount: number;
   net: number;
+  workingDays: number;
 } {
-  const gross = grossPay(input.compensation);
-  const days = Math.max(1, input.calendarDays);
-  const dailyRate = roundMoney(gross / days);
+  const monthlyGross = grossPay(input.compensation);
+  const calendarDays = Math.max(1, input.calendarDays);
+  const workingDays = Math.min(Math.max(0, input.workingDays), calendarDays);
+  const nonWorkingDays = roundMoney(calendarDays - workingDays);
+  const dailyRate = roundMoney(monthlyGross / calendarDays);
+  const payableGross = roundMoney(dailyRate * workingDays);
+  const nonWorkingAmount = roundMoney(monthlyGross - payableGross);
   const lopAmount = roundMoney(dailyRate * input.lopDays);
   const deductions =
     input.compensation.professionalTax +
@@ -88,8 +107,17 @@ export function calculateSlipMoney(input: {
     input.compensation.employeeWelfare +
     input.compensation.kpi +
     input.compensation.otherDeductions;
-  const net = roundMoney(gross - deductions - lopAmount);
-  return { gross, dailyRate, lopAmount, net };
+  const net = roundMoney(payableGross - deductions - lopAmount);
+  return {
+    monthlyGross,
+    gross: monthlyGross,
+    dailyRate,
+    nonWorkingDays,
+    nonWorkingAmount,
+    lopAmount,
+    net,
+    workingDays,
+  };
 }
 
 export function emptyParticulars(): LeaveParticulars {

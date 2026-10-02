@@ -47,12 +47,22 @@ export function buildParticulars(
   return particulars;
 }
 
+/** Calendar working days in the import (excludes week off, holiday, no-shift). Not LOP. */
+export function countWorkingDays(days: Record<string, unknown>[]): number {
+  return days.filter((day) => {
+    const status = String(day.status ?? '');
+    return status !== 'WEEK_OFF' && status !== 'HOLIDAY' && status !== 'NO_SHIFT';
+  }).length;
+}
+
 export type PayrollEmployeeInput = {
   employeeId: string;
   employeeCode: string;
   fullName: string;
   companyName: string | null;
   lopDays: number;
+  /** Suggested payable working days from attendance (GM can edit on calculate). */
+  suggestedWorkingDays: number;
   compensation: CompensationParts | null;
   ready: boolean;
   skipReason: string | null;
@@ -155,6 +165,7 @@ export async function loadPayrollInput(supabase: SupabaseClient, importId: strin
     const compensation = compByEmployee.get(emp.id as string) ?? null;
     const days = (reviews ?? []).filter((row) => row.employee_id === emp.id);
     const particulars = buildParticulars(days, typeByName);
+    const suggestedWorkingDays = countWorkingDays(days);
     if (!company) {
       return {
         employeeId: emp.id as string,
@@ -162,6 +173,7 @@ export async function loadPayrollInput(supabase: SupabaseClient, importId: strin
         fullName: emp.full_name as string,
         companyName: null,
         lopDays: particulars.totalLop,
+        suggestedWorkingDays,
         compensation: null,
         ready: false,
         skipReason: 'No company assigned.',
@@ -174,6 +186,7 @@ export async function loadPayrollInput(supabase: SupabaseClient, importId: strin
         fullName: emp.full_name as string,
         companyName: company.name,
         lopDays: particulars.totalLop,
+        suggestedWorkingDays,
         compensation: null,
         ready: false,
         skipReason: 'No compensation on file.',
@@ -185,6 +198,7 @@ export async function loadPayrollInput(supabase: SupabaseClient, importId: strin
       fullName: emp.full_name as string,
       companyName: company.name,
       lopDays: particulars.totalLop,
+      suggestedWorkingDays,
       compensation,
       ready: true,
       skipReason: null,
