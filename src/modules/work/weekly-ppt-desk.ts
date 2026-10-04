@@ -485,7 +485,13 @@ export function createWeeklyPptDeskService(supabase: SupabaseClient) {
       const isOwner = data.employee_id === actor.employeeId;
       const isCso = isCsoDomainOwner(actor) && actor.permissions.includes(PERMISSIONS.WORK_VIEW);
 
-      if (isOwner || isCso) {
+      // Owner: preview while storage exists (even after auto-route to GM). Does not consume the file.
+      if (isOwner) {
+        return signedDownload(data.storage_path as string, data.system_file_name as string);
+      }
+
+      // CSO status desk: view closes once the file is with GM (audit-only there).
+      if (isCso) {
         if (await isWeeklyUpdateSharedToGm(supabase, updateId)) {
           throw new AppError(
             API_ERROR_CODES.NOT_FOUND,

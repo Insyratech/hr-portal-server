@@ -76,8 +76,8 @@ function mapUpdate(row: UpdateRow, sharedToGm = false) {
     submittedAt: row.submitted_at,
     timing,
     late: timing === 'late',
-    /** Emp may view until the file is routed to GM (automatic on upload). */
-    fileAvailable: Boolean(row.storage_path) && !sharedToGm,
+    /** Emp may view in-browser while the file is still in storage (including after auto-route to GM). */
+    fileAvailable: Boolean(row.storage_path),
     sharedToGm,
     fileRemovedAt: row.file_removed_at ?? null,
     fileRemovedReason: row.file_removed_reason ?? null,
@@ -301,7 +301,8 @@ export function createWeeklyUpdatesService(supabase: SupabaseClient) {
         systemFileName: mapped.systemFileName,
         isReplace,
       });
-      mapped = { ...mapped, sharedToGm: true, fileAvailable: false };
+      // Still viewable by the employee until GM downloads / emails / deletes the file.
+      mapped = { ...mapped, sharedToGm: true };
 
       await writeAuditLog(supabase, {
         actorId: actor.employeeId,
