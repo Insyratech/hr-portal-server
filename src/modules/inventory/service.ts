@@ -85,6 +85,7 @@ type CatalogRow = {
   id: string;
   category_id: string;
   name: string;
+  catalog_number?: string | null;
   unit: string;
   default_qty_chips: unknown;
   alert_mode: InventoryAlertMode;
@@ -212,6 +213,7 @@ function mapCatalog(row: CatalogRow): InventoryCatalogItem {
     categoryCode: category.code,
     categoryName: category.name,
     name: row.name,
+    catalogNumber: (row.catalog_number ?? '').trim(),
     unit: row.unit,
     defaultQtyChips: parseQtyChips(row.default_qty_chips),
     alertMode: row.alert_mode,
@@ -546,6 +548,7 @@ export function createInventoryService(supabase: SupabaseClient) {
       input: {
         categoryId: string;
         name: string;
+        catalogNumber: string;
         unit: string;
         defaultQtyChips?: number[];
         alertMode?: InventoryAlertMode;
@@ -560,11 +563,19 @@ export function createInventoryService(supabase: SupabaseClient) {
         throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot manage catalog items.', 403);
       }
       const name = input.name.trim();
+      const catalogNumber = input.catalogNumber.trim();
       const unit = input.unit.trim();
-      if (!input.categoryId || !name || !unit) {
+      if (!input.categoryId || !name || !catalogNumber || !unit) {
         throw new AppError(
           API_ERROR_CODES.VALIDATION_ERROR,
-          'Category, name, and unit are required.',
+          'Category, name, catalogue number, and unit are required.',
+          400,
+        );
+      }
+      if (catalogNumber.length > 128) {
+        throw new AppError(
+          API_ERROR_CODES.VALIDATION_ERROR,
+          'Catalogue number must be at most 128 characters.',
           400,
         );
       }
@@ -584,6 +595,7 @@ export function createInventoryService(supabase: SupabaseClient) {
         .insert({
           category_id: input.categoryId,
           name,
+          catalog_number: catalogNumber,
           unit,
           default_qty_chips: chips,
           alert_mode: alertMode,
@@ -610,7 +622,7 @@ export function createInventoryService(supabase: SupabaseClient) {
         action: 'inventory_catalog_item.create',
         entityType: 'inventory_catalog_item',
         entityId: created.id,
-        newValues: { name, unit, categoryId: input.categoryId, alertMode },
+        newValues: { name, catalogNumber, unit, categoryId: input.categoryId, alertMode },
         ...meta,
       });
       return created;
@@ -621,6 +633,7 @@ export function createInventoryService(supabase: SupabaseClient) {
       id: string,
       input: Partial<{
         name: string;
+        catalogNumber: string;
         unit: string;
         defaultQtyChips: number[];
         alertMode: InventoryAlertMode;
@@ -637,6 +650,24 @@ export function createInventoryService(supabase: SupabaseClient) {
       }
       const patch: Record<string, unknown> = {};
       if (input.name !== undefined) patch.name = input.name.trim();
+      if (input.catalogNumber !== undefined) {
+        const catalogNumber = input.catalogNumber.trim();
+        if (!catalogNumber) {
+          throw new AppError(
+            API_ERROR_CODES.VALIDATION_ERROR,
+            'Catalogue number is required.',
+            400,
+          );
+        }
+        if (catalogNumber.length > 128) {
+          throw new AppError(
+            API_ERROR_CODES.VALIDATION_ERROR,
+            'Catalogue number must be at most 128 characters.',
+            400,
+          );
+        }
+        patch.catalog_number = catalogNumber;
+      }
       if (input.unit !== undefined) patch.unit = input.unit.trim();
       if (input.defaultQtyChips !== undefined) patch.default_qty_chips = normalizeQtyChips(input.defaultQtyChips);
       if (input.alertMode !== undefined) patch.alert_mode = input.alertMode;
