@@ -18,10 +18,13 @@ import {
   pptExtension,
   pptWeekBounds,
   readWeeklyPptTiming,
+  saturdayOfPptWeek,
   sundayOfPptWeek,
   weeklyPptTiming,
+  WEEKLY_PPT_WINDOW_OPEN_HOUR,
   type WeeklyPptTiming,
 } from './ppt-week';
+import { createPptConcernsService } from './ppt-concerns';
 import { routeWeeklyPptToGm } from './weekly-ppt-route';
 
 type RequestMeta = { ipAddress?: string | null; userAgent?: string | null };
@@ -169,12 +172,15 @@ export function createWeeklyUpdatesService(supabase: SupabaseClient) {
       const late = weeks.filter((w) => w.status === 'late').length;
       const missing = weeks.filter((w) => w.status === 'missing').length;
 
+      const windowOpenDate = saturdayOfPptWeek(week.start);
       return {
         week: {
           start: week.start,
           end: week.end,
           deadlineDate,
+          windowOpenDate,
           deadlineLabel: `Sunday ${deadlineDate} 23:59 IST`,
+          windowOpenLabel: `Saturday ${windowOpenDate} ${WEEKLY_PPT_WINDOW_OPEN_HOUR}:00 IST`,
           lastHourAfterLabel: `Sunday ${deadlineDate} ${WEEKLY_PPT_LAST_HOUR}:00 IST`,
         },
         current: current ? mapUpdate(current, sharedIds.has(current.id)) : null,
@@ -208,13 +214,22 @@ export function createWeeklyUpdatesService(supabase: SupabaseClient) {
         );
       }
 
-      const today = formatIsoDateInZone(new Date());
+      const now = new Date();
+      const today = formatIsoDateInZone(now);
       const week = pptWeekBounds(today);
+      const concerns = createPptConcernsService(supabase);
+      const gate = await concerns.assertUploadAllowed({
+        now,
+        weekStart: week.start,
+        employeeId: actor.employeeId,
+        kind: 'weekly',
+      });
+
       const existing = await loadCurrent(actor.employeeId, week.start);
       if (existing && existing.upload_count >= WEEKLY_PPT_MAX_UPLOADS) {
         throw new AppError(
           API_ERROR_CODES.CONFLICT,
-          'You already used both uploads for this week. Contact CSO if you need a change.',
+          `You already used all ${WEEKLY_PPT_MAX_UPLOADS} uploads for this week. Contact CSO if you need a change.`,
           409,
         );
       }
@@ -222,8 +237,8 @@ export function createWeeklyUpdatesService(supabase: SupabaseClient) {
       const fullName = await loadEmployeeName(actor.employeeId);
       const systemFileName = buildWeeklyPptSystemFileName(fullName, week.start, week.end, extension);
       const storagePath = `${actor.employeeId}/${week.start}/${crypto.randomUUID()}-${systemFileName}`;
-      const timing = weeklyPptTiming(new Date(), week.start);
-      const late = isWeeklyPptLate(timing);
+      const timing = weeklyPptTiming(now, week.start);
+      const late = isWeeklyPptLate(timing) || gate.timingIsLate;
 
       const { data: signed, error: signError } = await supabase.storage
         .from(WEEKLY_PPT_BUCKET)
@@ -303,6 +318,10 @@ export function createWeeklyUpdatesService(supabase: SupabaseClient) {
       });
       // Still viewable by the employee until GM downloads / emails / deletes the file.
       mapped = { ...mapped, sharedToGm: true };
+
+      if (gate.reopenConcernId) {
+        await concerns.consumeApprovedReopen(gate.reopenConcernId);
+      }
 
       await writeAuditLog(supabase, {
         actorId: actor.employeeId,

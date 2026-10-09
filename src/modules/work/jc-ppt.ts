@@ -1,6 +1,12 @@
-import { sanitizePersonNameForFile, WEEKLY_PPT_MIME, pptExtension } from './ppt-week';
+import {
+  sanitizePersonNameForFile,
+  WEEKLY_PPT_MAX_UPLOADS,
+  WEEKLY_PPT_MIME,
+  pptExtension,
+} from './ppt-week';
 
 export const JC_PPT_MAX_BYTES = 15 * 1024 * 1024;
+export const JC_PPT_MAX_UPLOADS = WEEKLY_PPT_MAX_UPLOADS;
 export const JC_PPT_BUCKET = 'jc-ppt-uploads';
 export const JC_PPT_MIME = WEEKLY_PPT_MIME;
 

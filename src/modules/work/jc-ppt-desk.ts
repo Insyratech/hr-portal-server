@@ -8,6 +8,7 @@ import { writeAuditLog } from '../audit/write-audit-log';
 import { sendMail, portalUrl } from '../notifications/mail';
 import { listStaffByRole, loadStaffById, notifyStaff } from '../notifications/notify-staff';
 import { JC_PPT_BUCKET, type JcPptStatus } from './jc-ppt';
+import { readWeeklyPptTiming, type WeeklyPptTiming } from './ppt-week';
 
 type RequestMeta = { ipAddress?: string | null; userAgent?: string | null };
 
@@ -20,6 +21,13 @@ type JcRow = {
   content_type: string;
   size_bytes: number;
   status: JcPptStatus;
+  paper_title?: string | null;
+  doi_url?: string | null;
+  week_start?: string | null;
+  week_end?: string | null;
+  upload_count?: number | null;
+  submission_timing?: string | null;
+  late?: boolean | null;
   uploaded_at: string;
   transferred_at: string | null;
   transferred_by: string | null;
@@ -55,6 +63,7 @@ function mapJc(
     audience === 'gm'
       ? hasFile && row.status === 'with_gm'
       : hasFile && row.status === 'uploaded';
+  const timing = readWeeklyPptTiming(row) as WeeklyPptTiming;
   return {
     id: row.id,
     employeeId: row.employee_id,
@@ -64,6 +73,13 @@ function mapJc(
     contentType: row.content_type,
     sizeBytes: row.size_bytes,
     status: row.status,
+    paperTitle: row.paper_title ?? '',
+    doiUrl: row.doi_url ?? '',
+    weekStart: row.week_start ? String(row.week_start).slice(0, 10) : null,
+    weekEnd: row.week_end ? String(row.week_end).slice(0, 10) : null,
+    uploadCount: row.upload_count ?? 1,
+    timing,
+    late: Boolean(row.late) || timing === 'late',
     fileAvailable,
     uploadedAt: row.uploaded_at,
     transferredAt: row.transferred_at,

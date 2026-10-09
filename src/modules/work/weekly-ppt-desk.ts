@@ -15,6 +15,7 @@ import {
   WEEKLY_PPT_LAST_HOUR,
   pptWeekBounds,
   readWeeklyPptTiming,
+  saturdayOfPptWeek,
   sundayOfPptWeek,
   type WeeklyPptTiming,
 } from './ppt-week';
@@ -304,7 +305,9 @@ export function createWeeklyPptDeskService(supabase: SupabaseClient) {
           start: week.start,
           end: week.end,
           deadlineDate,
+          windowOpenDate: saturdayOfPptWeek(week.start),
           deadlineLabel: `Sunday ${deadlineDate} 23:59 IST`,
+          windowOpenLabel: `Saturday ${saturdayOfPptWeek(week.start)} 14:00 IST`,
           lastHourAfterLabel: `Sunday ${deadlineDate} ${WEEKLY_PPT_LAST_HOUR}:00 IST`,
         },
         counts: {

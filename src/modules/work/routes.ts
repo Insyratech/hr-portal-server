@@ -21,6 +21,7 @@ import { createWeeklyPptDeskService } from './weekly-ppt-desk';
 import { createJcPptsService } from './jc-ppts';
 import { createJcPptDeskService } from './jc-ppt-desk';
 import { createProjectGoalsMilestonesService } from './goals-milestones';
+import { createPptConcernsService } from './ppt-concerns';
 
 function metaOf(request: { ip: string; headers: { 'user-agent'?: string } }) {
   return { ipAddress: request.ip, userAgent: request.headers['user-agent'] ?? null };
@@ -871,6 +872,89 @@ export async function registerWorkRoutes(app: FastifyInstance): Promise<void> {
   );
 
   app.get(
+    '/api/v1/work/ppt-concerns/mine',
+    { preHandler: [requirePermission(PERMISSIONS.WORK_OWN)] },
+    async (request) => {
+      if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
+      return ok(await createPptConcernsService(requireSupabase(app.supabase)).listMine(request.user));
+    },
+  );
+
+  app.get(
+    '/api/v1/work/ppt-concerns',
+    { preHandler: [requirePermission(PERMISSIONS.WORK_VIEW, PERMISSIONS.WORK_ASSIGN)] },
+    async (request) => {
+      if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
+      const query = request.query as { status?: 'pending' | 'approved' | 'rejected' };
+      return ok(
+        await createPptConcernsService(requireSupabase(app.supabase)).listDesk(request.user, query.status),
+      );
+    },
+  );
+
+  app.post(
+    '/api/v1/work/ppt-concerns',
+    {
+      preHandler: [requirePermission(PERMISSIONS.WORK_OWN)],
+      schema: {
+        body: Type.Object({
+          kind: Type.Union([Type.Literal('weekly'), Type.Literal('jc')]),
+          weekStart: Type.Optional(Type.String({ minLength: 10, maxLength: 10 })),
+          reason: Type.String({ minLength: 10, maxLength: 4000 }),
+          screenshotFileName: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
+          screenshotContentType: Type.Optional(Type.String()),
+          screenshotSizeBytes: Type.Optional(Type.Integer({ minimum: 1 })),
+        }),
+      },
+    },
+    async (request) => {
+      if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
+      const body = request.body as {
+        kind: 'weekly' | 'jc';
+        weekStart?: string;
+        reason: string;
+        screenshotFileName?: string;
+        screenshotContentType?: string;
+        screenshotSizeBytes?: number;
+      };
+      return ok(
+        await createPptConcernsService(requireSupabase(app.supabase)).create(
+          request.user,
+          body,
+          metaOf(request),
+        ),
+      );
+    },
+  );
+
+  app.post(
+    '/api/v1/work/ppt-concerns/:id/review',
+    {
+      preHandler: [requirePermission(PERMISSIONS.WORK_VIEW, PERMISSIONS.WORK_ASSIGN)],
+      schema: {
+        params: Type.Object({ id: Type.String({ minLength: 1 }) }),
+        body: Type.Object({
+          status: Type.Union([Type.Literal('approved'), Type.Literal('rejected')]),
+          reviewNote: Type.Optional(Type.String({ maxLength: 2000 })),
+        }),
+      },
+    },
+    async (request) => {
+      if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
+      const { id } = request.params as { id: string };
+      const body = request.body as { status: 'approved' | 'rejected'; reviewNote?: string };
+      return ok(
+        await createPptConcernsService(requireSupabase(app.supabase)).review(
+          request.user,
+          id,
+          body,
+          metaOf(request),
+        ),
+      );
+    },
+  );
+
+  app.get(
     '/api/v1/work/projects/:id/goals',
     {
       preHandler: [
@@ -1252,12 +1336,20 @@ export async function registerWorkRoutes(app: FastifyInstance): Promise<void> {
           fileName: Type.String({ minLength: 1 }),
           contentType: Type.String(),
           sizeBytes: Type.Integer({ minimum: 1 }),
+          paperTitle: Type.String({ minLength: 3, maxLength: 500 }),
+          doiUrl: Type.String({ minLength: 5, maxLength: 500 }),
         }),
       },
     },
     async (request) => {
       if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
-      const body = request.body as { fileName: string; contentType: string; sizeBytes: number };
+      const body = request.body as {
+        fileName: string;
+        contentType: string;
+        sizeBytes: number;
+        paperTitle: string;
+        doiUrl: string;
+      };
       return ok(
         await createJcPptsService(requireSupabase(app.supabase)).createUploadSession(
           request.user,

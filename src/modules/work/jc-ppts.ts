@@ -7,9 +7,23 @@ import { writeAuditLog } from '../audit/write-audit-log';
 import { listStaffByRole, loadStaffById, notifyStaff } from '../notifications/notify-staff';
 import { portalUrl } from '../notifications/mail';
 import { skipsWorkApprovalLoop } from './approval';
+import { formatIsoDateInZone } from './ist-clock';
+import { createPptConcernsService } from './ppt-concerns';
+import {
+  isWeeklyPptLate,
+  pptWeekBounds,
+  readWeeklyPptTiming,
+  saturdayOfPptWeek,
+  sundayOfPptWeek,
+  WEEKLY_PPT_LAST_HOUR,
+  WEEKLY_PPT_WINDOW_OPEN_HOUR,
+  weeklyPptTiming,
+  type WeeklyPptTiming,
+} from './ppt-week';
 import {
   JC_PPT_BUCKET,
   JC_PPT_MAX_BYTES,
+  JC_PPT_MAX_UPLOADS,
   JC_PPT_MIME,
   buildJcPptSystemFileName,
   pptExtension,
@@ -27,6 +41,13 @@ type JcRow = {
   content_type: string;
   size_bytes: number;
   status: JcPptStatus;
+  paper_title: string;
+  doi_url: string;
+  week_start: string;
+  week_end: string;
+  upload_count: number;
+  submission_timing: string | null;
+  late: boolean;
   uploaded_at: string;
   transferred_at: string | null;
   transferred_by: string | null;
@@ -46,7 +67,55 @@ type EventRow = {
   created_at: string;
 };
 
-function mapJc(row: JcRow, extras?: { employeeName?: string; transferredByName?: string | null; consumedByName?: string | null }) {
+function normalizePaperTitle(raw: string): string {
+  const title = raw.trim().replace(/\s+/g, ' ');
+  if (title.length < 3) {
+    throw new AppError(
+      API_ERROR_CODES.VALIDATION_ERROR,
+      'Enter the research paper name (at least 3 characters).',
+      400,
+    );
+  }
+  if (title.length > 500) {
+    throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Paper name must be 500 characters or fewer.', 400);
+  }
+  return title;
+}
+
+function normalizeDoiUrl(raw: string): string {
+  const value = raw.trim();
+  if (value.length < 5) {
+    throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Enter a DOI or paper link.', 400);
+  }
+  if (value.length > 500) {
+    throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'DOI / link must be 500 characters or fewer.', 400);
+  }
+  if (/^10\.\d{4,}\/\S+$/i.test(value)) {
+    return `https://doi.org/${value}`;
+  }
+  if (/^doi:\s*10\.\d{4,}\/\S+$/i.test(value)) {
+    return `https://doi.org/${value.replace(/^doi:\s*/i, '')}`;
+  }
+  try {
+    const url = new URL(value);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      throw new Error('bad protocol');
+    }
+    return url.toString();
+  } catch {
+    throw new AppError(
+      API_ERROR_CODES.VALIDATION_ERROR,
+      'DOI must be a link (https://…) or a DOI like 10.1234/example.',
+      400,
+    );
+  }
+}
+
+export function mapJcPptItem(
+  row: JcRow,
+  extras?: { employeeName?: string; transferredByName?: string | null; consumedByName?: string | null },
+) {
+  const timing = readWeeklyPptTiming(row) as WeeklyPptTiming;
   return {
     id: row.id,
     employeeId: row.employee_id,
@@ -56,6 +125,13 @@ function mapJc(row: JcRow, extras?: { employeeName?: string; transferredByName?:
     contentType: row.content_type,
     sizeBytes: row.size_bytes,
     status: row.status,
+    paperTitle: row.paper_title ?? '',
+    doiUrl: row.doi_url ?? '',
+    weekStart: String(row.week_start).slice(0, 10),
+    weekEnd: String(row.week_end).slice(0, 10),
+    uploadCount: row.upload_count ?? 1,
+    timing,
+    late: Boolean(row.late) || timing === 'late',
     /** Employee/CSO may view only while pending with CSO (before transfer to GM). */
     fileAvailable: Boolean(row.storage_path) && row.status === 'uploaded',
     uploadedAt: row.uploaded_at,
@@ -134,9 +210,25 @@ export function createJcPptsService(supabase: SupabaseClient) {
     return new Map((data ?? []).map((row) => [row.id as string, row.full_name as string]));
   }
 
+  async function loadWeekRow(employeeId: string, weekStart: string): Promise<JcRow | null> {
+    const { data, error } = await supabase
+      .from('jc_ppts')
+      .select('*')
+      .eq('employee_id', employeeId)
+      .eq('week_start', weekStart)
+      .maybeSingle();
+    if (error) throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load JC PPT for this week.', 500);
+    return (data as JcRow | null) ?? null;
+  }
+
   return {
     async getBoard(actor: RequestUser) {
       assertWorkLoop(actor);
+      const today = formatIsoDateInZone(new Date());
+      const week = pptWeekBounds(today);
+      const deadlineDate = sundayOfPptWeek(week.start);
+      const windowOpenDate = saturdayOfPptWeek(week.start);
+
       const { data, error } = await supabase
         .from('jc_ppts')
         .select('*')
@@ -145,35 +237,56 @@ export function createJcPptsService(supabase: SupabaseClient) {
         .limit(100);
       if (error) throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load JC PPTs.', 500);
       const rows = (data ?? []) as JcRow[];
-      const pending = rows.find((row) => row.status === 'uploaded') ?? null;
+      const current = rows.find((row) => String(row.week_start).slice(0, 10) === week.start) ?? null;
+      const pending = current && current.status === 'uploaded' ? current : null;
       const events = await loadEvents(rows.map((row) => row.id));
       const nameById = await namesForIds([
-        ...rows.map((r) => r.transferred_by).filter(Boolean) as string[],
-        ...rows.map((r) => r.consumed_by).filter(Boolean) as string[],
-        ...events.map((e) => e.actor_id).filter(Boolean) as string[],
+        ...(rows.map((r) => r.transferred_by).filter(Boolean) as string[]),
+        ...(rows.map((r) => r.consumed_by).filter(Boolean) as string[]),
+        ...(events.map((e) => e.actor_id).filter(Boolean) as string[]),
       ]);
 
+      const mapRow = (row: JcRow) =>
+        mapJcPptItem(row, {
+          transferredByName: row.transferred_by ? nameById.get(row.transferred_by) ?? null : null,
+          consumedByName: row.consumed_by ? nameById.get(row.consumed_by) ?? null : null,
+        });
+
+      const uploadsRemaining = (() => {
+        if (!current) return JC_PPT_MAX_UPLOADS;
+        if (current.status !== 'uploaded') return 0;
+        return Math.max(0, JC_PPT_MAX_UPLOADS - (current.upload_count ?? 1));
+      })();
+
       return {
+        week: {
+          start: week.start,
+          end: week.end,
+          deadlineDate,
+          windowOpenDate,
+          deadlineLabel: `Sunday ${deadlineDate} 23:59 IST`,
+          windowOpenLabel: `Saturday ${windowOpenDate} ${WEEKLY_PPT_WINDOW_OPEN_HOUR}:00 IST`,
+          lastHourAfterLabel: `Sunday ${deadlineDate} ${WEEKLY_PPT_LAST_HOUR}:00 IST`,
+        },
         maxBytes: JC_PPT_MAX_BYTES,
-        pending: pending
-          ? mapJc(pending, {
-              transferredByName: pending.transferred_by ? nameById.get(pending.transferred_by) ?? null : null,
-              consumedByName: pending.consumed_by ? nameById.get(pending.consumed_by) ?? null : null,
-            })
-          : null,
-        items: rows.map((row) =>
-          mapJc(row, {
-            transferredByName: row.transferred_by ? nameById.get(row.transferred_by) ?? null : null,
-            consumedByName: row.consumed_by ? nameById.get(row.consumed_by) ?? null : null,
-          }),
-        ),
+        maxUploads: JC_PPT_MAX_UPLOADS,
+        uploadsRemaining,
+        current: current ? mapRow(current) : null,
+        pending: pending ? mapRow(pending) : null,
+        items: rows.map(mapRow),
         events: events.map((event) => mapEvent(event, event.actor_id ? nameById.get(event.actor_id) ?? null : null)),
       };
     },
 
     async createUploadSession(
       actor: RequestUser,
-      input: { fileName: string; contentType: string; sizeBytes: number },
+      input: {
+        fileName: string;
+        contentType: string;
+        sizeBytes: number;
+        paperTitle: string;
+        doiUrl: string;
+      },
       meta: RequestMeta,
     ) {
       assertWorkLoop(actor);
@@ -193,18 +306,41 @@ export function createJcPptsService(supabase: SupabaseClient) {
         );
       }
 
-      const { data: pendingRows } = await supabase
-        .from('jc_ppts')
-        .select('*')
-        .eq('employee_id', actor.employeeId)
-        .eq('status', 'uploaded')
-        .order('uploaded_at', { ascending: false })
-        .limit(1);
-      const existing = ((pendingRows ?? [])[0] as JcRow | undefined) ?? null;
+      const paperTitle = normalizePaperTitle(input.paperTitle ?? '');
+      const doiUrl = normalizeDoiUrl(input.doiUrl ?? '');
+
+      const now = new Date();
+      const today = formatIsoDateInZone(now);
+      const week = pptWeekBounds(today);
+      const concerns = createPptConcernsService(supabase);
+      const gate = await concerns.assertUploadAllowed({
+        now,
+        weekStart: week.start,
+        employeeId: actor.employeeId,
+        kind: 'jc',
+      });
+
+      const existing = await loadWeekRow(actor.employeeId, week.start);
+      if (existing && existing.status !== 'uploaded') {
+        throw new AppError(
+          API_ERROR_CODES.CONFLICT,
+          'This week’s JC PPT was already transferred. You cannot replace it.',
+          409,
+        );
+      }
+      if (existing && (existing.upload_count ?? 1) >= JC_PPT_MAX_UPLOADS) {
+        throw new AppError(
+          API_ERROR_CODES.CONFLICT,
+          `You already used all ${JC_PPT_MAX_UPLOADS} JC uploads for this week. Raise a concern if you need help.`,
+          409,
+        );
+      }
 
       const fullName = await loadEmployeeName(actor.employeeId);
       const systemFileName = buildJcPptSystemFileName(fullName, extension);
-      const storagePath = `${actor.employeeId}/${crypto.randomUUID()}-${systemFileName}`;
+      const storagePath = `${actor.employeeId}/${week.start}/${crypto.randomUUID()}-${systemFileName}`;
+      const timing = weeklyPptTiming(now, week.start);
+      const late = isWeeklyPptLate(timing) || gate.timingIsLate;
 
       const { data: signed, error: signError } = await supabase.storage
         .from(JC_PPT_BUCKET)
@@ -230,6 +366,13 @@ export function createJcPptsService(supabase: SupabaseClient) {
             system_file_name: systemFileName,
             content_type: contentType,
             size_bytes: input.sizeBytes,
+            paper_title: paperTitle,
+            doi_url: doiUrl,
+            week_start: week.start,
+            week_end: week.end,
+            upload_count: (existing.upload_count ?? 1) + 1,
+            submission_timing: timing,
+            late,
             uploaded_at: new Date().toISOString(),
           })
           .eq('id', existing.id)
@@ -238,7 +381,7 @@ export function createJcPptsService(supabase: SupabaseClient) {
         if (error || !data) {
           throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to replace JC PPT.', 500);
         }
-        mapped = mapJc(data as JcRow);
+        mapped = mapJcPptItem(data as JcRow);
         await insertEvent(mapped.id, actor.employeeId, 'replaced', 'Employee replaced pending JC PPT.');
       } else {
         const { data, error } = await supabase
@@ -250,16 +393,34 @@ export function createJcPptsService(supabase: SupabaseClient) {
             system_file_name: systemFileName,
             content_type: contentType,
             size_bytes: input.sizeBytes,
+            paper_title: paperTitle,
+            doi_url: doiUrl,
+            week_start: week.start,
+            week_end: week.end,
+            upload_count: 1,
+            submission_timing: timing,
+            late,
             status: 'uploaded',
             uploaded_at: new Date().toISOString(),
           })
           .select('*')
           .single();
         if (error || !data) {
+          if (error?.code === '23505') {
+            throw new AppError(
+              API_ERROR_CODES.CONFLICT,
+              'A JC PPT already exists for this week. Refresh and try again.',
+              409,
+            );
+          }
           throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to register JC PPT.', 500);
         }
-        mapped = mapJc(data as JcRow);
+        mapped = mapJcPptItem(data as JcRow);
         await insertEvent(mapped.id, actor.employeeId, 'uploaded', 'Employee uploaded JC PPT.');
+      }
+
+      if (gate.reopenConcernId) {
+        await concerns.consumeApprovedReopen(gate.reopenConcernId);
       }
 
       await writeAuditLog(supabase, {
@@ -283,11 +444,16 @@ export function createJcPptsService(supabase: SupabaseClient) {
           eyebrow: 'Team JC',
           paragraphs: [
             `${employee?.fullName ?? 'An employee'} ${existing ? 'replaced their pending' : 'uploaded a'} JC PPT.`,
+            `Paper: ${paperTitle}`,
             'Open Team JC to review and transfer it to General Manager when ready.',
           ],
           details: [
             { label: 'Employee', value: employee?.fullName ?? 'Employee' },
+            { label: 'Paper', value: paperTitle },
+            { label: 'DOI / link', value: doiUrl },
             { label: 'File', value: mapped.systemFileName },
+            { label: 'Week', value: `${week.start} → ${week.end}` },
+            ...(late ? [{ label: 'Timing', value: 'Late (approved reopen)' }] : []),
           ],
           ctaLabel: 'Open Team JC',
           ctaHref: portalUrl('/cso/work/jc'),

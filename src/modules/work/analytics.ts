@@ -60,7 +60,7 @@ export function monthBounds(month: string): { start: string; end: string } {
   return { start, end };
 }
 
-/** Mondays whose Mon–Sun block overlaps [from, to]. */
+/** Mondays whose Mon–Sun block overlaps [from, to] (planning / priorities week). */
 export function mondaysOverlapping(from: string, to: string): string[] {
   const first = parseIsoDate(from);
   const day = first.getUTCDay();
@@ -73,6 +73,23 @@ export function mondaysOverlapping(from: string, to: string): string[] {
     const end = formatIsoDate(addUtcDays(monday, 6));
     if (end >= from && start <= to) out.push(start);
     monday = addUtcDays(monday, 7);
+  }
+  return out;
+}
+
+/** Tuesdays whose Tue–Mon PPT block overlaps [from, to] (weekly / JC PPT week). */
+export function tuesdaysOverlapping(from: string, to: string): string[] {
+  const first = parseIsoDate(from);
+  const day = first.getUTCDay();
+  const daysSinceTuesday = (day - 2 + 7) % 7;
+  let tuesday = addUtcDays(first, -daysSinceTuesday);
+  const last = parseIsoDate(to);
+  const out: string[] = [];
+  while (tuesday.getTime() <= last.getTime()) {
+    const start = formatIsoDate(tuesday);
+    const end = formatIsoDate(addUtcDays(tuesday, 6));
+    if (end >= from && start <= to) out.push(start);
+    tuesday = addUtcDays(tuesday, 7);
   }
   return out;
 }

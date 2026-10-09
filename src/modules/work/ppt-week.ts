@@ -16,55 +16,86 @@ const MONTHS = [
   'December',
 ] as const;
 
-/** Mon–Sun calendar week for weekly PPT (not org working-day planning week). */
+/**
+ * Tue–Mon calendar week for weekly / JC PPT (Monday = meeting / last day).
+ * Not the org Mon–Sun planning week used for priorities.
+ */
 export function pptWeekBounds(isoDate: string): { start: string; end: string } {
   const date = parseIsoDate(isoDate);
-  const day = date.getUTCDay();
-  const offset = day === 0 ? -6 : 1 - day;
-  const monday = addUtcDays(date, offset);
+  const day = date.getUTCDay(); // 0 Sun … 6 Sat; Tuesday = 2
+  const daysSinceTuesday = (day - 2 + 7) % 7;
+  const tuesday = addUtcDays(date, -daysSinceTuesday);
   return {
-    start: formatIsoDate(monday),
-    end: formatIsoDate(addUtcDays(monday, 6)),
+    start: formatIsoDate(tuesday),
+    end: formatIsoDate(addUtcDays(tuesday, 6)),
   };
 }
 
-/** @deprecated Prefer sundayOfPptWeek — PPT deadline day is Sunday. */
+/** Saturday of the Tue–Mon PPT week (upload window opens this day at 14:00 IST). */
 export function saturdayOfPptWeek(weekStart: string): string {
+  return formatIsoDate(addUtcDays(parseIsoDate(weekStart), 4));
+}
+
+/** Sunday of the Tue–Mon PPT week (upload deadline day 23:59 IST). */
+export function sundayOfPptWeek(weekStart: string): string {
   return formatIsoDate(addUtcDays(parseIsoDate(weekStart), 5));
 }
 
-/** Sunday of the Mon–Sun PPT week (= week end). Deadline day for weekly wrap PPT. */
-export function sundayOfPptWeek(weekStart: string): string {
+/** Monday = last day / meeting day of the Tue–Mon PPT week. */
+export function mondayOfPptWeek(weekStart: string): string {
   return formatIsoDate(addUtcDays(parseIsoDate(weekStart), 6));
 }
 
 /**
  * Sunday reminder hours (IST) for a missing weekly PPT: 6 pm, 8 pm, 10 pm.
- * Deliberately independent of the lateness threshold — these nudge before the 23:59 deadline.
+ * Unchanged — still fire on Sunday before the 23:59 deadline.
  */
 export const WEEKLY_PPT_REMINDER_HOURS = [18, 20, 22] as const;
 
 /** Sunday hour (IST) from which the CSO status digest may go out. */
 export const WEEKLY_PPT_CSO_DIGEST_HOUR = 22;
 
-/** Sunday hour (IST) from which a submission counts as a last-hour submission rather than on time. */
+/** Sunday hour (IST) from which a submission counts as last-hour rather than on time. */
 export const WEEKLY_PPT_LAST_HOUR = 23;
+
+/** Saturday hour (IST) when the upload window opens. */
+export const WEEKLY_PPT_WINDOW_OPEN_HOUR = 14;
 
 /**
  * How a weekly PPT submission is tagged.
- * `on_time` up to Sunday 22:59 IST, `last_hour` Sunday 23:00–23:59 IST, `late` from Monday.
+ * `on_time` Sat 14:00–Sun 22:59 IST, `last_hour` Sun 23:00–23:59 IST,
+ * `late` outside the Sat–Sun window (e.g. Monday) into the same Tue–Mon week.
  */
 export type WeeklyPptTiming = 'on_time' | 'last_hour' | 'late';
+
+export type WeeklyPptWindowState = 'before' | 'open' | 'after';
+
+/** Whether `now` falls in Sat 14:00 IST → Sun 23:59 IST for the given PPT week. */
+export function weeklyPptUploadWindowState(now: Date, weekStart: string): WeeklyPptWindowState {
+  const saturday = saturdayOfPptWeek(weekStart);
+  const sunday = sundayOfPptWeek(weekStart);
+  const clock = zonedClock(now, WORK_TIMEZONE);
+  if (clock.isoDate < saturday) return 'before';
+  if (clock.isoDate > sunday) return 'after';
+  if (clock.isoDate === saturday && clock.hour < WEEKLY_PPT_WINDOW_OPEN_HOUR) return 'before';
+  return 'open';
+}
+
+export function isWithinWeeklyPptUploadWindow(now: Date, weekStart: string): boolean {
+  return weeklyPptUploadWindowState(now, weekStart) === 'open';
+}
 
 export function weeklyPptTiming(now: Date, weekStart: string): WeeklyPptTiming {
   const sunday = sundayOfPptWeek(weekStart);
   const clock = zonedClock(now, WORK_TIMEZONE);
-  if (clock.isoDate > sunday) return 'late';
+  const window = weeklyPptUploadWindowState(now, weekStart);
+  if (window !== 'open') return 'late';
   if (clock.isoDate < sunday) return 'on_time';
+  // Sunday inside the open window
   return clock.hour >= WEEKLY_PPT_LAST_HOUR ? 'last_hour' : 'on_time';
 }
 
-/** The stored `late` flag: only submissions after Sunday 23:59 IST count as late. */
+/** The stored `late` flag: only submissions outside the Sat–Sun window. */
 export function isWeeklyPptLate(timing: WeeklyPptTiming): boolean {
   return timing === 'late';
 }
@@ -127,7 +158,7 @@ export function pptExtension(fileName: string): '.ppt' | '.pptx' | null {
 }
 
 export const WEEKLY_PPT_MAX_BYTES = 15 * 1024 * 1024;
-export const WEEKLY_PPT_MAX_UPLOADS = 2;
+export const WEEKLY_PPT_MAX_UPLOADS = 10;
 export const WEEKLY_PPT_BUCKET = 'weekly-work-updates';
 
 export const WEEKLY_PPT_MIME = new Set([

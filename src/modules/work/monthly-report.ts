@@ -4,10 +4,17 @@ import { AppError } from '../../shared/errors/app-error';
 import type { RequestUser } from '../../shared/types/request-user';
 import { addUtcDays, formatIsoDate, parseIsoDate } from '../leave/day-count';
 import { canViewOthersWork } from './access';
-import { defaultMonthRange, monthBounds, monthKeysInclusive, mondaysOverlapping } from './analytics';
+import {
+  defaultMonthRange,
+  monthBounds,
+  monthKeysInclusive,
+  mondaysOverlapping,
+  tuesdaysOverlapping,
+} from './analytics';
 import { skipsWorkApprovalLoop } from './approval';
 import { loadEmployeeRoleMap } from './employee-roles';
 import { percent } from './overview';
+import { createPptConcernsService } from './ppt-concerns';
 import { readWeeklyPptTiming, type WeeklyPptTiming } from './ppt-week';
 
 function assertMonth(value: string | undefined): string {
@@ -121,18 +128,20 @@ export function createMonthlyWorkReportService(supabase: SupabaseClient) {
       const period = assertMonth(monthRaw);
       const employee = await loadEmployeeOrThrow(supabase, employeeId);
       const bounds = monthBounds(period);
-      const weekStarts = mondaysOverlapping(bounds.start, bounds.end);
+      const planWeekStarts = mondaysOverlapping(bounds.start, bounds.end);
+      const pptWeekStarts = tuesdaysOverlapping(bounds.start, bounds.end);
+      const weekStarts = planWeekStarts;
 
       const empty: Record<string, unknown>[] = [];
       const [pptRes, planRes, dayRes, jcRes, memberRes] = await Promise.all([
-        weekStarts.length === 0
+        pptWeekStarts.length === 0
           ? Promise.resolve({ data: empty, error: null })
           : supabase
               .from('weekly_work_updates')
               .select('week_start, week_end, submission_timing, late, submitted_at')
               .eq('employee_id', employeeId)
-              .in('week_start', weekStarts),
-        weekStarts.length === 0
+              .in('week_start', pptWeekStarts),
+        planWeekStarts.length === 0
           ? Promise.resolve({ data: empty, error: null })
           : supabase
               .from('weekly_plans')
@@ -140,7 +149,7 @@ export function createMonthlyWorkReportService(supabase: SupabaseClient) {
                 'id, week_start, week_end, weekly_priorities ( id, priority_type, title, approval_status, status, project_id, milestone_id )',
               )
               .eq('employee_id', employeeId)
-              .in('week_start', weekStarts),
+              .in('week_start', planWeekStarts),
         supabase
           .from('daily_work_days')
           .select('work_date, status, submitted_at')
@@ -149,7 +158,9 @@ export function createMonthlyWorkReportService(supabase: SupabaseClient) {
           .lte('work_date', bounds.end),
         supabase
           .from('jc_ppts')
-          .select('id, uploaded_at, status, transferred_at, consumed_at')
+          .select(
+            'id, uploaded_at, status, transferred_at, consumed_at, paper_title, doi_url, week_start, week_end, submission_timing, late',
+          )
           .eq('employee_id', employeeId)
           .gte('uploaded_at', `${bounds.start}T00:00:00.000Z`)
           .lte('uploaded_at', `${bounds.end}T23:59:59.999Z`)
@@ -275,7 +286,7 @@ export function createMonthlyWorkReportService(supabase: SupabaseClient) {
 
       const hasActiveMilestone = projects.some((p) => p.status === 'active' && p.activeMilestone);
 
-      const pptWeeks = weekStarts.map((weekStart) => {
+      const pptWeeks = pptWeekStarts.map((weekStart) => {
         const end = formatIsoDate(addUtcDays(parseIsoDate(weekStart), 6));
         const uploaded = pptByWeek.get(weekStart) ?? null;
         return {
@@ -345,6 +356,12 @@ export function createMonthlyWorkReportService(supabase: SupabaseClient) {
       const dailyRequired = weeks.reduce((sum, w) => sum + w.dailyRequired, 0);
       const dailySubmitted = weeks.reduce((sum, w) => sum + w.dailySubmitted, 0);
 
+      const pptRedFlags = await createPptConcernsService(supabase).listRedFlagsForMonth(
+        employeeId,
+        bounds.start,
+        bounds.end,
+      );
+
       return {
         period,
         employee,
@@ -364,8 +381,16 @@ export function createMonthlyWorkReportService(supabase: SupabaseClient) {
             uploadedAt: row.uploaded_at as string,
             transferredAt: (row.transferred_at as string | null) ?? null,
             consumedAt: (row.consumed_at as string | null) ?? null,
+            paperTitle: (row.paper_title as string | null) ?? '',
+            doiUrl: (row.doi_url as string | null) ?? '',
+            weekStart: row.week_start ? String(row.week_start).slice(0, 10) : null,
+            weekEnd: row.week_end ? String(row.week_end).slice(0, 10) : null,
+            timing: readWeeklyPptTiming(row as never) as WeeklyPptTiming,
+            late: Boolean(row.late),
           })),
         },
+        /** Pending or rejected late-upload concerns — RED FLAG for month-end review. */
+        pptRedFlags,
         weeks,
         summary: {
           pptPct: percent(pptUploaded, pptWeeks.length),
@@ -373,6 +398,7 @@ export function createMonthlyWorkReportService(supabase: SupabaseClient) {
           prioritiesApprovedPct: percent(weeksWithApproved, weeks.length),
           dailyPct: percent(dailySubmitted, dailyRequired),
           hasActiveMilestone,
+          pptRedFlagCount: pptRedFlags.length,
         },
       };
     },
