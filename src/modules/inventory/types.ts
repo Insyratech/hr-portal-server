@@ -36,6 +36,8 @@ export type InventoryCatalogItem = {
   categoryCode: string;
   categoryName: string;
   name: string;
+  /** Manufacturer / brand (searchable; optional on legacy rows). */
+  brandName: string;
   /** Supplier / internal catalogue number (shown with name in dropdowns). */
   catalogNumber: string;
   unit: string;

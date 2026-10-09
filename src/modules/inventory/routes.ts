@@ -57,6 +57,7 @@ const categoryPatchBody = Type.Object({
 const catalogCreateBody = Type.Object({
   categoryId: Type.String({ minLength: 1 }),
   name: Type.String({ minLength: 1 }),
+  brandName: Type.Optional(Type.String({ maxLength: 128 })),
   catalogNumber: Type.String({ minLength: 1, maxLength: 128 }),
   unit: Type.String({ minLength: 1 }),
   defaultQtyChips: Type.Optional(Type.Array(Type.Number(), { maxItems: 15 })),
@@ -69,6 +70,7 @@ const catalogCreateBody = Type.Object({
 
 const catalogPatchBody = Type.Object({
   name: Type.Optional(Type.String({ minLength: 1 })),
+  brandName: Type.Optional(Type.String({ maxLength: 128 })),
   catalogNumber: Type.Optional(Type.String({ maxLength: 128 })),
   unit: Type.Optional(Type.String({ minLength: 1 })),
   defaultQtyChips: Type.Optional(Type.Array(Type.Number(), { maxItems: 15 })),
@@ -336,6 +338,7 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
           request.body as {
             categoryId: string;
             name: string;
+            brandName?: string;
             catalogNumber: string;
             unit: string;
             defaultQtyChips?: number[];
@@ -366,6 +369,7 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
           id,
           request.body as {
             name?: string;
+            brandName?: string;
             catalogNumber?: string;
             unit?: string;
             defaultQtyChips?: number[];

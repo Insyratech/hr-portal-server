@@ -85,6 +85,7 @@ type CatalogRow = {
   id: string;
   category_id: string;
   name: string;
+  brand_name?: string | null;
   catalog_number?: string | null;
   unit: string;
   default_qty_chips: unknown;
@@ -213,6 +214,7 @@ function mapCatalog(row: CatalogRow): InventoryCatalogItem {
     categoryCode: category.code,
     categoryName: category.name,
     name: row.name,
+    brandName: (row.brand_name ?? '').trim(),
     catalogNumber: (row.catalog_number ?? '').trim(),
     unit: row.unit,
     defaultQtyChips: parseQtyChips(row.default_qty_chips),
@@ -225,6 +227,69 @@ function mapCatalog(row: CatalogRow): InventoryCatalogItem {
     updatedAt: row.updated_at,
     status: row.status,
   };
+}
+
+function catalogConflictMessage(error: { code?: string; message?: string; details?: string } | null): string | null {
+  if (error?.code !== '23505') return null;
+  const haystack = `${error.message ?? ''} ${error.details ?? ''}`.toLowerCase();
+  if (haystack.includes('catalog_number')) {
+    return 'A catalog item with this catalogue number already exists.';
+  }
+  if (haystack.includes('name_unique') || haystack.includes('(category_id, name)')) {
+    return 'A catalog item with this name already exists in the category.';
+  }
+  return 'This catalog item already exists.';
+}
+
+async function assertNoDuplicateCatalog(
+  supabase: SupabaseClient,
+  input: { categoryId: string; name: string; catalogNumber: string; excludeId?: string },
+): Promise<void> {
+  const name = input.name.trim();
+  const catalogNumber = input.catalogNumber.trim();
+  const catalogNumberKey = catalogNumber.toLowerCase();
+
+  let nameQuery = supabase
+    .from('inventory_catalog_items')
+    .select('id')
+    .eq('category_id', input.categoryId)
+    .eq('name', name)
+    .limit(1);
+  if (input.excludeId) nameQuery = nameQuery.neq('id', input.excludeId);
+  const { data: nameRows, error: nameError } = await nameQuery;
+  if (nameError) {
+    throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to check catalog duplicates.', 500);
+  }
+  if ((nameRows ?? []).length > 0) {
+    throw new AppError(
+      API_ERROR_CODES.CONFLICT,
+      'A catalog item with this name already exists in the category.',
+      409,
+    );
+  }
+
+  if (!catalogNumberKey) return;
+
+  const { data: numberRows, error: numberError } = await supabase
+    .from('inventory_catalog_items')
+    .select('id, catalog_number')
+    .neq('catalog_number', '')
+    .limit(5000);
+  if (numberError) {
+    throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to check catalogue numbers.', 500);
+  }
+  const clash = ((numberRows ?? []) as { id: string; catalog_number: string | null }[]).find(
+    (row) =>
+      row.id !== input.excludeId &&
+      (row.catalog_number ?? '').trim().toLowerCase() === catalogNumberKey,
+  );
+  if (clash) {
+    throw new AppError(
+      API_ERROR_CODES.CONFLICT,
+      'A catalog item with this catalogue number already exists.',
+      409,
+    );
+  }
 }
 
 function employeeJoin(row: AuthRow) {
@@ -548,6 +613,7 @@ export function createInventoryService(supabase: SupabaseClient) {
       input: {
         categoryId: string;
         name: string;
+        brandName?: string;
         catalogNumber: string;
         unit: string;
         defaultQtyChips?: number[];
@@ -563,12 +629,20 @@ export function createInventoryService(supabase: SupabaseClient) {
         throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot manage catalog items.', 403);
       }
       const name = input.name.trim();
+      const brandName = (input.brandName ?? '').trim();
       const catalogNumber = input.catalogNumber.trim();
       const unit = input.unit.trim();
       if (!input.categoryId || !name || !catalogNumber || !unit) {
         throw new AppError(
           API_ERROR_CODES.VALIDATION_ERROR,
           'Category, name, catalogue number, and unit are required.',
+          400,
+        );
+      }
+      if (brandName.length > 128) {
+        throw new AppError(
+          API_ERROR_CODES.VALIDATION_ERROR,
+          'Brand name must be at most 128 characters.',
           400,
         );
       }
@@ -579,6 +653,11 @@ export function createInventoryService(supabase: SupabaseClient) {
           400,
         );
       }
+      await assertNoDuplicateCatalog(supabase, {
+        categoryId: input.categoryId,
+        name,
+        catalogNumber,
+      });
       const chips = normalizeQtyChips(input.defaultQtyChips ?? []);
       const { data: category, error: categoryError } = await supabase
         .from('inventory_categories')
@@ -595,6 +674,7 @@ export function createInventoryService(supabase: SupabaseClient) {
         .insert({
           category_id: input.categoryId,
           name,
+          brand_name: brandName,
           catalog_number: catalogNumber,
           unit,
           default_qty_chips: chips,
@@ -607,12 +687,9 @@ export function createInventoryService(supabase: SupabaseClient) {
         .select('*, inventory_categories(code, name)')
         .single();
       if (error || !data) {
-        if (error?.code === '23505') {
-          throw new AppError(
-            API_ERROR_CODES.CONFLICT,
-            'A catalog item with this name already exists in the category.',
-            409,
-          );
+        const conflict = catalogConflictMessage(error);
+        if (conflict) {
+          throw new AppError(API_ERROR_CODES.CONFLICT, conflict, 409);
         }
         throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, error?.message ?? 'Failed to create catalog item.', 500);
       }
@@ -622,7 +699,7 @@ export function createInventoryService(supabase: SupabaseClient) {
         action: 'inventory_catalog_item.create',
         entityType: 'inventory_catalog_item',
         entityId: created.id,
-        newValues: { name, catalogNumber, unit, categoryId: input.categoryId, alertMode },
+        newValues: { name, brandName, catalogNumber, unit, categoryId: input.categoryId, alertMode },
         ...meta,
       });
       return created;
@@ -633,6 +710,7 @@ export function createInventoryService(supabase: SupabaseClient) {
       id: string,
       input: Partial<{
         name: string;
+        brandName: string;
         catalogNumber: string;
         unit: string;
         defaultQtyChips: number[];
@@ -648,8 +726,29 @@ export function createInventoryService(supabase: SupabaseClient) {
       if (!canManageCatalog(actor)) {
         throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot manage catalog items.', 403);
       }
+
+      const { data: existing, error: existingError } = await supabase
+        .from('inventory_catalog_items')
+        .select('id, category_id, name, catalog_number')
+        .eq('id', id)
+        .maybeSingle();
+      if (existingError || !existing) {
+        throw new AppError(API_ERROR_CODES.NOT_FOUND, 'Catalog item not found.', 404);
+      }
+
       const patch: Record<string, unknown> = {};
       if (input.name !== undefined) patch.name = input.name.trim();
+      if (input.brandName !== undefined) {
+        const brandName = input.brandName.trim();
+        if (brandName.length > 128) {
+          throw new AppError(
+            API_ERROR_CODES.VALIDATION_ERROR,
+            'Brand name must be at most 128 characters.',
+            400,
+          );
+        }
+        patch.brand_name = brandName;
+      }
       if (input.catalogNumber !== undefined) {
         const catalogNumber = input.catalogNumber.trim();
         if (!catalogNumber) {
@@ -679,6 +778,18 @@ export function createInventoryService(supabase: SupabaseClient) {
       if (Object.keys(patch).length === 0) {
         throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'No catalog fields to update.', 400);
       }
+
+      const nextName = (patch.name as string | undefined) ?? (existing.name as string);
+      const nextCatalogNumber =
+        (patch.catalog_number as string | undefined) ??
+        String(existing.catalog_number ?? '').trim();
+      await assertNoDuplicateCatalog(supabase, {
+        categoryId: existing.category_id as string,
+        name: nextName,
+        catalogNumber: nextCatalogNumber,
+        excludeId: id,
+      });
+
       const { data, error } = await supabase
         .from('inventory_catalog_items')
         .update(patch)
@@ -686,12 +797,9 @@ export function createInventoryService(supabase: SupabaseClient) {
         .select('*, inventory_categories(code, name)')
         .single();
       if (error || !data) {
-        if (error?.code === '23505') {
-          throw new AppError(
-            API_ERROR_CODES.CONFLICT,
-            'A catalog item with this name already exists in the category.',
-            409,
-          );
+        const conflict = catalogConflictMessage(error);
+        if (conflict) {
+          throw new AppError(API_ERROR_CODES.CONFLICT, conflict, 409);
         }
         throw new AppError(API_ERROR_CODES.NOT_FOUND, 'Catalog item not found.', 404);
       }
