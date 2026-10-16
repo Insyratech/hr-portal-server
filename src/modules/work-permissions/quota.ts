@@ -7,7 +7,7 @@ export const MAX_USES_PER_MONTH = 2;
 export const PERMISSION_SLOTS = ['START', 'END'] as const;
 
 export type PermissionSlot = (typeof PERMISSION_SLOTS)[number];
-export type PermissionStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
+export type PermissionStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'CANCELLED';
 
 export function isPermissionSlot(value: string): value is PermissionSlot {
   return (PERMISSION_SLOTS as readonly string[]).includes(value);

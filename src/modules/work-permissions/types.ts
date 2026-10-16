@@ -1,6 +1,6 @@
 import type { PermissionSlot } from './quota';
 
-export type WorkPermissionStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
+export type WorkPermissionStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'CANCELLED';
 
 export type WorkPermissionRecord = {
   id: string;

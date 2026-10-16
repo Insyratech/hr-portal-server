@@ -82,4 +82,19 @@ export async function registerWorkPermissionRoutes(app: FastifyInstance): Promis
       return ok(await createWorkPermissionService(app.supabase).decide(request.user, id, 'reject', metaOf(request)));
     },
   );
+
+  app.post(
+    '/api/v1/work-permissions/:id/cancel',
+    {
+      preHandler: [requirePermission(PERMISSIONS.WORK_PERMISSION_APPLY)],
+      schema: { params: Type.Object({ id: Type.String({ minLength: 1 }) }) },
+    },
+    async (request) => {
+      if (!app.supabase || !request.user) {
+        throw new AppError(API_ERROR_CODES.SERVICE_UNAVAILABLE, 'Database is not configured.', 503);
+      }
+      const { id } = request.params as { id: string };
+      return ok(await createWorkPermissionService(app.supabase).cancel(request.user, id, metaOf(request)));
+    },
+  );
 }

@@ -333,5 +333,95 @@ export function createWorkPermissionService(supabase: SupabaseClient) {
       });
       return mapped;
     },
+
+    /**
+     * Employee revoke of a PENDING request (before HR approve/reject).
+     * Restores quota for that day/hour so they can apply again.
+     */
+    async cancel(actor: RequestUser, id: string, meta: RequestMeta): Promise<WorkPermissionRecord> {
+      if (!actor.permissions.includes(PERMISSIONS.WORK_PERMISSION_APPLY)) {
+        throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot revoke permission requests.', 403);
+      }
+      const { data: existing, error: loadError } = await supabase
+        .from('work_permissions')
+        .select('*, employees!employee_id (full_name)')
+        .eq('id', id)
+        .maybeSingle();
+      if (loadError) {
+        throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load permission request.', 500);
+      }
+      if (!existing) {
+        throw new AppError(API_ERROR_CODES.NOT_FOUND, 'Permission request not found.', 404);
+      }
+      const current = existing as PermissionRow;
+      if (current.employee_id !== actor.employeeId) {
+        throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You can only revoke your own permission request.', 403);
+      }
+      if (current.status !== 'PENDING') {
+        throw new AppError(
+          API_ERROR_CODES.INVALID_STATUS_TRANSITION,
+          current.status === 'APPROVED'
+            ? 'This permission was already approved. Contact HR if you need a change.'
+            : 'Only a pending permission can be revoked.',
+          409,
+        );
+      }
+
+      const { data, error } = await supabase
+        .from('work_permissions')
+        .update({
+          status: 'CANCELLED',
+          actor_id: actor.employeeId,
+          decided_at: new Date().toISOString(),
+        })
+        .eq('id', id)
+        .eq('status', 'PENDING')
+        .eq('employee_id', actor.employeeId)
+        .select('*, employees!employee_id (full_name)')
+        .single();
+      if (error || !data) {
+        throw new AppError(
+          API_ERROR_CODES.CONFLICT,
+          'Could not revoke this permission. It may already have been decided.',
+          409,
+        );
+      }
+      const saved = data as PermissionRow;
+      await writeAuditLog(supabase, {
+        actorId: actor.employeeId,
+        action: 'work_permission.cancel',
+        entityType: 'work_permission',
+        entityId: id,
+        oldValues: { status: current.status },
+        newValues: { status: 'CANCELLED' },
+        ...meta,
+      });
+
+      const month = monthOf(dateOnly(saved.permission_date));
+      const inMonth = await monthRows(supabase, saved.employee_id, dateOnly(saved.permission_date));
+      const mapped = mapRow(saved, remainingMinutes(quotaUsed(inMonth)), month.label);
+      const when = slotLabel(mapped.slot);
+
+      await notifyStaff(
+        supabase,
+        (await loadHrManagers(supabase)).filter((person) => person.id !== actor.employeeId),
+        {
+          type: 'work_permission',
+          title: 'Permission revoked',
+          message: `${actor.fullName} revoked their pending 1 hour at the ${when} on ${mapped.permissionDate}.`,
+          referenceType: 'work_permission',
+          referenceId: mapped.id,
+          eyebrow: 'Permission',
+          paragraphs: [
+            `${actor.fullName} revoked their pending permission (1 hour at the ${when} on ${mapped.permissionDate}).`,
+            'Quota for that day is restored; no HR action needed.',
+          ],
+          ctaLabel: 'Open permissions',
+          ctaHref: portalUrl('/hr/permissions'),
+        },
+      );
+
+      return mapped;
+    },
   };
 }

@@ -44,4 +44,11 @@ describe('work permission service', () => {
       code: API_ERROR_CODES.FORBIDDEN,
     });
   });
+
+  it('blocks revoke without apply permission', async () => {
+    const service = createWorkPermissionService({} as SupabaseClient);
+    await expect(service.cancel(superAdmin, 'wp-1', {})).rejects.toMatchObject({
+      code: API_ERROR_CODES.FORBIDDEN,
+    });
+  });
 });
