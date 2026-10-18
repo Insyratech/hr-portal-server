@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { eachIsoDateInclusive, sharesShiftOnAllDates } from './handover-availability';
+import {
+  countsTowardHandoverCapacity,
+  eachIsoDateInclusive,
+  MAX_ACTIVE_HANDOVERS_PER_PERSON,
+  sharesShiftOnAllDates,
+} from './handover-availability';
 
 describe('eachIsoDateInclusive', () => {
   it('lists a single day', () => {
@@ -55,5 +60,20 @@ describe('sharesShiftOnAllDates', () => {
       },
     ];
     expect(sharesShiftOnAllDates('a', 'c', '2026-09-18', '2026-09-19', assignments, overrides)).toBe(true);
+  });
+});
+
+describe('countsTowardHandoverCapacity', () => {
+  it('counts pending and accepted handover steps', () => {
+    expect(countsTowardHandoverCapacity([{ approver_role: 'HANDOVER', status: 'PENDING' }])).toBe(true);
+    expect(countsTowardHandoverCapacity([{ approver_role: 'HANDOVER', status: 'APPROVED' }])).toBe(true);
+  });
+
+  it('ignores rejected handover', () => {
+    expect(countsTowardHandoverCapacity([{ approver_role: 'HANDOVER', status: 'REJECTED' }])).toBe(false);
+  });
+
+  it('caps at two concurrent handovers', () => {
+    expect(MAX_ACTIVE_HANDOVERS_PER_PERSON).toBe(2);
   });
 });

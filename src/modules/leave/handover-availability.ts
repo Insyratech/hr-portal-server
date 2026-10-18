@@ -7,12 +7,35 @@ import {
   type ApprovedShiftOverride,
 } from '../shift-changes/service';
 
+/** Max overlapping handovers one colleague may carry (same-shift still required). */
+export const MAX_ACTIVE_HANDOVERS_PER_PERSON = 2;
+
 type ShiftAssignmentRow = {
   employee_id: string;
   shift_id: string;
   effective_from: string;
   effective_to: string | null;
 };
+
+type HandoverCoverageLoad = {
+  count: number;
+  /** Earliest overlapping coverage window (for UI/error copy). */
+  startDate: string;
+  endDate: string;
+};
+
+/**
+ * Pending or accepted handover assignment counts toward capacity.
+ * Rejected handover does not. Used for the “up to 2 handovers” rule.
+ */
+export function countsTowardHandoverCapacity(
+  approvals: { approver_role: string; status: string }[] | null | undefined,
+): boolean {
+  const steps = (approvals ?? []).filter((item) => item.approver_role === 'HANDOVER');
+  if (steps.length === 0) return true;
+  if (steps.some((item) => item.status === 'REJECTED')) return false;
+  return steps.some((item) => item.status === 'PENDING' || item.status === 'APPROVED');
+}
 
 function dateOnly(value: string): string {
   return value.slice(0, 10);
@@ -210,6 +233,51 @@ export function sharesShiftOnAllDates(
   return true;
 }
 
+/**
+ * How many active handovers each employee is carrying that overlap [start, end].
+ * Counts pending + accepted assignments (not rejected).
+ */
+export async function handoverCoverageLoadByEmployee(
+  supabase: SupabaseClient,
+  startDate: string,
+  endDate: string,
+  excludeApplicantId?: string,
+): Promise<Map<string, HandoverCoverageLoad>> {
+  let query = supabase
+    .from('leave_applications')
+    .select('handover_employee_id, employee_id, start_date, end_date, leave_approvals ( approver_role, status )')
+    .in('status', ['PENDING', 'APPROVED'])
+    .not('handover_employee_id', 'is', null)
+    .lte('start_date', dateOnly(endDate))
+    .gte('end_date', dateOnly(startDate));
+  if (excludeApplicantId) {
+    query = query.neq('employee_id', excludeApplicantId);
+  }
+  const { data, error } = await query;
+  if (error) {
+    throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to check handover coverage.', 500);
+  }
+
+  const load = new Map<string, HandoverCoverageLoad>();
+  for (const row of data ?? []) {
+    const handoverId = row.handover_employee_id ? String(row.handover_employee_id) : null;
+    if (!handoverId) continue;
+    const approvals = (row.leave_approvals ?? []) as { approver_role: string; status: string }[];
+    if (!countsTowardHandoverCapacity(approvals)) continue;
+    const start = dateOnly(String(row.start_date));
+    const end = dateOnly(String(row.end_date));
+    const existing = load.get(handoverId);
+    if (!existing) {
+      load.set(handoverId, { count: 1, startDate: start, endDate: end });
+      continue;
+    }
+    existing.count += 1;
+    if (start < existing.startDate) existing.startDate = start;
+    if (end > existing.endDate) existing.endDate = end;
+  }
+  return load;
+}
+
 export async function assertHandoverColleagueEligible(
   supabase: SupabaseClient,
   applicantId: string,
@@ -231,26 +299,17 @@ export async function assertHandoverColleagueEligible(
     );
   }
 
-  const { data: otherCoverage, error: coverError } = await supabase
-    .from('leave_applications')
-    .select('id, start_date, end_date, leave_approvals ( approver_role, status )')
-    .eq('handover_employee_id', colleagueId)
-    .neq('employee_id', applicantId)
-    .in('status', ['PENDING', 'APPROVED'])
-    .lte('start_date', dateOnly(endDate))
-    .gte('end_date', dateOnly(startDate));
-  if (coverError) {
-    throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to check handover coverage.', 500);
-  }
-  const blockingCoverage = (otherCoverage ?? []).find((row) =>
-    ((row.leave_approvals ?? []) as { approver_role: string; status: string }[]).some(
-      (item) => item.approver_role === 'HANDOVER' && item.status === 'APPROVED',
-    ),
+  const coverageLoad = await handoverCoverageLoadByEmployee(
+    supabase,
+    startDate,
+    endDate,
+    applicantId,
   );
-  if (blockingCoverage) {
+  const load = coverageLoad.get(colleagueId);
+  if (load && load.count >= MAX_ACTIVE_HANDOVERS_PER_PERSON) {
     throw new AppError(
       API_ERROR_CODES.HANDOVER_REQUIRED,
-      `This colleague is already covering handover from ${dateOnly(String(blockingCoverage.start_date))} to ${dateOnly(String(blockingCoverage.end_date))}. Choose someone else.`,
+      `This colleague is already covering ${MAX_ACTIVE_HANDOVERS_PER_PERSON} handovers overlapping these dates (${load.startDate} – ${load.endDate}). Choose someone else.`,
       400,
     );
   }
@@ -320,9 +379,9 @@ export async function listSameShiftHandoverColleagues(
 
   const rows = data ?? [];
   const ids = rows.map((row) => row.id as string);
-  const [busy, covering, assignments, overrides] = await Promise.all([
+  const [busy, coverageLoad, assignments, overrides] = await Promise.all([
     employeeIdsOnLeave(supabase, rangeStart, rangeEnd),
-    employeeIdsCoveringHandover(supabase, rangeStart, rangeEnd),
+    handoverCoverageLoadByEmployee(supabase, rangeStart, rangeEnd, applicantId),
     loadShiftAssignments(supabase, [applicantId, ...ids]),
     listApprovedShiftOverrides(supabase, rangeStart, rangeEnd),
   ]);
@@ -334,7 +393,7 @@ export async function listSameShiftHandoverColleagues(
       continue;
     }
     const leaveClash = busy.get(id);
-    const coverClash = covering.get(id);
+    const load = coverageLoad.get(id);
     if (leaveClash) {
       options.push({
         id,
@@ -345,14 +404,13 @@ export async function listSameShiftHandoverColleagues(
       });
       continue;
     }
-    if (coverClash && coverClash.applicantId !== applicantId) {
-      // Same-shift person covering someone else — still listed as unavailable.
+    if (load && load.count >= MAX_ACTIVE_HANDOVERS_PER_PERSON) {
       options.push({
         id,
         fullName: row.full_name as string,
         available: false,
-        leaveDates: `${coverClash.startDate} – ${coverClash.endDate}`,
-        unavailableReason: `Covering handover ${coverClash.startDate} – ${coverClash.endDate}`,
+        leaveDates: `${load.startDate} – ${load.endDate}`,
+        unavailableReason: `Already covering ${MAX_ACTIVE_HANDOVERS_PER_PERSON} handovers (${load.startDate} – ${load.endDate})`,
       });
       continue;
     }
