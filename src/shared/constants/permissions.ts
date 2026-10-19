@@ -26,6 +26,8 @@ export const PERMISSIONS = {
   PAYROLL_MANAGE: 'payroll.manage',
   WORK_PERMISSION_APPLY: 'work_permission.apply',
   WORK_PERMISSION_APPROVE: 'work_permission.approve',
+  COMP_OFF_APPLY: 'comp_off.apply',
+  COMP_OFF_APPROVE: 'comp_off.approve',
   SHIFT_CHANGE_APPLY: 'shift_change.apply',
   SHIFT_CHANGE_APPROVE: 'shift_change.approve',
   SHIFT_CHANGE_VIEW: 'shift_change.view',

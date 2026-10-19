@@ -4,6 +4,10 @@ import { PERMISSIONS } from '../../shared/constants/permissions';
 import { AppError } from '../../shared/errors/app-error';
 import type { RequestUser } from '../../shared/types/request-user';
 import { listWorkWeekRows } from '../attendance/work-week';
+import {
+  isLeaveDateCompensated,
+  loadCompensatedLeaveDateKeys,
+} from '../comp-off-work/compensated-dates';
 import { addUtcDays, formatIsoDate, parseIsoDate, patternOnDate } from '../leave/day-count';
 import { loadHolidayDates, loadWorkingDays } from '../leave/support';
 import { canViewOthersWork } from './access';
@@ -343,8 +347,13 @@ export function createWorkAnalyticsService(supabase: SupabaseClient) {
         list.push({ start: String(row.start_date).slice(0, 10), end: String(row.end_date).slice(0, 10) });
         leaveByEmployee.set(employeeId, list);
       }
-      const onLeave = (employeeId: string, isoDate: string) =>
-        (leaveByEmployee.get(employeeId) ?? []).some((span) => span.start <= isoDate && span.end >= isoDate);
+      const compensatedLeaveDates = await loadCompensatedLeaveDateKeys(supabase, rangeStart, rangeEnd);
+      const onLeave = (employeeId: string, isoDate: string) => {
+        if (isLeaveDateCompensated(compensatedLeaveDates, employeeId, isoDate)) return false;
+        return (leaveByEmployee.get(employeeId) ?? []).some(
+          (span) => span.start <= isoDate && span.end >= isoDate,
+        );
+      };
 
       const submitted = new Set<string>();
       const entriesByMonth = new Map<string, { planned: number; unplanned: number; skill: number }>();

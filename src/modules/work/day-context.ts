@@ -2,6 +2,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { API_ERROR_CODES } from '../../shared/constants/error-codes';
 import { AppError } from '../../shared/errors/app-error';
 import { listWorkWeekRows } from '../attendance/work-week';
+import { isLeaveDateCompensatedForEmployee } from '../comp-off-work/compensated-dates';
 import { isWorkingDate, parseIsoDate, patternOnDate, weekdayCode, type WeekPattern } from '../leave/day-count';
 import { loadHolidayDates, loadWorkingDays } from '../leave/support';
 import type { DayContext, WorkDayStatus } from './types';
@@ -74,7 +75,11 @@ async function approvedLeaveOnDate(
   if (error) {
     throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load leave for this date.', 500);
   }
-  return (data ?? []).length > 0;
+  if ((data ?? []).length === 0) return false;
+  if (await isLeaveDateCompensatedForEmployee(supabase, employeeId, isoDate)) {
+    return false;
+  }
+  return true;
 }
 
 async function submittedOnDate(

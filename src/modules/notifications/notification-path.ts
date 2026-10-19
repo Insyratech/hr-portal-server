@@ -112,6 +112,11 @@ export function pathForNotificationPush(input: NotificationPathInput): string {
     return id ? `/permission?permissionId=${encodeURIComponent(id)}` : '/permission';
   }
 
+  if (referenceType === 'comp_off_work_request') {
+    if (hrManager) return '/hr/comp-off';
+    return '/leave';
+  }
+
   if (referenceType === 'shift_change_request') {
     const leadRequest = /project lead approval/i.test(title) || /project-lead approval/i.test(message);
     if (leadRequest && id) {

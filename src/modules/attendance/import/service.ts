@@ -20,6 +20,10 @@ import { lopFromAction, proposeLop, untouchedFlagCount, effectiveDayLop, type Hr
 import { datesInPeriod, parsePeriod } from './period';
 import { decodeBase64File, gridFromXlsx, bufferForStorage } from './workbook';
 import { listApprovedShiftOverrides } from '../../shift-changes/service';
+import {
+  isLeaveDateCompensated,
+  loadCompensatedLeaveDateKeys,
+} from '../../comp-off-work/compensated-dates';
 import { ATTENDANCE_IMPORT_BUCKET, originalExcelPath } from './storage-path';
 import { isExcelFileName } from './excel-file';
 
@@ -167,7 +171,7 @@ function dayReviewChanged(
  * Keeps days where HR typed an override reason. Call only when rules_version is behind.
  * Pass employeeId to refresh a single card without stamping the import.
  */
-async function refreshOpenImportDayReviews(
+export async function refreshOpenImportDayReviews(
   supabase: SupabaseClient,
   importId: string,
   periodKey: string,
@@ -214,6 +218,12 @@ async function refreshOpenImportDayReviews(
     leaveQuery = leaveQuery.eq('employee_id', options.employeeId);
   }
   const { data: leaves } = await leaveQuery;
+  const compensatedLeaveDates = await loadCompensatedLeaveDateKeys(
+    supabase,
+    period.start,
+    period.end,
+    options?.employeeId,
+  );
   let permissionQuery = supabase
     .from('work_permissions')
     .select('employee_id, permission_date, minutes, status, slot')
@@ -251,7 +261,7 @@ async function refreshOpenImportDayReviews(
     }
 
     const punch = punches.get(`${employeeId}:${iso}`);
-    const leave = leaveOnDate(leaves ?? [], employeeId, iso);
+    const leave = leaveOnDate(leaves ?? [], employeeId, iso, compensatedLeaveDates);
     const permission = approvedPermission(permissions ?? [], employeeId, iso);
     const rawIn = punch?.inTime ? combineDateAndTime(iso, punch.inTime) : null;
     const rawOut = punch?.outTime ? combineDateAndTime(iso, punch.outTime) : null;
@@ -621,6 +631,8 @@ export function createAttendanceImportService(supabase: SupabaseClient) {
         .lte('start_date', end)
         .gte('end_date', start);
 
+      const compensatedLeaveDates = await loadCompensatedLeaveDateKeys(supabase, start, end);
+
       const { data: permissions } = await supabase
         .from('work_permissions')
         .select('employee_id, permission_date, minutes, status, slot')
@@ -643,7 +655,7 @@ export function createAttendanceImportService(supabase: SupabaseClient) {
         for (const iso of dates) {
           const shift = shiftForDay(assignments, shiftById, overrides, emp.id, iso);
           const punch = punches.get(`${emp.id}:${iso}`);
-          const leave = leaveOnDate(leaves ?? [], emp.id, iso);
+          const leave = leaveOnDate(leaves ?? [], emp.id, iso, compensatedLeaveDates);
           const permission = approvedPermission(permissions ?? [], emp.id, iso);
           const rawIn = punch?.inTime ? combineDateAndTime(iso, punch.inTime) : null;
           const rawOut = punch?.outTime ? combineDateAndTime(iso, punch.outTime) : null;
@@ -1020,8 +1032,12 @@ function leaveOnDate(
   rows: Record<string, unknown>[],
   employeeId: string,
   iso: string,
+  compensatedLeaveDates?: Set<string>,
 ): LeaveOverlay | null {
   const day = dateOnly(iso);
+  if (compensatedLeaveDates && isLeaveDateCompensated(compensatedLeaveDates, employeeId, day)) {
+    return null;
+  }
   const row = rows.find((item) => {
     if (item.employee_id !== employeeId) return false;
     return dateOnly(String(item.start_date)) <= day && dateOnly(String(item.end_date)) >= day;

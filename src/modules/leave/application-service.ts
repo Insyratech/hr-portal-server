@@ -21,6 +21,10 @@ import {
   writeLeaveAudit,
 } from './support';
 import { listWorkWeekRows } from '../attendance/work-week';
+import {
+  isLeaveDateCompensated,
+  loadCompensatedLeaveDateKeys,
+} from '../comp-off-work/compensated-dates';
 import { patternOnDate } from './day-count';
 import { loadStaffById, notifyStaff } from '../notifications/notify-staff';
 import { portalUrl, sendPortalMail } from '../notifications/mail';
@@ -484,10 +488,14 @@ export function createLeaveApplicationService(supabase: SupabaseClient) {
       const names = await loadEmployeeNames(supabase, rows);
       const applications = rows.map((row) => mapApplicationWithNames(row, names));
       const split = splitPresenceApplications(applications, asOf);
+      const compensated = await loadCompensatedLeaveDateKeys(supabase, asOf, asOf);
+      const onLeave = split.onLeave.filter(
+        (row) => !isLeaveDateCompensated(compensated, row.employeeId, asOf),
+      );
       return {
         asOf,
         pastFrom,
-        onLeave: split.onLeave,
+        onLeave,
         upcoming: split.upcoming,
         past: split.past,
       };
