@@ -6,9 +6,14 @@ export type PriorityApprovalStatus = (typeof APPROVAL_STATUSES)[number];
 
 const SKIP_EXECUTION = new Set(['CANCELLED', 'CARRIED_FORWARD']);
 
-/** SA / HR / GM / Finance skip the personal priority + daily approval loop. CSO still participates as employee. */
+/**
+ * SA / HR / GM / Finance / Inventory skip the personal priority + daily approval loop.
+ * CSO still participates as an employee — even when they also hold Inventory/Finance/HR/GM hats.
+ */
 export function skipsWorkApprovalLoop(roles: readonly string[]): boolean {
   if (roles.includes(ROLE_CODES.SUPER_ADMIN)) return true;
+  // CSO always participates in the personal work/PPT loop regardless of other managerial hats.
+  if (roles.includes(ROLE_CODES.CSO)) return false;
   if (roles.includes(ROLE_CODES.HR_MANAGER)) return true;
   if (roles.includes(ROLE_CODES.GENERAL_MANAGER) || roles.includes(ROLE_CODES.ADMIN)) return true;
   if (roles.includes(ROLE_CODES.FINANCE_MANAGER)) return true;

@@ -13,13 +13,21 @@ import {
 } from './approval';
 
 describe('work priority approval helpers', () => {
-  it('exempts SA / HR / GM / Finance from the approval loop', () => {
+  it('exempts SA / HR / GM / Finance / Inventory from the approval loop', () => {
     expect(skipsWorkApprovalLoop(['SUPER_ADMIN'])).toBe(true);
     expect(skipsWorkApprovalLoop(['HR_MANAGER', 'EMPLOYEE'])).toBe(true);
     expect(skipsWorkApprovalLoop(['GENERAL_MANAGER'])).toBe(true);
     expect(skipsWorkApprovalLoop(['FINANCE_MANAGER'])).toBe(true);
+    expect(skipsWorkApprovalLoop(['INVENTORY_MANAGER', 'EMPLOYEE'])).toBe(true);
     expect(skipsWorkApprovalLoop(['CSO', 'EMPLOYEE'])).toBe(false);
     expect(skipsWorkApprovalLoop(['EMPLOYEE'])).toBe(false);
+  });
+
+  it('keeps CSO in the work loop even with Inventory or other managerial hats', () => {
+    expect(skipsWorkApprovalLoop(['CSO', 'INVENTORY_MANAGER', 'EMPLOYEE'])).toBe(false);
+    expect(skipsWorkApprovalLoop(['INVENTORY_MANAGER', 'CSO', 'EMPLOYEE'])).toBe(false);
+    expect(skipsWorkApprovalLoop(['CSO', 'FINANCE_MANAGER', 'EMPLOYEE'])).toBe(false);
+    expect(skipsWorkApprovalLoop(['CSO', 'HR_MANAGER', 'EMPLOYEE'])).toBe(false);
   });
 
   it('unlocks daily updates when any active priority is approved', () => {
