@@ -14,6 +14,11 @@ export { pptExtension };
 
 export type JcPptStatus = 'uploaded' | 'with_gm' | 'downloaded' | 'emailed' | 'deleted';
 
+/** File is still in the GM inbox (includes legacy `uploaded` rows before migration 090). */
+export function jcStillWithGm(status: JcPptStatus | string): boolean {
+  return status === 'with_gm' || status === 'uploaded';
+}
+
 export function buildJcPptSystemFileName(fullName: string, extension: '.ppt' | '.pptx'): string {
   const name = sanitizePersonNameForFile(fullName);
   const stamp = new Date().toISOString().slice(0, 10);
@@ -21,8 +26,7 @@ export function buildJcPptSystemFileName(fullName: string, extension: '.ppt' | '
 }
 
 export function jcStatusLabel(status: JcPptStatus): string {
-  if (status === 'uploaded') return 'With CSO';
-  if (status === 'with_gm') return 'With General Manager';
+  if (status === 'uploaded' || status === 'with_gm') return 'With General Manager';
   if (status === 'downloaded') return 'Downloaded (file removed)';
   if (status === 'emailed') return 'Emailed (file removed)';
   return 'Deleted (file removed)';

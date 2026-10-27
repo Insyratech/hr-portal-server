@@ -137,7 +137,8 @@ export function pathForNotificationPush(input: NotificationPathInput): string {
     referenceType === 'weekly_work_update' ||
     referenceType === 'weekly_ppt_desk' ||
     referenceType === 'weekly_ppt_share' ||
-    referenceType === 'work_retention'
+    referenceType === 'work_retention' ||
+    referenceType === 'jc_ppt'
   ) {
     if (superAdmin && referenceType === 'work_retention') return '/super-admin/settings';
     if (referenceType === 'weekly_ppt_share') {
@@ -150,6 +151,11 @@ export function pathForNotificationPush(input: NotificationPathInput): string {
     }
     if (referenceType === 'weekly_work_update') {
       return '/work/weekly-update';
+    }
+    if (referenceType === 'jc_ppt') {
+      if (gm) return '/gm/jc';
+      if (cso) return '/cso/work/jc';
+      return '/work/jc';
     }
     if (referenceType === 'weekly_priority' || referenceType === 'weekly_plan') {
       if (isLeadPriorityReview(title) && id) {

@@ -306,7 +306,7 @@ export function createWeeklyUpdatesService(supabase: SupabaseClient) {
         mapped = mapUpdate(data as UpdateRow, false);
       }
 
-      // Weekly PPT goes straight to GM (JC PPT still uses CSO transfer).
+      // Weekly PPT goes straight to GM (same as JC PPT).
       await routeWeeklyPptToGm(supabase, {
         updateId: mapped.id,
         weekStart: week.start,

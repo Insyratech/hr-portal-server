@@ -1392,25 +1392,6 @@ export async function registerWorkRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
-  app.post(
-    '/api/v1/work/jc/:id/transfer-to-gm',
-    {
-      preHandler: [requirePermission(PERMISSIONS.WORK_VIEW, PERMISSIONS.WORK_ASSIGN)],
-      schema: { params: Type.Object({ id: Type.String({ minLength: 1 }) }) },
-    },
-    async (request) => {
-      if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
-      const { id } = request.params as { id: string };
-      return ok(
-        await createJcPptDeskService(requireSupabase(app.supabase)).transferToGm(
-          request.user,
-          id,
-          metaOf(request),
-        ),
-      );
-    },
-  );
-
   app.get(
     '/api/v1/work/jc/:id/download',
     {
@@ -1420,21 +1401,7 @@ export async function registerWorkRoutes(app: FastifyInstance): Promise<void> {
     async (request) => {
       if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
       const { id } = request.params as { id: string };
-      // Employee own download (preview). CSO preview uses /preview.
       return ok(await createJcPptsService(requireSupabase(app.supabase)).getDownloadUrl(request.user, id));
-    },
-  );
-
-  app.get(
-    '/api/v1/work/jc/:id/preview',
-    {
-      preHandler: [requirePermission(PERMISSIONS.WORK_VIEW, PERMISSIONS.WORK_ASSIGN)],
-      schema: { params: Type.Object({ id: Type.String({ minLength: 1 }) }) },
-    },
-    async (request) => {
-      if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
-      const { id } = request.params as { id: string };
-      return ok(await createJcPptDeskService(requireSupabase(app.supabase)).getPreviewDownload(request.user, id));
     },
   );
 

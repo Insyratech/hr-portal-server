@@ -26,6 +26,7 @@ import {
   JC_PPT_MAX_UPLOADS,
   JC_PPT_MIME,
   buildJcPptSystemFileName,
+  jcStillWithGm,
   pptExtension,
   type JcPptStatus,
 } from './jc-ppt';
@@ -56,15 +57,6 @@ type JcRow = {
   email_recipient: string | null;
   created_at: string;
   updated_at: string;
-};
-
-type EventRow = {
-  id: string;
-  jc_ppt_id: string;
-  actor_id: string | null;
-  event_type: string;
-  note: string;
-  created_at: string;
 };
 
 function normalizePaperTitle(raw: string): string {
@@ -132,8 +124,8 @@ export function mapJcPptItem(
     uploadCount: row.upload_count ?? 1,
     timing,
     late: Boolean(row.late) || timing === 'late',
-    /** Employee/CSO may view only while pending with CSO (before transfer to GM). */
-    fileAvailable: Boolean(row.storage_path) && row.status === 'uploaded',
+    /** Employee may view while the file is still in the GM inbox. */
+    fileAvailable: Boolean(row.storage_path) && jcStillWithGm(row.status),
     uploadedAt: row.uploaded_at,
     transferredAt: row.transferred_at,
     transferredBy: row.transferred_by,
@@ -144,18 +136,6 @@ export function mapJcPptItem(
     emailRecipient: row.email_recipient,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
-  };
-}
-
-function mapEvent(row: EventRow, actorName?: string | null) {
-  return {
-    id: row.id,
-    jcPptId: row.jc_ppt_id,
-    actorId: row.actor_id,
-    actorName: actorName ?? null,
-    eventType: row.event_type,
-    note: row.note,
-    createdAt: row.created_at,
   };
 }
 
@@ -190,17 +170,6 @@ export function createJcPptsService(supabase: SupabaseClient) {
       event_type: eventType,
       note,
     });
-  }
-
-  async function loadEvents(jcPptIds: string[]) {
-    if (jcPptIds.length === 0) return [];
-    const { data, error } = await supabase
-      .from('jc_ppt_events')
-      .select('*')
-      .in('jc_ppt_id', jcPptIds)
-      .order('created_at', { ascending: false });
-    if (error) throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load JC audit events.', 500);
-    return (data ?? []) as EventRow[];
   }
 
   async function namesForIds(ids: string[]) {
@@ -238,12 +207,10 @@ export function createJcPptsService(supabase: SupabaseClient) {
       if (error) throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load JC PPTs.', 500);
       const rows = (data ?? []) as JcRow[];
       const current = rows.find((row) => String(row.week_start).slice(0, 10) === week.start) ?? null;
-      const pending = current && current.status === 'uploaded' ? current : null;
-      const events = await loadEvents(rows.map((row) => row.id));
+      const pending = current && jcStillWithGm(current.status) ? current : null;
       const nameById = await namesForIds([
         ...(rows.map((r) => r.transferred_by).filter(Boolean) as string[]),
         ...(rows.map((r) => r.consumed_by).filter(Boolean) as string[]),
-        ...(events.map((e) => e.actor_id).filter(Boolean) as string[]),
       ]);
 
       const mapRow = (row: JcRow) =>
@@ -254,7 +221,7 @@ export function createJcPptsService(supabase: SupabaseClient) {
 
       const uploadsRemaining = (() => {
         if (!current) return JC_PPT_MAX_UPLOADS;
-        if (current.status !== 'uploaded') return 0;
+        if (!jcStillWithGm(current.status)) return 0;
         return Math.max(0, JC_PPT_MAX_UPLOADS - (current.upload_count ?? 1));
       })();
 
@@ -274,7 +241,7 @@ export function createJcPptsService(supabase: SupabaseClient) {
         current: current ? mapRow(current) : null,
         pending: pending ? mapRow(pending) : null,
         items: rows.map(mapRow),
-        events: events.map((event) => mapEvent(event, event.actor_id ? nameById.get(event.actor_id) ?? null : null)),
+        events: [],
       };
     },
 
@@ -321,10 +288,10 @@ export function createJcPptsService(supabase: SupabaseClient) {
       });
 
       const existing = await loadWeekRow(actor.employeeId, week.start);
-      if (existing && existing.status !== 'uploaded') {
+      if (existing && !jcStillWithGm(existing.status)) {
         throw new AppError(
           API_ERROR_CODES.CONFLICT,
-          'This week’s JC PPT was already transferred. You cannot replace it.',
+          'This week’s JC PPT was already processed by General Manager. You cannot replace it.',
           409,
         );
       }
@@ -373,6 +340,8 @@ export function createJcPptsService(supabase: SupabaseClient) {
             upload_count: (existing.upload_count ?? 1) + 1,
             submission_timing: timing,
             late,
+            status: 'with_gm',
+            transferred_at: new Date().toISOString(),
             uploaded_at: new Date().toISOString(),
           })
           .eq('id', existing.id)
@@ -382,8 +351,9 @@ export function createJcPptsService(supabase: SupabaseClient) {
           throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to replace JC PPT.', 500);
         }
         mapped = mapJcPptItem(data as JcRow);
-        await insertEvent(mapped.id, actor.employeeId, 'replaced', 'Employee replaced pending JC PPT.');
+        await insertEvent(mapped.id, actor.employeeId, 'replaced', 'Employee replaced JC PPT with General Manager.');
       } else {
+        const uploadedAt = new Date().toISOString();
         const { data, error } = await supabase
           .from('jc_ppts')
           .insert({
@@ -400,8 +370,9 @@ export function createJcPptsService(supabase: SupabaseClient) {
             upload_count: 1,
             submission_timing: timing,
             late,
-            status: 'uploaded',
-            uploaded_at: new Date().toISOString(),
+            status: 'with_gm',
+            transferred_at: uploadedAt,
+            uploaded_at: uploadedAt,
           })
           .select('*')
           .single();
@@ -416,7 +387,13 @@ export function createJcPptsService(supabase: SupabaseClient) {
           throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to register JC PPT.', 500);
         }
         mapped = mapJcPptItem(data as JcRow);
-        await insertEvent(mapped.id, actor.employeeId, 'uploaded', 'Employee uploaded JC PPT.');
+        await insertEvent(mapped.id, actor.employeeId, 'uploaded', 'Employee uploaded JC PPT (sent to General Manager).');
+        await insertEvent(
+          mapped.id,
+          actor.employeeId,
+          'transferred_to_gm',
+          'Sent directly to General Manager on upload.',
+        );
       }
 
       if (gate.reopenConcernId) {
@@ -432,30 +409,52 @@ export function createJcPptsService(supabase: SupabaseClient) {
         ...meta,
       });
 
-      const csoStaff = await listStaffByRole(supabase, ROLE_CODES.CSO);
       const employee = await loadStaffById(supabase, actor.employeeId);
-      if (csoStaff.length > 0) {
-        await notifyStaff(supabase, csoStaff, {
+      const gmStaff = await listStaffByRole(supabase, ROLE_CODES.GENERAL_MANAGER);
+      const csoStaff = (await listStaffByRole(supabase, ROLE_CODES.CSO)).filter(
+        (person) => person.id !== actor.employeeId,
+      );
+      const details = [
+        { label: 'Employee', value: employee?.fullName ?? 'Employee' },
+        { label: 'Paper', value: paperTitle },
+        { label: 'DOI / link', value: doiUrl },
+        { label: 'File', value: mapped.systemFileName },
+        { label: 'Week', value: `${week.start} → ${week.end}` },
+        ...(late ? [{ label: 'Timing', value: 'Late (approved reopen)' }] : []),
+      ];
+      const actionWord = existing ? 'replaced' : 'uploaded';
+      if (gmStaff.length > 0) {
+        await notifyStaff(supabase, gmStaff, {
           type: 'work',
           title: existing ? 'JC PPT replaced' : 'New JC PPT uploaded',
-          message: `${employee?.fullName ?? 'An employee'} ${existing ? 'replaced' : 'uploaded'} a JC PPT.`,
+          message: `${employee?.fullName ?? 'An employee'} ${actionWord} a JC PPT.`,
           referenceType: 'jc_ppt',
           referenceId: mapped.id,
           eyebrow: 'Team JC',
           paragraphs: [
-            `${employee?.fullName ?? 'An employee'} ${existing ? 'replaced their pending' : 'uploaded a'} JC PPT.`,
+            `${employee?.fullName ?? 'An employee'} ${actionWord} a JC PPT. It is in your Team JC inbox.`,
             `Paper: ${paperTitle}`,
-            'Open Team JC to review and transfer it to General Manager when ready.',
           ],
-          details: [
-            { label: 'Employee', value: employee?.fullName ?? 'Employee' },
-            { label: 'Paper', value: paperTitle },
-            { label: 'DOI / link', value: doiUrl },
-            { label: 'File', value: mapped.systemFileName },
-            { label: 'Week', value: `${week.start} → ${week.end}` },
-            ...(late ? [{ label: 'Timing', value: 'Late (approved reopen)' }] : []),
-          ],
+          details,
           ctaLabel: 'Open Team JC',
+          ctaHref: portalUrl('/gm/jc'),
+        });
+      }
+      if (csoStaff.length > 0) {
+        await notifyStaff(supabase, csoStaff, {
+          type: 'work',
+          title: existing ? 'JC PPT replaced with GM' : 'JC PPT sent to General Manager',
+          message: `${employee?.fullName ?? 'An employee'} ${actionWord} a JC PPT (sent to General Manager).`,
+          referenceType: 'jc_ppt',
+          referenceId: mapped.id,
+          eyebrow: 'Team JC',
+          paragraphs: [
+            `${employee?.fullName ?? 'An employee'} ${actionWord} a JC PPT. It went directly to General Manager.`,
+            `Paper: ${paperTitle}`,
+            'Open Team JC to track status and history.',
+          ],
+          details,
+          ctaLabel: 'Track JC status',
           ctaHref: portalUrl('/cso/work/jc'),
         });
       }
@@ -480,12 +479,10 @@ export function createJcPptsService(supabase: SupabaseClient) {
       if (data.employee_id !== actor.employeeId) {
         throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot download this JC PPT.', 403);
       }
-      if (!data.storage_path || data.status !== 'uploaded') {
+      if (!data.storage_path || !jcStillWithGm(String(data.status))) {
         throw new AppError(
           API_ERROR_CODES.NOT_FOUND,
-          data.status === 'with_gm'
-            ? 'This JC PPT was transferred to General Manager. View is no longer available; history remains on this page.'
-            : 'File is no longer available. Audit history remains on this page.',
+          'File is no longer available. General Manager has already processed this JC PPT.',
           404,
         );
       }

@@ -45,10 +45,10 @@ See `docs/cron-ist.md`.
 
 ## 6. JC PPT flow
 
-1. Employee **Work → JC** uploads `.pptx` ≤ 15 MB.
-2. CSO **Team JC** → Preview → **Transfer to GM**.
-3. GM **Team JC** → Download / Email / Delete (or Download all / Delete all). File removed; audit history kept.
-4. Employee / CSO / GM still see audit history rows after the file is gone.
+1. Employee **Work → JC** uploads `.pptx` ≤ 15 MB (paper name + DOI). File goes **directly to GM** (`with_gm`).
+2. CSO **Team JC** is tracking only: status, history, audit log — no transfer, no file view.
+3. GM **Team JC** inbox → Download / Email / Delete (or Download all / Delete all). File removed; audit history kept on the CSO desk.
+4. Employee can View/replace while the file is still with GM; after GM consumes, only CSO has the full track/history.
 
 ## 7. Deep-links
 

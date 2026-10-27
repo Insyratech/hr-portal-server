@@ -20,7 +20,7 @@ export type RouteWeeklyPptToGmInput = {
 
 /**
  * Attach a weekly work-update PPT to the week's GM inbox package and notify GM.
- * JC PPT transfer is unchanged — only weekly updates use this path.
+ * JC PPTs use their own direct-to-GM path in jc-ppts.ts.
  */
 export async function routeWeeklyPptToGm(
   supabase: SupabaseClient,
