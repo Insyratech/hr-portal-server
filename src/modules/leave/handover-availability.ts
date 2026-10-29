@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { API_ERROR_CODES } from '../../shared/constants/error-codes';
+import { ROLE_CODES } from '../../shared/constants/permissions';
 import { AppError } from '../../shared/errors/app-error';
 import {
   listApprovedShiftOverrides,
@@ -9,6 +10,38 @@ import {
 
 /** Max overlapping handovers one colleague may carry (same-shift still required). */
 export const MAX_ACTIVE_HANDOVERS_PER_PERSON = 2;
+
+export function isBlockedFromHandover(roleCodes: string[]): boolean {
+  return roleCodes.includes(ROLE_CODES.SUPER_ADMIN);
+}
+
+function firstRel<T>(value: T | T[] | null | undefined): T | null {
+  if (!value) return null;
+  return Array.isArray(value) ? (value[0] ?? null) : value;
+}
+
+export async function loadSuperAdminEmployeeIds(supabase: SupabaseClient): Promise<Set<string>> {
+  const { data, error } = await supabase.from('employee_roles').select('employee_id, roles ( code )');
+  if (error) {
+    throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load employee roles.', 500);
+  }
+  const codesByEmployee = new Map<string, string[]>();
+  for (const row of data ?? []) {
+    const employeeId = row.employee_id as string | undefined;
+    const code = firstRel((row as { roles?: { code?: string } | { code?: string }[] | null }).roles)?.code;
+    if (!employeeId || !code) continue;
+    const list = codesByEmployee.get(employeeId) ?? [];
+    list.push(code);
+    codesByEmployee.set(employeeId, list);
+  }
+  const ids = new Set<string>();
+  for (const [employeeId, codes] of codesByEmployee) {
+    if (isBlockedFromHandover(codes)) ids.add(employeeId);
+  }
+  return ids;
+}
+
+const SUPER_ADMIN_HANDOVER_MESSAGE = 'Super Admin cannot take handover. Choose a colleague on the same shift.';
 
 type ShiftAssignmentRow = {
   employee_id: string;
@@ -289,6 +322,11 @@ export async function assertHandoverColleagueEligible(
     throw new AppError(API_ERROR_CODES.HANDOVER_REQUIRED, 'Select a colleague to take handover.', 400);
   }
 
+  const superAdminIds = await loadSuperAdminEmployeeIds(supabase);
+  if (superAdminIds.has(colleagueId)) {
+    throw new AppError(API_ERROR_CODES.HANDOVER_REQUIRED, SUPER_ADMIN_HANDOVER_MESSAGE, 400);
+  }
+
   const busy = await employeeIdsOnLeave(supabase, startDate, endDate);
   const clash = busy.get(colleagueId);
   if (clash) {
@@ -379,16 +417,18 @@ export async function listSameShiftHandoverColleagues(
 
   const rows = data ?? [];
   const ids = rows.map((row) => row.id as string);
-  const [busy, coverageLoad, assignments, overrides] = await Promise.all([
+  const [busy, coverageLoad, assignments, overrides, superAdminIds] = await Promise.all([
     employeeIdsOnLeave(supabase, rangeStart, rangeEnd),
     handoverCoverageLoadByEmployee(supabase, rangeStart, rangeEnd, applicantId),
     loadShiftAssignments(supabase, [applicantId, ...ids]),
     listApprovedShiftOverrides(supabase, rangeStart, rangeEnd),
+    loadSuperAdminEmployeeIds(supabase),
   ]);
 
   const options: HandoverColleagueOption[] = [];
   for (const row of rows) {
     const id = row.id as string;
+    if (superAdminIds.has(id)) continue;
     if (!sharesShiftOnAllDates(applicantId, id, rangeStart, rangeEnd, assignments, overrides)) {
       continue;
     }

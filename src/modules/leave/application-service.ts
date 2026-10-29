@@ -39,6 +39,7 @@ import {
   assertApplicantNotCoveringHandover,
   assertHandoverColleagueEligible,
   listSameShiftHandoverColleagues,
+  loadSuperAdminEmployeeIds,
 } from './handover-availability';
 import {
   currentLeadEmployeeId,
@@ -1422,20 +1423,25 @@ export function createLeaveApplicationService(supabase: SupabaseClient) {
       const rangeStart = startDate?.slice(0, 10);
       const rangeEnd = (endDate || startDate)?.slice(0, 10);
       if (!rangeStart || !rangeEnd) {
-        const { data, error } = await supabase
-          .from('employees')
-          .select('id, full_name')
-          .eq('status', 'active')
-          .neq('id', actor.employeeId)
-          .order('full_name');
+        const [{ data, error }, superAdminIds] = await Promise.all([
+          supabase
+            .from('employees')
+            .select('id, full_name')
+            .eq('status', 'active')
+            .neq('id', actor.employeeId)
+            .order('full_name'),
+          loadSuperAdminEmployeeIds(supabase),
+        ]);
         if (error) throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load colleagues.', 500);
-        return (data ?? []).map((row) => ({
-          id: row.id as string,
-          fullName: row.full_name as string,
-          available: false,
-          leaveDates: null,
-          unavailableReason: 'Pick leave dates to see same-shift colleagues.',
-        }));
+        return (data ?? [])
+          .filter((row) => !superAdminIds.has(row.id as string))
+          .map((row) => ({
+            id: row.id as string,
+            fullName: row.full_name as string,
+            available: false,
+            leaveDates: null,
+            unavailableReason: 'Pick leave dates to see same-shift colleagues.',
+          }));
       }
       return listSameShiftHandoverColleagues(supabase, actor.employeeId, rangeStart, rangeEnd);
     },

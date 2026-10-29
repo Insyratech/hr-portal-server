@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   countsTowardHandoverCapacity,
   eachIsoDateInclusive,
+  isBlockedFromHandover,
   MAX_ACTIVE_HANDOVERS_PER_PERSON,
   sharesShiftOnAllDates,
 } from './handover-availability';
@@ -75,5 +76,18 @@ describe('countsTowardHandoverCapacity', () => {
 
   it('caps at two concurrent handovers', () => {
     expect(MAX_ACTIVE_HANDOVERS_PER_PERSON).toBe(2);
+  });
+});
+
+describe('isBlockedFromHandover', () => {
+  it('blocks Super Admin', () => {
+    expect(isBlockedFromHandover(['SUPER_ADMIN'])).toBe(true);
+    expect(isBlockedFromHandover(['SUPER_ADMIN', 'EMPLOYEE'])).toBe(true);
+  });
+
+  it('allows ordinary employees and other managerial roles', () => {
+    expect(isBlockedFromHandover(['EMPLOYEE'])).toBe(false);
+    expect(isBlockedFromHandover(['HR_MANAGER', 'EMPLOYEE'])).toBe(false);
+    expect(isBlockedFromHandover([])).toBe(false);
   });
 });
