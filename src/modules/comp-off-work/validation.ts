@@ -72,3 +72,7 @@ export function assertWorkDateIsOff(input: {
     throw new Error('WORK_DATE_MUST_BE_OFF');
   }
 }
+
+export function canAdjustLeaveDate(leaveDate: string, today: string): boolean {
+  return monthKey(leaveDate) === monthKey(today) && leaveDate <= today;
+}

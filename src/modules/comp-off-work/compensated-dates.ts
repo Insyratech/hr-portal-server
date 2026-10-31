@@ -6,7 +6,11 @@ function dateOnly(value: string): string {
   return String(value).slice(0, 10);
 }
 
-/** Keys are `${employeeId}:${YYYY-MM-DD}` for approved compensated leave days. */
+function keyOf(employeeId: string, isoDate: string): string {
+  return `${employeeId}:${dateOnly(isoDate)}`;
+}
+
+/** Keys are `${employeeId}:${YYYY-MM-DD}` for approved compensated leave days (legacy offset). */
 export async function loadCompensatedLeaveDateKeys(
   supabase: SupabaseClient,
   start: string,
@@ -17,6 +21,7 @@ export async function loadCompensatedLeaveDateKeys(
     .from('comp_off_work_requests')
     .select('employee_id, leave_date')
     .eq('status', 'APPROVED')
+    .not('leave_date', 'is', null)
     .gte('leave_date', dateOnly(start))
     .lte('leave_date', dateOnly(end));
   if (employeeId) {
@@ -28,7 +33,8 @@ export async function loadCompensatedLeaveDateKeys(
   }
   const keys = new Set<string>();
   for (const row of data ?? []) {
-    keys.add(`${row.employee_id as string}:${dateOnly(String(row.leave_date))}`);
+    if (!row.leave_date) continue;
+    keys.add(keyOf(row.employee_id as string, String(row.leave_date)));
   }
   return keys;
 }
@@ -38,7 +44,7 @@ export function isLeaveDateCompensated(
   employeeId: string,
   isoDate: string,
 ): boolean {
-  return keys.has(`${employeeId}:${dateOnly(isoDate)}`);
+  return keys.has(keyOf(employeeId, isoDate));
 }
 
 export async function isLeaveDateCompensatedForEmployee(
@@ -58,4 +64,48 @@ export async function isLeaveDateCompensatedForEmployee(
     throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load compensated leave day.', 500);
   }
   return (data ?? []).length > 0;
+}
+
+export type AdjustedLeaveDay = {
+  quantity: number;
+  duration: 'full' | 'half';
+};
+
+/** Keys are `${employeeId}:${YYYY-MM-DD}` for leave days paid from COMP after an approved adjustment. */
+export async function loadAdjustedLeaveDateMap(
+  supabase: SupabaseClient,
+  start: string,
+  end: string,
+  employeeId?: string,
+): Promise<Map<string, AdjustedLeaveDay>> {
+  let query = supabase
+    .from('comp_off_adjustments')
+    .select('employee_id, leave_date, quantity')
+    .eq('status', 'APPROVED')
+    .gte('leave_date', dateOnly(start))
+    .lte('leave_date', dateOnly(end));
+  if (employeeId) {
+    query = query.eq('employee_id', employeeId);
+  }
+  const { data, error } = await query;
+  if (error) {
+    throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load compensatory leave adjustments.', 500);
+  }
+  const map = new Map<string, AdjustedLeaveDay>();
+  for (const row of data ?? []) {
+    const quantity = Number(row.quantity) === 0.5 ? 0.5 : 1;
+    map.set(keyOf(row.employee_id as string, String(row.leave_date)), {
+      quantity,
+      duration: quantity === 0.5 ? 'half' : 'full',
+    });
+  }
+  return map;
+}
+
+export function adjustedLeaveOnDate(
+  map: Map<string, AdjustedLeaveDay>,
+  employeeId: string,
+  isoDate: string,
+): AdjustedLeaveDay | null {
+  return map.get(keyOf(employeeId, isoDate)) ?? null;
 }

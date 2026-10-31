@@ -2,6 +2,8 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { API_ERROR_CODES } from '../../shared/constants/error-codes';
 import { AppError } from '../../shared/errors/app-error';
 import type { RequestUser } from '../../shared/types/request-user';
+import { createCompOffWorkService } from '../comp-off-work/service';
+import type { CompOffWorkRecord } from '../comp-off-work/types';
 import { mapApplication } from '../leave/application-service';
 import { createShiftChangeService } from '../shift-changes/service';
 import type { ShiftChangeRequest } from '../shift-changes/types';
@@ -10,7 +12,7 @@ type LeaveRow = Parameters<typeof mapApplication>[0];
 
 export type LeadPermissionHistoryItem = {
   id: string;
-  kind: 'leave' | 'shift_change';
+  kind: 'leave' | 'shift_change' | 'comp_off';
   employeeName: string;
   projectName: string | null;
   projectCode: string | null;
@@ -23,6 +25,7 @@ export type LeadPermissionHistoryItem = {
 export type LeadPermissionsBoard = {
   pendingLeaves: ReturnType<typeof mapApplication>[];
   pendingShiftChanges: ShiftChangeRequest[];
+  pendingCompOffWork: CompOffWorkRecord[];
   pendingPrioritiesCount: number;
   history: LeadPermissionHistoryItem[];
 };
@@ -157,10 +160,12 @@ export function createLeadPermissionsService(supabase: SupabaseClient) {
 
       const projectIds = await leadProjectIds(supabase, actor.employeeId);
       const shiftService = createShiftChangeService(supabase);
+      const compOffService = createCompOffWorkService(supabase);
 
-      const [leaveRows, shiftPending, priorityRes, leaveHistoryRes, shiftHistoryRes] = await Promise.all([
+      const [leaveRows, shiftPending, compOffPending, priorityRes, leaveHistoryRes, shiftHistoryRes, compOffHistoryRes] = await Promise.all([
         fetchPendingLeavesForProjects(supabase, projectIds),
         shiftService.listLeadInbox(actor),
+        compOffService.listLeadInbox(actor),
         projectIds.length === 0
           ? Promise.resolve({ count: 0 as number | null, error: null })
           : supabase
@@ -186,6 +191,18 @@ export function createLeadPermissionsService(supabase: SupabaseClient) {
           .eq('project_lead_employee_id', actor.employeeId)
           .eq('project_lead_accepted', true)
           .eq('project_lead_required', true)
+          .not('project_lead_acted_at', 'is', null)
+          .order('project_lead_acted_at', { ascending: false })
+          .limit(50),
+        supabase
+          .from('comp_off_work_requests')
+          .select(
+            'id, status, work_date, reason, project_lead_acted_at, employee_id, project_id, employees!employee_id ( full_name ), projects ( name, code )',
+          )
+          .eq('project_lead_employee_id', actor.employeeId)
+          .eq('project_lead_accepted', true)
+          .eq('project_lead_required', true)
+          .eq('kind', 'EARN')
           .not('project_lead_acted_at', 'is', null)
           .order('project_lead_acted_at', { ascending: false })
           .limit(50),
@@ -216,9 +233,15 @@ export function createLeadPermissionsService(supabase: SupabaseClient) {
           if (row.employee_id) historyEmployeeIds.push(row.employee_id as string);
         }
       }
+      if (!compOffHistoryRes.error) {
+        for (const row of compOffHistoryRes.data ?? []) {
+          if (row.employee_id) historyEmployeeIds.push(row.employee_id as string);
+        }
+      }
 
       const names = await loadNames(supabase, [
         ...pendingLeadLeaves.map((row) => row.employee_id),
+        ...compOffPending.map((row) => row.employeeId),
         ...historyEmployeeIds,
       ]);
       const pendingLeaves = pendingLeadLeaves.map((row) => {
@@ -310,11 +333,36 @@ export function createLeadPermissionsService(supabase: SupabaseClient) {
         }
       }
 
+      if (!compOffHistoryRes.error) {
+        for (const row of compOffHistoryRes.data ?? []) {
+          if (!row.project_lead_acted_at) continue;
+          const emp = firstRel(
+            row.employees as { full_name?: string } | { full_name?: string }[] | null,
+          );
+          const project = firstRel(
+            row.projects as { name?: string; code?: string } | { name?: string; code?: string }[] | null,
+          );
+          const employeeId = row.employee_id as string | undefined;
+          history.push({
+            id: `comp_off:${row.id as string}`,
+            kind: 'comp_off',
+            employeeName: emp?.full_name ?? (employeeId ? names.get(employeeId) : undefined) ?? 'Employee',
+            projectName: project?.name ?? null,
+            projectCode: project?.code ?? null,
+            summary: `Compensatory work · ${String(row.work_date).slice(0, 10)}`,
+            detail: (row.reason as string) || null,
+            actedAt: row.project_lead_acted_at as string,
+            requestStatus: row.status as string,
+          });
+        }
+      }
+
       history.sort((a, b) => b.actedAt.localeCompare(a.actedAt));
 
       return {
         pendingLeaves,
         pendingShiftChanges: shiftPending,
+        pendingCompOffWork: compOffPending,
         pendingPrioritiesCount: priorityRes.error ? 0 : (priorityRes.count ?? 0),
         history: history.slice(0, 75),
       };

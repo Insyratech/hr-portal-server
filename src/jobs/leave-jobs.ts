@@ -30,7 +30,7 @@ export async function runAnnualLeaveAllocation(
 
   const { data: leaveTypes, error: typeError } = await supabase
     .from('leave_types')
-    .select('id')
+    .select('id, code')
     .eq('active', true);
   if (typeError) {
     throw new Error(`Failed to load leave types: ${typeError.message}`);
@@ -45,6 +45,9 @@ export async function runAnnualLeaveAllocation(
     const employeeId = employee.id as string;
     for (const leaveType of leaveTypes ?? []) {
       const leaveTypeId = leaveType.id as string;
+      if (String(leaveType.code ?? '').toUpperCase() === 'COMP') {
+        continue;
+      }
       let rules;
       try {
         ({ rules } = await loadActivePolicy(supabase, leaveTypeId));

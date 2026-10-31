@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import { remainingEarnCap } from './credit';
 import {
   assertWorkDateIsOff,
+  canAdjustLeaveDate,
   leaveWorkingDates,
   monthBounds,
   sameCalendarMonth,
@@ -75,5 +77,18 @@ describe('comp-off validation', () => {
         weekPattern: 'SUNDAY_OFF',
       }),
     ).not.toThrow();
+  });
+
+  it('caps yearly COMP earnings when the policy has an annual limit', () => {
+    expect(remainingEarnCap(12, 10, 1)).toBe(1);
+    expect(remainingEarnCap(12, 11, 1)).toBe(0);
+    expect(remainingEarnCap(0, 4, 0)).toBe(Number.POSITIVE_INFINITY);
+  });
+
+  it('only allows adjusting leave already taken in the current month', () => {
+    expect(canAdjustLeaveDate('2026-10-15', '2026-10-31')).toBe(true);
+    expect(canAdjustLeaveDate('2026-10-31', '2026-10-31')).toBe(true);
+    expect(canAdjustLeaveDate('2026-11-01', '2026-10-31')).toBe(false);
+    expect(canAdjustLeaveDate('2026-10-31', '2026-10-30')).toBe(false);
   });
 });

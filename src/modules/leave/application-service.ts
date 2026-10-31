@@ -347,7 +347,7 @@ export function createLeaveApplicationService(supabase: SupabaseClient) {
       for (const row of allocations ?? []) {
         const { data: ledger } = await supabase
           .from('leave_ledger')
-          .select('quantity')
+          .select('quantity, transaction_type')
           .eq('allocation_id', row.id);
         const computed = ledgerAvailable((ledger ?? []) as { quantity: number }[]);
         const available = Number(row.available);
@@ -355,6 +355,14 @@ export function createLeaveApplicationService(supabase: SupabaseClient) {
           await supabase.rpc('recompute_leave_allocation', { p_allocation_id: row.id });
         }
         const type = first(row.leave_types as { code: string; name: string } | { code: string; name: string }[] | null);
+        const earned = (ledger ?? []).reduce(
+          (sum, item) => sum + (item.transaction_type === 'COMP_EARNED' ? Number(item.quantity) : 0),
+          0,
+        );
+        const expired = (ledger ?? []).reduce(
+          (sum, item) => sum + (item.transaction_type === 'COMP_EXPIRED' ? -Number(item.quantity) : 0),
+          0,
+        );
         items.push({
           leaveTypeId: row.leave_type_id as string,
           code: type?.code ?? '',
@@ -362,6 +370,9 @@ export function createLeaveApplicationService(supabase: SupabaseClient) {
           period: row.period as string,
           allocated: Number(row.allocated),
           used: Number(row.used),
+          adjusted: Number(row.adjusted ?? 0),
+          earned,
+          expired,
           available: computed,
         });
       }
@@ -594,8 +605,15 @@ export function createLeaveApplicationService(supabase: SupabaseClient) {
         .eq('leave_type_id', input.leaveTypeId)
         .eq('period', period)
         .maybeSingle();
+      const isComp = String((leaveType as { code?: string }).code ?? '').toUpperCase() === 'COMP';
       if (!allocation) {
-        throw new AppError(API_ERROR_CODES.NOT_ELIGIBLE, 'This leave type is not allocated to you.', 403);
+        throw new AppError(
+          API_ERROR_CODES.NOT_ELIGIBLE,
+          isComp
+            ? 'You have no compensatory leave balance. Request compensatory work on a holiday or week-off first.'
+            : 'This leave type is not allocated to you.',
+          403,
+        );
       }
 
       const { data: overlaps } = await supabase
@@ -687,7 +705,7 @@ export function createLeaveApplicationService(supabase: SupabaseClient) {
         p_attachment_url: input.attachmentUrl ?? null,
         p_status: status,
         p_period: period,
-        p_annual_allocation: policy.rules.annualAllocation,
+        p_annual_allocation: isComp ? 0 : policy.rules.annualAllocation,
         p_allow_negative: policy.rules.allowNegativeBalance,
       });
 
@@ -821,8 +839,15 @@ export function createLeaveApplicationService(supabase: SupabaseClient) {
         .eq('leave_type_id', input.leaveTypeId)
         .eq('period', period)
         .maybeSingle();
+      const isCompUpdate = String((leaveType as { code?: string }).code ?? '').toUpperCase() === 'COMP';
       if (!allocation) {
-        throw new AppError(API_ERROR_CODES.NOT_ELIGIBLE, 'This leave type is not allocated to you.', 403);
+        throw new AppError(
+          API_ERROR_CODES.NOT_ELIGIBLE,
+          isCompUpdate
+            ? 'You have no compensatory leave balance. Request compensatory work on a holiday or week-off first.'
+            : 'This leave type is not allocated to you.',
+          403,
+        );
       }
 
       const sameType = existing.leaveTypeId === input.leaveTypeId;

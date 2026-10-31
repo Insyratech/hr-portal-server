@@ -21,8 +21,11 @@ import { datesInPeriod, parsePeriod } from './period';
 import { decodeBase64File, gridFromXlsx, bufferForStorage } from './workbook';
 import { listApprovedShiftOverrides } from '../../shift-changes/service';
 import {
+  adjustedLeaveOnDate,
   isLeaveDateCompensated,
+  loadAdjustedLeaveDateMap,
   loadCompensatedLeaveDateKeys,
+  type AdjustedLeaveDay,
 } from '../../comp-off-work/compensated-dates';
 import { ATTENDANCE_IMPORT_BUCKET, originalExcelPath } from './storage-path';
 import { isExcelFileName } from './excel-file';
@@ -224,6 +227,12 @@ export async function refreshOpenImportDayReviews(
     period.end,
     options?.employeeId,
   );
+  const adjustedLeaveDates = await loadAdjustedLeaveDateMap(
+    supabase,
+    period.start,
+    period.end,
+    options?.employeeId,
+  );
   let permissionQuery = supabase
     .from('work_permissions')
     .select('employee_id, permission_date, minutes, status, slot')
@@ -261,7 +270,7 @@ export async function refreshOpenImportDayReviews(
     }
 
     const punch = punches.get(`${employeeId}:${iso}`);
-    const leave = leaveOnDate(leaves ?? [], employeeId, iso, compensatedLeaveDates);
+    const leave = leaveOnDate(leaves ?? [], employeeId, iso, compensatedLeaveDates, adjustedLeaveDates);
     const permission = approvedPermission(permissions ?? [], employeeId, iso);
     const rawIn = punch?.inTime ? combineDateAndTime(iso, punch.inTime) : null;
     const rawOut = punch?.outTime ? combineDateAndTime(iso, punch.outTime) : null;
@@ -632,6 +641,7 @@ export function createAttendanceImportService(supabase: SupabaseClient) {
         .gte('end_date', start);
 
       const compensatedLeaveDates = await loadCompensatedLeaveDateKeys(supabase, start, end);
+      const adjustedLeaveDates = await loadAdjustedLeaveDateMap(supabase, start, end);
 
       const { data: permissions } = await supabase
         .from('work_permissions')
@@ -655,7 +665,7 @@ export function createAttendanceImportService(supabase: SupabaseClient) {
         for (const iso of dates) {
           const shift = shiftForDay(assignments, shiftById, overrides, emp.id, iso);
           const punch = punches.get(`${emp.id}:${iso}`);
-          const leave = leaveOnDate(leaves ?? [], emp.id, iso, compensatedLeaveDates);
+          const leave = leaveOnDate(leaves ?? [], emp.id, iso, compensatedLeaveDates, adjustedLeaveDates);
           const permission = approvedPermission(permissions ?? [], emp.id, iso);
           const rawIn = punch?.inTime ? combineDateAndTime(iso, punch.inTime) : null;
           const rawOut = punch?.outTime ? combineDateAndTime(iso, punch.outTime) : null;
@@ -1033,10 +1043,19 @@ function leaveOnDate(
   employeeId: string,
   iso: string,
   compensatedLeaveDates?: Set<string>,
+  adjustedLeaveDates?: Map<string, AdjustedLeaveDay>,
 ): LeaveOverlay | null {
   const day = dateOnly(iso);
   if (compensatedLeaveDates && isLeaveDateCompensated(compensatedLeaveDates, employeeId, day)) {
     return null;
+  }
+  const adjusted = adjustedLeaveDates ? adjustedLeaveOnDate(adjustedLeaveDates, employeeId, day) : null;
+  if (adjusted) {
+    return {
+      typeName: 'Compensatory Leave',
+      paid: true,
+      duration: adjusted.duration,
+    };
   }
   const row = rows.find((item) => {
     if (item.employee_id !== employeeId) return false;

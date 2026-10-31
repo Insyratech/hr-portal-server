@@ -6,6 +6,7 @@ import { AppError } from '../../shared/errors/app-error';
 import type { RequestUser } from '../../shared/types/request-user';
 import { writeAuditLog } from '../audit/write-audit-log';
 import {
+  currentLeadEmployeeId,
   listLeaveProjectOptions,
   loadProjectForLeave,
 } from '../leave/project-lead-approval';
@@ -163,18 +164,33 @@ export function createShiftChangeService(supabase: SupabaseClient) {
     },
 
     async listLeadInbox(actor: RequestUser): Promise<ShiftChangeRequest[]> {
+      if (!actor.employeeId) return [];
+      const { data: led } = await supabase
+        .from('projects')
+        .select('id')
+        .eq('lead_employee_id', actor.employeeId)
+        .eq('status', 'active');
+      const projectIds = (led ?? []).map((row) => row.id as string);
+      const orFilter = projectIds.length
+        ? `project_lead_employee_id.eq.${actor.employeeId},project_id.in.(${projectIds.join(',')})`
+        : `project_lead_employee_id.eq.${actor.employeeId}`;
       const { data, error } = await supabase
         .from('shift_change_requests')
         .select(SELECT)
         .eq('status', 'PENDING')
         .eq('project_lead_required', true)
         .eq('project_lead_accepted', false)
-        .eq('project_lead_employee_id', actor.employeeId)
+        .or(orFilter)
         .order('created_at', { ascending: true });
       if (error) {
         throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load lead inbox.', 500);
       }
-      return ((data ?? []) as Row[]).map(mapRow);
+      const byId = new Map<string, ShiftChangeRequest>();
+      for (const row of (data ?? []) as Row[]) {
+        const mapped = mapRow(row);
+        byId.set(mapped.id, mapped);
+      }
+      return [...byId.values()];
     },
 
     async listQueue(actor: RequestUser, status?: ShiftChangeStatus): Promise<ShiftChangeRequest[]> {
@@ -357,7 +373,10 @@ export function createShiftChangeService(supabase: SupabaseClient) {
       if (!existing.projectLeadRequired || existing.projectLeadAccepted) {
         throw new AppError(API_ERROR_CODES.CONFLICT, 'Project lead approval is not required.', 409);
       }
-      if (existing.projectLeadEmployeeId !== actor.employeeId) {
+      const liveLeadId = existing.projectId
+        ? await currentLeadEmployeeId(supabase, existing.projectId)
+        : null;
+      if (existing.projectLeadEmployeeId !== actor.employeeId && liveLeadId !== actor.employeeId) {
         throw new AppError(API_ERROR_CODES.FORBIDDEN, 'Only the project lead can approve this step.', 403);
       }
 
@@ -366,6 +385,7 @@ export function createShiftChangeService(supabase: SupabaseClient) {
         .update({
           project_lead_accepted: true,
           project_lead_acted_at: new Date().toISOString(),
+          project_lead_employee_id: actor.employeeId,
         })
         .eq('id', id)
         .eq('status', 'PENDING');

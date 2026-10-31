@@ -708,6 +708,8 @@ function mapAllocation(row: Record<string, unknown>) {
     carriedForward: Number(row.carried_forward),
     adjusted: Number(row.adjusted),
     used: Number(row.used),
+    earned: Number(row.earned ?? 0),
+    expired: Number(row.expired ?? 0),
     available: Number(row.available),
   };
 }

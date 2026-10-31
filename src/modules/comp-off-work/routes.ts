@@ -4,12 +4,17 @@ import { API_ERROR_CODES } from '../../shared/constants/error-codes';
 import { PERMISSIONS } from '../../shared/constants/permissions';
 import { AppError } from '../../shared/errors/app-error';
 import { ok } from '../../shared/http/ok';
-import { requirePermission } from '../../plugins/permissions';
+import { requireAuth, requirePermission } from '../../plugins/permissions';
 import { createCompOffWorkService } from './service';
 import type { CompOffWorkStatus } from './types';
 
 const applyBody = Type.Object({
   workDate: Type.String({ minLength: 10 }),
+  reason: Type.Optional(Type.String()),
+  projectId: Type.Optional(Type.String()),
+});
+
+const adjustmentBody = Type.Object({
   leaveApplicationId: Type.String({ minLength: 1 }),
   leaveDate: Type.String({ minLength: 10 }),
   reason: Type.Optional(Type.String()),
@@ -32,6 +37,17 @@ export async function registerCompOffWorkRoutes(app: FastifyInstance): Promise<v
   );
 
   app.get(
+    '/api/v1/comp-off-work/projects',
+    { preHandler: [requirePermission(PERMISSIONS.COMP_OFF_APPLY)] },
+    async (request) => {
+      if (!app.supabase || !request.user) {
+        throw new AppError(API_ERROR_CODES.SERVICE_UNAVAILABLE, 'Database is not configured.', 503);
+      }
+      return ok(await createCompOffWorkService(app.supabase).listProjects(request.user));
+    },
+  );
+
+  app.get(
     '/api/v1/comp-off-work/eligible-leaves',
     { preHandler: [requirePermission(PERMISSIONS.COMP_OFF_APPLY)] },
     async (request) => {
@@ -41,6 +57,38 @@ export async function registerCompOffWorkRoutes(app: FastifyInstance): Promise<v
       const query = request.query as { month?: string };
       const month = query.month?.trim() || new Date().toISOString().slice(0, 7);
       return ok(await createCompOffWorkService(app.supabase).listEligibleLeaves(request.user, month));
+    },
+  );
+
+  app.get('/api/v1/comp-off-work/lead-inbox', { preHandler: [requireAuth()] }, async (request) => {
+    if (!app.supabase || !request.user) {
+      throw new AppError(API_ERROR_CODES.SERVICE_UNAVAILABLE, 'Database is not configured.', 503);
+    }
+    return ok(await createCompOffWorkService(app.supabase).listLeadInbox(request.user));
+  });
+
+  app.get(
+    '/api/v1/comp-off-work/adjustments/me',
+    { preHandler: [requirePermission(PERMISSIONS.COMP_OFF_APPLY)] },
+    async (request) => {
+      if (!app.supabase || !request.user) {
+        throw new AppError(API_ERROR_CODES.SERVICE_UNAVAILABLE, 'Database is not configured.', 503);
+      }
+      return ok(await createCompOffWorkService(app.supabase).listMyAdjustments(request.user));
+    },
+  );
+
+  app.get(
+    '/api/v1/comp-off-work/adjustments',
+    {
+      preHandler: [requirePermission(PERMISSIONS.COMP_OFF_APPROVE, PERMISSIONS.USERS_VIEW)],
+    },
+    async (request) => {
+      if (!app.supabase || !request.user) {
+        throw new AppError(API_ERROR_CODES.SERVICE_UNAVAILABLE, 'Database is not configured.', 503);
+      }
+      const query = request.query as { status?: CompOffWorkStatus };
+      return ok(await createCompOffWorkService(app.supabase).listAdjustmentQueue(request.user, query.status));
     },
   );
 
@@ -65,15 +113,30 @@ export async function registerCompOffWorkRoutes(app: FastifyInstance): Promise<v
       if (!app.supabase || !request.user) {
         throw new AppError(API_ERROR_CODES.SERVICE_UNAVAILABLE, 'Database is not configured.', 503);
       }
-      const body = request.body as {
-        workDate: string;
-        leaveApplicationId: string;
-        leaveDate: string;
-        reason?: string;
-      };
+      const body = request.body as { workDate: string; reason?: string; projectId?: string };
       return ok(await createCompOffWorkService(app.supabase).apply(request.user, body, metaOf(request)));
     },
   );
+
+  app.post(
+    '/api/v1/comp-off-work/adjustments',
+    { preHandler: [requirePermission(PERMISSIONS.COMP_OFF_APPLY)], schema: { body: adjustmentBody } },
+    async (request) => {
+      if (!app.supabase || !request.user) {
+        throw new AppError(API_ERROR_CODES.SERVICE_UNAVAILABLE, 'Database is not configured.', 503);
+      }
+      const body = request.body as { leaveApplicationId: string; leaveDate: string; reason?: string };
+      return ok(await createCompOffWorkService(app.supabase).applyAdjustment(request.user, body, metaOf(request)));
+    },
+  );
+
+  app.post('/api/v1/comp-off-work/:id/project-lead-accept', { preHandler: [requireAuth()] }, async (request) => {
+    if (!app.supabase || !request.user) {
+      throw new AppError(API_ERROR_CODES.SERVICE_UNAVAILABLE, 'Database is not configured.', 503);
+    }
+    const { id } = request.params as { id: string };
+    return ok(await createCompOffWorkService(app.supabase).acceptProjectLead(request.user, id, metaOf(request)));
+  });
 
   app.post(
     '/api/v1/comp-off-work/:id/approve',
@@ -100,6 +163,18 @@ export async function registerCompOffWorkRoutes(app: FastifyInstance): Promise<v
   );
 
   app.post(
+    '/api/v1/comp-off-work/:id/confirm-work',
+    { preHandler: [requirePermission(PERMISSIONS.COMP_OFF_APPROVE)] },
+    async (request) => {
+      if (!app.supabase || !request.user) {
+        throw new AppError(API_ERROR_CODES.SERVICE_UNAVAILABLE, 'Database is not configured.', 503);
+      }
+      const { id } = request.params as { id: string };
+      return ok(await createCompOffWorkService(app.supabase).confirmWork(request.user, id, metaOf(request)));
+    },
+  );
+
+  app.post(
     '/api/v1/comp-off-work/:id/cancel',
     {
       preHandler: [requirePermission(PERMISSIONS.COMP_OFF_APPLY)],
@@ -111,6 +186,46 @@ export async function registerCompOffWorkRoutes(app: FastifyInstance): Promise<v
       }
       const { id } = request.params as { id: string };
       return ok(await createCompOffWorkService(app.supabase).cancel(request.user, id, metaOf(request)));
+    },
+  );
+
+  app.post(
+    '/api/v1/comp-off-work/adjustments/:id/approve',
+    { preHandler: [requirePermission(PERMISSIONS.COMP_OFF_APPROVE)] },
+    async (request) => {
+      if (!app.supabase || !request.user) {
+        throw new AppError(API_ERROR_CODES.SERVICE_UNAVAILABLE, 'Database is not configured.', 503);
+      }
+      const { id } = request.params as { id: string };
+      return ok(
+        await createCompOffWorkService(app.supabase).decideAdjustment(request.user, id, 'approve', metaOf(request)),
+      );
+    },
+  );
+
+  app.post(
+    '/api/v1/comp-off-work/adjustments/:id/reject',
+    { preHandler: [requirePermission(PERMISSIONS.COMP_OFF_APPROVE)] },
+    async (request) => {
+      if (!app.supabase || !request.user) {
+        throw new AppError(API_ERROR_CODES.SERVICE_UNAVAILABLE, 'Database is not configured.', 503);
+      }
+      const { id } = request.params as { id: string };
+      return ok(
+        await createCompOffWorkService(app.supabase).decideAdjustment(request.user, id, 'reject', metaOf(request)),
+      );
+    },
+  );
+
+  app.post(
+    '/api/v1/comp-off-work/adjustments/:id/cancel',
+    { preHandler: [requirePermission(PERMISSIONS.COMP_OFF_APPLY)] },
+    async (request) => {
+      if (!app.supabase || !request.user) {
+        throw new AppError(API_ERROR_CODES.SERVICE_UNAVAILABLE, 'Database is not configured.', 503);
+      }
+      const { id } = request.params as { id: string };
+      return ok(await createCompOffWorkService(app.supabase).cancelAdjustment(request.user, id, metaOf(request)));
     },
   );
 }

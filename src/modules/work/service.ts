@@ -592,13 +592,19 @@ export function createWorkService(supabase: SupabaseClient) {
     const byId = new Map(memberProjects.map((project) => [project.id, project]));
     for (const row of ledRows ?? []) {
       const id = row.id as string;
-      if (byId.has(id)) continue;
+      const leadEmployeeId = (row.lead_employee_id as string | null) ?? employeeId;
+      const existing = byId.get(id);
+      if (existing) {
+        // Membership embed can omit/stale lead_employee_id; the led-projects row is source of truth.
+        byId.set(id, { ...existing, leadEmployeeId });
+        continue;
+      }
       byId.set(id, {
         id,
         name: row.name as string,
         code: row.code as string,
         status: row.status as string,
-        leadEmployeeId: (row.lead_employee_id as string | null) ?? null,
+        leadEmployeeId,
       });
     }
     return [...byId.values()].sort((a, b) => a.name.localeCompare(b.name));
