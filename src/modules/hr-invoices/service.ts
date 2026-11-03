@@ -4,6 +4,8 @@ import { assertHrDomainOwner } from '../../shared/domain-owners';
 import { AppError } from '../../shared/errors/app-error';
 import type { RequestUser } from '../../shared/types/request-user';
 import { writeAuditLog } from '../audit/write-audit-log';
+import { sendMail } from '../notifications/mail';
+import { buildHrInvoiceMail } from './email';
 import { invoiceTotal, isHrInvoiceCurrency, lineAmount, roundMoney, type HrInvoiceCurrency } from './money';
 import type {
   CreateHrInvoiceInput,
@@ -17,6 +19,10 @@ const LOGO_BUCKET = 'company-logos';
 const MAX_LINES = 20;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+export function isInvoiceRecipient(value: string): boolean {
+  return EMAIL.test(value);
+}
 
 type RequestMeta = { ipAddress?: string | null; userAgent?: string | null };
 
@@ -309,6 +315,49 @@ export function createHrInvoiceService(supabase: SupabaseClient) {
         ...meta,
       });
       return detail;
+    },
+
+    async email(
+      actor: RequestUser,
+      id: string,
+      to: string,
+      meta: RequestMeta,
+    ): Promise<{ sent: true; to: string }> {
+      const recipient = to.trim().toLowerCase();
+      if (!isInvoiceRecipient(recipient)) {
+        throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Enter a valid recipient email.', 400);
+      }
+      const invoice = await this.get(actor, id);
+      const mail = buildHrInvoiceMail(invoice);
+      const result = await sendMail({
+        to: [recipient],
+        subject: mail.subject,
+        text: mail.text,
+        html: mail.html,
+      });
+      if (result.outcome === 'disabled') {
+        throw new AppError(
+          API_ERROR_CODES.SERVICE_UNAVAILABLE,
+          'Email is not configured. Set the Brevo sender before sharing invoices.',
+          503,
+        );
+      }
+      if (!result.sent) {
+        throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'The invoice email could not be sent.', 502);
+      }
+      try {
+        await writeAuditLog(supabase, {
+          actorId: actor.employeeId,
+          action: 'hr_invoice.email',
+          entityType: 'hr_invoice',
+          entityId: id,
+          newValues: { to: recipient, invoiceNumber: invoice.invoiceNumber },
+          ...meta,
+        });
+      } catch (error) {
+        console.error('[hr-invoice] email sent but audit failed', error);
+      }
+      return { sent: true, to: recipient };
     },
   };
 }

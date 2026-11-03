@@ -106,6 +106,7 @@ const lotReceiveBody = Type.Object({
   unit: Type.Optional(Type.String()),
   totalCost: Type.Optional(Type.Number({ minimum: 0 })),
   expiryDate: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  openedOn: Type.Optional(Type.Union([Type.String(), Type.Null()])),
   qtyChips: Type.Optional(Type.Array(Type.Number(), { maxItems: 15 })),
   notes: Type.Optional(Type.String()),
 });
@@ -178,6 +179,18 @@ const publicPlasticIssueBody = Type.Object({
   plasticStockId: Type.String({ minLength: 1 }),
   boxes: Type.Integer({ minimum: 1 }),
   notes: Type.Optional(Type.String()),
+});
+
+const publicPlasticIssueBatchBody = Type.Object({
+  employeeId: Type.String({ minLength: 1 }),
+  lines: Type.Array(
+    Type.Object({
+      plasticStockId: Type.String({ minLength: 1 }),
+      boxes: Type.Integer({ minimum: 1 }),
+      notes: Type.Optional(Type.String()),
+    }),
+    { minItems: 1, maxItems: 12 },
+  ),
 });
 
 export async function registerInventoryRoutes(app: FastifyInstance): Promise<void> {
@@ -929,6 +942,25 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
         await lots().publicIssue(
           token,
           request.body as { employeeId: string; qty: number; notes?: string },
+          metaOf(request),
+        ),
+      );
+    },
+  );
+
+  app.post(
+    '/api/v1/inventory/public/scan/:token/plastic-issue-batch',
+    { schema: { body: publicPlasticIssueBatchBody } },
+    async (request) => {
+      requireDbOnly(app);
+      const { token } = request.params as { token: string };
+      return ok(
+        await plastic().publicIssuePlasticBatch(
+          token,
+          request.body as {
+            employeeId: string;
+            lines: { plasticStockId: string; boxes: number; notes?: string }[];
+          },
           metaOf(request),
         ),
       );

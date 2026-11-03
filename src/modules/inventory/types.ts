@@ -132,6 +132,10 @@ export type InventoryLot = {
   origin: InventoryLotOrigin;
   countsTowardPurchaseExpense: boolean;
   prepSessionId: string | null;
+  /** Supplier catalogue number copied from the catalog item. */
+  catalogNumber: string;
+  /** When the container was opened. Empty until someone records it. */
+  openedOn: string | null;
   expiryDate: string | null;
   qtyChips: number[];
   status: InventoryLotStatus;
@@ -186,6 +190,12 @@ export type InventoryPublicScanCard = {
   remainingQty: number;
   qtyChips: number[];
   expiryDate: string | null;
+  catalogNumber: string;
+  openedOn: string | null;
+  /** Purchase date, or the day a lab reagent was prepared. */
+  madeOn: string;
+  /** "Mfg" for a purchased lot, "Prepared" for a lab reagent. */
+  madeLabel: 'Mfg' | 'Prepared';
   status: InventoryLotStatus;
   employees: InventoryEmployeeOption[];
 };
@@ -334,6 +344,11 @@ export type InventoryPublicPlasticIssueResult = {
   boxesOnHand: number;
   unit: string;
   employeeName: string;
+};
+
+export type InventoryPublicPlasticIssueBatchResult = {
+  employeeName: string;
+  lines: InventoryPublicPlasticIssueResult[];
 };
 
 export type InventoryAlertKind = 'expiry' | 'reorder' | 'velocity';

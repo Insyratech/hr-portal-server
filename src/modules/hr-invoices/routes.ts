@@ -68,6 +68,24 @@ export async function registerHrInvoiceRoutes(app: FastifyInstance): Promise<voi
   });
 
   app.post(
+    '/api/v1/hr/invoices/:id/send',
+    {
+      preHandler: [requireAuth()],
+      schema: {
+        body: Type.Object({
+          to: Type.String({ minLength: 3, maxLength: 160 }),
+        }),
+      },
+    },
+    async (request) => {
+      requireDb(app, request);
+      const { id } = request.params as { id: string };
+      const { to } = request.body as { to: string };
+      return ok(await createHrInvoiceService(app.supabase!).email(request.user!, id, to, metaOf(request)));
+    },
+  );
+
+  app.post(
     '/api/v1/hr/invoices',
     { preHandler: [requireAuth()], schema: { body: createBody } },
     async (request) => {

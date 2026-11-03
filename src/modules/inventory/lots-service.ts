@@ -40,6 +40,7 @@ type LotRow = {
   counts_toward_purchase_expense?: boolean | null;
   prep_session_id?: string | null;
   expiry_date: string | null;
+  opened_on?: string | null;
   qty_chips: unknown;
   status: InventoryLotStatus;
   notes: string;
@@ -50,12 +51,14 @@ type LotRow = {
     | {
         id: string;
         name: string;
+        catalog_number?: string | null;
         category_id: string;
         inventory_categories?: { id: string; code: string; name: string } | { id: string; code: string; name: string }[] | null;
       }
     | {
         id: string;
         name: string;
+        catalog_number?: string | null;
         category_id: string;
         inventory_categories?: { id: string; code: string; name: string } | { id: string; code: string; name: string }[] | null;
       }[]
@@ -162,6 +165,8 @@ function mapLot(row: LotRow): InventoryLot {
     origin,
     countsTowardPurchaseExpense,
     prepSessionId: row.prep_session_id ?? null,
+    catalogNumber: (catalog?.catalog_number ?? '').trim(),
+    openedOn: row.opened_on ?? null,
     expiryDate: row.expiry_date,
     qtyChips: parseQtyChips(row.qty_chips),
     status: row.status,
@@ -219,7 +224,7 @@ function mapMovement(row: MovementRow): InventoryMovement {
 }
 
 const LOT_SELECT =
-  '*, inventory_catalog_items(id, name, category_id, inventory_categories(id, code, name)), inventory_locations(code, name)';
+  '*, inventory_catalog_items(id, name, catalog_number, category_id, inventory_categories(id, code, name)), inventory_locations(code, name)';
 
 function newQrToken(): string {
   return randomBytes(24).toString('base64url');
@@ -299,6 +304,7 @@ export function createInventoryLotsService(supabase: SupabaseClient) {
         unit?: string;
         totalCost?: number;
         expiryDate?: string | null;
+        openedOn?: string | null;
         qtyChips?: number[];
         notes?: string;
       },
@@ -374,37 +380,47 @@ export function createInventoryLotsService(supabase: SupabaseClient) {
       const supplierType = input.supplierType ?? 'external';
       const lotCode = newLotCode();
       const qrToken = newQrToken();
+      const openedOn = (input.openedOn ?? '').trim();
+      const insertRow: Record<string, unknown> = {
+        lot_code: lotCode,
+        qr_token: qrToken,
+        catalog_item_id: input.catalogItemId,
+        location_id: input.locationId,
+        supplier_name:
+          (input.supplierName ?? '').trim() ||
+          (isReagent && supplierType === 'internal' ? 'Internal' : ''),
+        supplier_type: supplierType,
+        purchase_date: input.purchaseDate,
+        received_qty: qty,
+        remaining_qty: qty,
+        unit,
+        total_cost: totalCost,
+        component_cost_total: 0,
+        origin: 'purchase',
+        counts_toward_purchase_expense: true,
+        prep_session_id: null,
+        expiry_date: input.expiryDate || null,
+        qty_chips: chips,
+        notes: (input.notes ?? '').trim(),
+        received_by: actor.employeeId,
+        status: 'active',
+      };
+      if (openedOn) insertRow.opened_on = openedOn;
       const { data: inserted, error: insertError } = await supabase
         .from('inventory_lots')
-        .insert({
-          lot_code: lotCode,
-          qr_token: qrToken,
-          catalog_item_id: input.catalogItemId,
-          location_id: input.locationId,
-          supplier_name:
-            (input.supplierName ?? '').trim() ||
-            (isReagent && supplierType === 'internal' ? 'Internal' : ''),
-          supplier_type: supplierType,
-          purchase_date: input.purchaseDate,
-          received_qty: qty,
-          remaining_qty: qty,
-          unit,
-          total_cost: totalCost,
-          component_cost_total: 0,
-          origin: 'purchase',
-          counts_toward_purchase_expense: true,
-          prep_session_id: null,
-          expiry_date: input.expiryDate || null,
-          qty_chips: chips,
-          notes: (input.notes ?? '').trim(),
-          received_by: actor.employeeId,
-          status: 'active',
-        })
+        .insert(insertRow)
         .select(LOT_SELECT)
         .single();
       if (insertError || !inserted) {
         if (insertError?.code === '23505') {
           throw new AppError(API_ERROR_CODES.CONFLICT, 'Lot code collision — please retry.', 409);
+        }
+        if (openedOn && (insertError?.code === '42703' || insertError?.message?.includes('opened_on'))) {
+          throw new AppError(
+            API_ERROR_CODES.SERVICE_UNAVAILABLE,
+            'Apply migration 093_inventory_lot_opened_on.sql before saving an opened date.',
+            503,
+          );
         }
         throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, insertError?.message ?? 'Failed to receive lot.', 500);
       }
@@ -610,6 +626,10 @@ export function createInventoryLotsService(supabase: SupabaseClient) {
         remainingQty: lot.remainingQty,
         qtyChips: lot.qtyChips,
         expiryDate: lot.expiryDate,
+        catalogNumber: lot.catalogNumber,
+        openedOn: lot.openedOn,
+        madeOn: lot.purchaseDate,
+        madeLabel: lot.origin === 'prep' ? 'Prepared' : 'Mfg',
         status: lot.status,
         employees: options,
       };

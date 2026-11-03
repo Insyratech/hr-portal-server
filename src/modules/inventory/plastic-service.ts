@@ -10,6 +10,7 @@ import type {
   InventoryPlasticMovement,
   InventoryPlasticStock,
   InventoryPlasticStockStatus,
+  InventoryPublicPlasticIssueBatchResult,
   InventoryPublicPlasticIssueResult,
   InventoryPublicStationCard,
   InventoryPublicStationItem,
@@ -946,6 +947,47 @@ export function createInventoryPlasticService(supabase: SupabaseClient) {
         unit,
         employeeName: employee.full_name,
       };
+    },
+
+    async publicIssuePlasticBatch(
+      token: string,
+      input: { employeeId: string; lines: { plasticStockId: string; boxes: number; notes?: string }[] },
+      meta: RequestMeta = {},
+    ): Promise<InventoryPublicPlasticIssueBatchResult> {
+      const lines = input.lines ?? [];
+      if (lines.length < 1 || lines.length > 12) {
+        throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Add between 1 and 12 plastic items.', 400);
+      }
+      const ids = lines.map((line) => line.plasticStockId);
+      if (new Set(ids).size !== ids.length) {
+        throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Each plastic item can be entered once.', 400);
+      }
+      const recorded: InventoryPublicPlasticIssueResult[] = [];
+      for (const line of lines) {
+        try {
+          recorded.push(
+            await this.publicIssuePlastic(
+              token,
+              {
+                employeeId: input.employeeId,
+                plasticStockId: line.plasticStockId,
+                boxes: line.boxes,
+                notes: line.notes,
+              },
+              meta,
+            ),
+          );
+        } catch (error) {
+          if (recorded.length === 0) throw error;
+          const message = error instanceof AppError ? error.message : 'Unable to record the next item.';
+          throw new AppError(
+            API_ERROR_CODES.VALIDATION_ERROR,
+            `Saved ${recorded.length} item(s). Stopped: ${message}`,
+            400,
+          );
+        }
+      }
+      return { employeeName: recorded[0]?.employeeName ?? '', lines: recorded };
     },
   };
 }
