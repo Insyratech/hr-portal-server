@@ -7,6 +7,7 @@ import { registerJobRoutes } from './jobs/routes';
 import { registerAttendanceRoutes } from './modules/attendance/routes';
 import { registerAuthRoutes } from './modules/auth/routes';
 import { registerCompanyRoutes } from './modules/companies/routes';
+import { registerHrInvoiceRoutes } from './modules/hr-invoices/routes';
 import { registerDirectoryEditRequestRoutes } from './modules/employees/edit-request-routes';
 import { registerEmployeeRoutes } from './modules/employees/routes';
 import { registerGrievanceRoutes } from './modules/grievances/routes';
@@ -102,6 +103,7 @@ export async function buildApp(env: Env): Promise<FastifyInstance> {
   await registerEmployeeRoutes(app);
   await registerDirectoryEditRequestRoutes(app);
   await registerCompanyRoutes(app);
+  await registerHrInvoiceRoutes(app);
   await registerOrganizationRoutes(app);
   await registerLeaveRoutes(app);
   await registerWorkPermissionRoutes(app);
