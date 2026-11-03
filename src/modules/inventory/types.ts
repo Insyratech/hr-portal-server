@@ -254,6 +254,9 @@ export type InventoryStation = {
   name: string;
   qrToken: string;
   status: InventoryStationStatus;
+  /** Box category printed on the room QR. Empty until migration 094 is applied. */
+  categoryId: string | null;
+  categoryName: string;
   notes: string;
   scanPath: string;
   createdAt: string;
@@ -327,6 +330,7 @@ export type InventoryPublicStationCard = {
   kind: 'station';
   stationName: string;
   locationName: string;
+  categoryName: string;
   status: InventoryStationStatus;
   items: InventoryPublicStationItem[];
   employees: InventoryEmployeeOption[];

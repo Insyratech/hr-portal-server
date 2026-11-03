@@ -538,10 +538,88 @@ export function createInventoryService(supabase: SupabaseClient) {
       return ((data ?? []) as CategoryRow[]).map(mapCategory);
     },
 
+    async createCategory(
+      actor: RequestUser,
+      input: {
+        name: string;
+        deductionMode: 'measured' | 'box';
+        defaultAlertMode?: InventoryAlertMode;
+        defaultReorderQty?: number | null;
+        defaultVelocityDays?: number;
+        defaultExpiryLeadDays?: number;
+      },
+      meta: RequestMeta,
+    ): Promise<InventoryCategory> {
+      if (!canManageCategories(actor)) {
+        throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot manage categories.', 403);
+      }
+      const name = input.name.trim();
+      if (!name) {
+        throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Category name is required.', 400);
+      }
+      if (input.deductionMode !== 'measured' && input.deductionMode !== 'box') {
+        throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Choose measured or box deduction.', 400);
+      }
+      const velocity = input.defaultVelocityDays ?? 15;
+      const expiryLead = input.defaultExpiryLeadDays ?? (input.deductionMode === 'box' ? 0 : 15);
+      if (velocity < 1 || velocity > 365) {
+        throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Velocity days must be 1–365.', 400);
+      }
+      if (expiryLead < 0 || expiryLead > 365) {
+        throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Expiry lead days must be 0–365.', 400);
+      }
+      const { data: existing } = await supabase.from('inventory_categories').select('code, sort_order');
+      const codes = new Set(((existing ?? []) as { code: string }[]).map((row) => row.code));
+      let code = name
+        .toUpperCase()
+        .replace(/[^A-Z0-9]+/g, '_')
+        .replace(/^_|_$/g, '')
+        .slice(0, 40);
+      if (!code) code = 'CATEGORY';
+      const base = code;
+      let suffix = 2;
+      while (codes.has(code)) {
+        code = `${base.slice(0, 36)}_${suffix}`;
+        suffix += 1;
+      }
+      const sortOrder =
+        ((existing ?? []) as { sort_order?: number }[]).reduce((max, row) => Math.max(max, row.sort_order ?? 0), 0) +
+        10;
+      const { data, error } = await supabase
+        .from('inventory_categories')
+        .insert({
+          code,
+          name,
+          sort_order: sortOrder,
+          deduction_mode: input.deductionMode,
+          default_alert_mode: input.defaultAlertMode ?? (input.deductionMode === 'box' ? 'reorder' : 'both'),
+          default_reorder_qty: input.defaultReorderQty === undefined ? null : input.defaultReorderQty,
+          default_velocity_days: velocity,
+          default_expiry_lead_days: expiryLead,
+          is_system: false,
+        })
+        .select('*')
+        .single();
+      if (error || !data) {
+        throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, error?.message ?? 'Failed to create category.', 500);
+      }
+      const created = mapCategory(data as CategoryRow);
+      await writeAuditLog(supabase, {
+        actorId: actor.employeeId,
+        action: 'inventory_category.create',
+        entityType: 'inventory_category',
+        entityId: created.id,
+        newValues: { code: created.code, name: created.name, deductionMode: created.deductionMode },
+        ...meta,
+      });
+      return created;
+    },
+
     async updateCategoryDefaults(
       actor: RequestUser,
       id: string,
       input: {
+        name?: string;
         defaultAlertMode?: InventoryAlertMode;
         defaultReorderQty?: number | null;
         defaultVelocityDays?: number;
@@ -553,6 +631,13 @@ export function createInventoryService(supabase: SupabaseClient) {
         throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot manage category defaults.', 403);
       }
       const patch: Record<string, unknown> = {};
+      if (input.name !== undefined) {
+        const name = input.name.trim();
+        if (!name) {
+          throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Category name is required.', 400);
+        }
+        patch.name = name;
+      }
       if (input.defaultAlertMode !== undefined) patch.default_alert_mode = input.defaultAlertMode;
       if (input.defaultReorderQty !== undefined) {
         patch.default_reorder_qty =

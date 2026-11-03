@@ -47,7 +47,17 @@ const locationPatchBody = Type.Object({
   status: Type.Optional(status),
 });
 
+const categoryCreateBody = Type.Object({
+  name: Type.String({ minLength: 1, maxLength: 80 }),
+  deductionMode: Type.Union([Type.Literal('measured'), Type.Literal('box')]),
+  defaultAlertMode: Type.Optional(alertMode),
+  defaultReorderQty: Type.Optional(Type.Union([Type.Number(), Type.Null()])),
+  defaultVelocityDays: Type.Optional(Type.Integer({ minimum: 1, maximum: 365 })),
+  defaultExpiryLeadDays: Type.Optional(Type.Integer({ minimum: 0, maximum: 365 })),
+});
+
 const categoryPatchBody = Type.Object({
+  name: Type.Optional(Type.String({ minLength: 1, maxLength: 80 })),
   defaultAlertMode: Type.Optional(alertMode),
   defaultReorderQty: Type.Optional(Type.Union([Type.Number(), Type.Null()])),
   defaultVelocityDays: Type.Optional(Type.Integer({ minimum: 1, maximum: 365 })),
@@ -146,6 +156,7 @@ const stationCreateBody = Type.Object({
   locationId: Type.String({ minLength: 1 }),
   name: Type.String({ minLength: 1 }),
   notes: Type.Optional(Type.String()),
+  categoryId: Type.Optional(Type.String({ minLength: 1 })),
 });
 
 const stationPatchBody = Type.Object({
@@ -303,6 +314,31 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
     },
   );
 
+  app.post(
+    '/api/v1/inventory/categories',
+    {
+      preHandler: [requirePermission(PERMISSIONS.INVENTORY_CATEGORIES_MANAGE)],
+      schema: { body: categoryCreateBody },
+    },
+    async (request) => {
+      requireDb(app, request);
+      return ok(
+        await svc().createCategory(
+          request.user!,
+          request.body as {
+            name: string;
+            deductionMode: 'measured' | 'box';
+            defaultAlertMode?: 'reorder' | 'velocity' | 'both';
+            defaultReorderQty?: number | null;
+            defaultVelocityDays?: number;
+            defaultExpiryLeadDays?: number;
+          },
+          metaOf(request),
+        ),
+      );
+    },
+  );
+
   app.patch(
     '/api/v1/inventory/categories/:id',
     {
@@ -317,6 +353,7 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
           request.user!,
           id,
           request.body as {
+            name?: string;
             defaultAlertMode?: 'reorder' | 'velocity' | 'both';
             defaultReorderQty?: number | null;
             defaultVelocityDays?: number;
@@ -688,7 +725,7 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
       return ok(
         await plastic().createStation(
           request.user!,
-          request.body as { locationId: string; name: string; notes?: string },
+          request.body as { locationId: string; name: string; notes?: string; categoryId?: string },
           metaOf(request),
         ),
       );

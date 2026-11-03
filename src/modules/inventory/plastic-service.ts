@@ -30,6 +30,7 @@ type StationRow = {
   qr_token: string;
   status: InventoryStationStatus;
   notes: string;
+  category_id?: string | null;
   created_at: string;
   updated_at: string;
   inventory_locations?:
@@ -212,6 +213,51 @@ function parseIssueRpcError(message: string | undefined): AppError {
   return new AppError(API_ERROR_CODES.INTERNAL_ERROR, message ?? 'Unable to issue plastic boxes.', 500);
 }
 
+function stationKindFallback(name: string, locationName: string): string {
+  const haystack = `${name} ${locationName}`.toLowerCase();
+  if (haystack.includes('stationer')) return 'Miscellaneous';
+  return 'Plasticware';
+}
+
+async function withCategoryNames(
+  supabase: SupabaseClient,
+  stations: InventoryStation[],
+): Promise<InventoryStation[]> {
+  const ids = [...new Set(stations.map((station) => station.categoryId).filter((id): id is string => Boolean(id)))];
+  const names = new Map<string, string>();
+  if (ids.length > 0) {
+    const { data } = await supabase.from('inventory_categories').select('id, name').in('id', ids);
+    for (const row of data ?? []) {
+      names.set(row.id as string, row.name as string);
+    }
+  }
+  return stations.map((station) => ({
+    ...station,
+    categoryName: (station.categoryId && names.get(station.categoryId)) || stationKindFallback(station.name, station.locationName),
+  }));
+}
+
+async function resolveStationCategoryId(
+  supabase: SupabaseClient,
+  input: { categoryId?: string; stationName: string; locationName: string; locationCode: string },
+): Promise<string | null> {
+  if (input.categoryId?.trim()) {
+    const { data } = await supabase
+      .from('inventory_categories')
+      .select('id, deduction_mode')
+      .eq('id', input.categoryId.trim())
+      .maybeSingle();
+    if (!data || data.deduction_mode !== 'box') {
+      throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Choose a box category such as Plastic wares or Miscellaneous.', 400);
+    }
+    return data.id as string;
+  }
+  const haystack = `${input.stationName} ${input.locationName} ${input.locationCode}`.toLowerCase();
+  const code = haystack.includes('stationer') ? 'MISCELLANEOUS' : 'PLASTIC_WARES';
+  const { data } = await supabase.from('inventory_categories').select('id').eq('code', code).maybeSingle();
+  return (data?.id as string | undefined) ?? null;
+}
+
 function mapStation(row: StationRow): InventoryStation {
   const location = one(row.inventory_locations);
   return {
@@ -223,6 +269,8 @@ function mapStation(row: StationRow): InventoryStation {
     qrToken: row.qr_token,
     status: row.status,
     notes: row.notes,
+    categoryId: row.category_id ?? null,
+    categoryName: '',
     scanPath: `/scan/${row.qr_token}`,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -323,12 +371,12 @@ export function createInventoryPlasticService(supabase: SupabaseClient) {
       if (error) {
         throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to list stations.', 500);
       }
-      return ((data ?? []) as StationRow[]).map(mapStation);
+      return withCategoryNames(supabase, ((data ?? []) as StationRow[]).map(mapStation));
     },
 
     async createStation(
       actor: RequestUser,
-      input: { locationId: string; name: string; notes?: string },
+      input: { locationId: string; name: string; notes?: string; categoryId?: string },
       meta: RequestMeta,
     ): Promise<InventoryStation> {
       if (!canManagePlastic(actor)) {
@@ -341,22 +389,32 @@ export function createInventoryPlasticService(supabase: SupabaseClient) {
 
       const { data: location, error: locationError } = await supabase
         .from('inventory_locations')
-        .select('id, status, name')
+        .select('id, status, name, code')
         .eq('id', input.locationId)
         .single();
       if (locationError || !location || location.status !== 'active') {
         throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Select an active location.', 400);
       }
 
+      const categoryId = await resolveStationCategoryId(supabase, {
+        categoryId: input.categoryId,
+        stationName: name,
+        locationName: String(location.name ?? ''),
+        locationCode: String(location.code ?? ''),
+      });
+
+      const insertRow: Record<string, unknown> = {
+        location_id: input.locationId,
+        name,
+        qr_token: newQrToken(),
+        notes: (input.notes ?? '').trim(),
+        status: 'active',
+      };
+      if (categoryId) insertRow.category_id = categoryId;
+
       const { data: inserted, error: insertError } = await supabase
         .from('inventory_stations')
-        .insert({
-          location_id: input.locationId,
-          name,
-          qr_token: newQrToken(),
-          notes: (input.notes ?? '').trim(),
-          status: 'active',
-        })
+        .insert(insertRow)
         .select(STATION_SELECT)
         .single();
       if (insertError || !inserted) {
@@ -367,6 +425,28 @@ export function createInventoryPlasticService(supabase: SupabaseClient) {
             409,
           );
         }
+        if (categoryId && (insertError?.code === '42703' || insertError?.message?.includes('category_id'))) {
+          const { data: retried, error: retryError } = await supabase
+            .from('inventory_stations')
+            .insert({
+              location_id: input.locationId,
+              name,
+              qr_token: newQrToken(),
+              notes: (input.notes ?? '').trim(),
+              status: 'active',
+            })
+            .select(STATION_SELECT)
+            .single();
+          if (retryError || !retried) {
+            throw new AppError(
+              API_ERROR_CODES.INTERNAL_ERROR,
+              retryError?.message ?? 'Failed to create station.',
+              500,
+            );
+          }
+          const fallback = (await withCategoryNames(supabase, [mapStation(retried as StationRow)]))[0]!;
+          return fallback;
+        }
         throw new AppError(
           API_ERROR_CODES.INTERNAL_ERROR,
           insertError?.message ?? 'Failed to create station.',
@@ -374,7 +454,7 @@ export function createInventoryPlasticService(supabase: SupabaseClient) {
         );
       }
 
-      const station = mapStation(inserted as StationRow);
+      const station = (await withCategoryNames(supabase, [mapStation(inserted as StationRow)]))[0]!;
       await writeAuditLog(supabase, {
         actorId: actor.employeeId,
         action: 'inventory_station.create',
@@ -398,7 +478,7 @@ export function createInventoryPlasticService(supabase: SupabaseClient) {
       if (error || !data) {
         throw new AppError(API_ERROR_CODES.NOT_FOUND, 'Station not found.', 404);
       }
-      return mapStation(data as StationRow);
+      return (await withCategoryNames(supabase, [mapStation(data as StationRow)]))[0]!;
     },
 
     async getStationPrint(
@@ -418,7 +498,7 @@ export function createInventoryPlasticService(supabase: SupabaseClient) {
     async updateStation(
       actor: RequestUser,
       id: string,
-      input: { name?: string; notes?: string; status?: InventoryStationStatus },
+      input: { name?: string; notes?: string; status?: InventoryStationStatus; categoryId?: string },
       meta: RequestMeta,
     ): Promise<InventoryStation> {
       if (!canManagePlastic(actor)) {
@@ -434,6 +514,15 @@ export function createInventoryPlasticService(supabase: SupabaseClient) {
       }
       if (input.notes !== undefined) patch.notes = input.notes.trim();
       if (input.status !== undefined) patch.status = input.status;
+      if (input.categoryId !== undefined) {
+        const categoryId = await resolveStationCategoryId(supabase, {
+          categoryId: input.categoryId,
+          stationName: input.name ?? '',
+          locationName: '',
+          locationCode: '',
+        });
+        if (categoryId) patch.category_id = categoryId;
+      }
       if (!Object.keys(patch).length) {
         return this.getStation(actor, id);
       }
@@ -447,7 +536,7 @@ export function createInventoryPlasticService(supabase: SupabaseClient) {
       if (error || !data) {
         throw new AppError(API_ERROR_CODES.NOT_FOUND, 'Station not found.', 404);
       }
-      const station = mapStation(data as StationRow);
+      const station = (await withCategoryNames(supabase, [mapStation(data as StationRow)]))[0]!;
       await writeAuditLog(supabase, {
         actorId: actor.employeeId,
         action: 'inventory_station.update',
@@ -535,10 +624,10 @@ export function createInventoryPlasticService(supabase: SupabaseClient) {
           | { id: string; code: string; name: string; deduction_mode: string }[]
           | null,
       );
-      if (!category || category.code !== 'PLASTIC_WARES' || category.deduction_mode !== 'box') {
+      if (!category || category.deduction_mode !== 'box') {
         throw new AppError(
           API_ERROR_CODES.VALIDATION_ERROR,
-          'Only Plastic wares catalog items can use this receipt form.',
+          'Only box categories (Plastic wares, Miscellaneous, and others you add) can use this receipt form.',
           400,
         );
       }
@@ -815,24 +904,28 @@ export function createInventoryPlasticService(supabase: SupabaseClient) {
         throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load plastic stock for station.', 500);
       }
 
-      const items: InventoryPublicStationItem[] = ((stockRows ?? []) as PlasticStockRow[]).map((row) => {
-        const stock = mapPlasticStock(row);
-        return {
-          id: stock.id,
-          stockCode: stock.stockCode,
-          itemName: stock.catalogItemName,
-          manufacturer: stock.manufacturer,
-          sizeLabel: stock.sizeLabel,
-          boxesOnHand: stock.boxesOnHand,
-          unit: stock.unit,
-          qtyChips: stock.qtyChips.length ? stock.qtyChips : [...DEFAULT_BOX_CHIPS],
-        };
-      });
+      const items: InventoryPublicStationItem[] = ((stockRows ?? []) as PlasticStockRow[])
+        .map((row) => {
+          const stock = mapPlasticStock(row);
+          return { stock, item: {
+            id: stock.id,
+            stockCode: stock.stockCode,
+            itemName: stock.catalogItemName,
+            manufacturer: stock.manufacturer,
+            sizeLabel: stock.sizeLabel,
+            boxesOnHand: stock.boxesOnHand,
+            unit: stock.unit,
+            qtyChips: stock.qtyChips.length ? stock.qtyChips : [...DEFAULT_BOX_CHIPS],
+          } };
+        })
+        .filter((row) => !station.categoryId || row.stock.categoryId === station.categoryId)
+        .map((row) => row.item);
 
       return {
         kind: 'station',
         stationName: station.name,
         locationName: station.locationName,
+        categoryName: station.categoryName,
         status: station.status,
         items,
         employees: await loadActiveEmployees(supabase),

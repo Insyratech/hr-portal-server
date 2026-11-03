@@ -19,8 +19,7 @@ import type {
 } from './types';
 
 const MAX_QTY_CHIPS = 15;
-/** Phase 2 measured + Phase 3 bought reagents (prep-origin lots come from prep-service). */
-const RECEIVE_CATEGORY_CODES = new Set(['MATERIALS', 'CHEMICALS', 'SOLVENTS', 'REAGENTS']);
+/** Phase 2 measured lots. Prep-origin lots are created from prep-service. */
 
 type LotRow = {
   id: string;
@@ -343,13 +342,6 @@ export function createInventoryLotsService(supabase: SupabaseClient) {
         throw new AppError(
           API_ERROR_CODES.VALIDATION_ERROR,
           'Only measured categories can use this receipt form.',
-          400,
-        );
-      }
-      if (!RECEIVE_CATEGORY_CODES.has(category.code)) {
-        throw new AppError(
-          API_ERROR_CODES.VALIDATION_ERROR,
-          'Plastic ware receipts land in a later phase. Use Materials, Chemicals, Solvents, or Reagents.',
           400,
         );
       }
