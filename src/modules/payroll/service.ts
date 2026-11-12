@@ -421,8 +421,10 @@ async function mapSlip(supabase: SupabaseClient, row: Record<string, unknown>, p
   const otherDeductions = Number(row.other_deductions);
   const nonWorkingAmount =
     nonWorkingDays === 0 ? 0 : roundMoney(gross - roundMoney(dailyRate * workingDays));
+  const particulars = (row.particulars as LeaveParticulars & { trainingSupport?: number }) ?? emptyParticulars();
+  const trainingSupport = roundMoney(Number(particulars.trainingSupport ?? 0));
   const statutory = professionalTax + tds + employeeWelfare + kpi + otherDeductions;
-  const net = roundMoney(gross - nonWorkingAmount - statutory - lopAmount);
+  const net = roundMoney(gross - nonWorkingAmount - statutory - lopAmount - trainingSupport);
   return {
     id: row.id as string,
     runId: row.run_id as string,
@@ -465,6 +467,7 @@ async function mapSlip(supabase: SupabaseClient, row: Record<string, unknown>, p
     lopDays: Number(row.lop_days),
     lopAmount,
     net,
-    particulars: (row.particulars as LeaveParticulars) ?? emptyParticulars(),
+    trainingSupport,
+    particulars,
   };
 }
