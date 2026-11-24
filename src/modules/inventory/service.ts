@@ -699,7 +699,7 @@ export function createInventoryService(supabase: SupabaseClient) {
         categoryId: string;
         name: string;
         brandName?: string;
-        catalogNumber: string;
+        catalogNumber?: string;
         unit: string;
         defaultQtyChips?: number[];
         alertMode?: InventoryAlertMode;
@@ -715,12 +715,12 @@ export function createInventoryService(supabase: SupabaseClient) {
       }
       const name = input.name.trim();
       const brandName = (input.brandName ?? '').trim();
-      const catalogNumber = input.catalogNumber.trim();
+      const catalogNumber = (input.catalogNumber ?? '').trim();
       const unit = input.unit.trim();
-      if (!input.categoryId || !name || !catalogNumber || !unit) {
+      if (!input.categoryId || !name || !unit) {
         throw new AppError(
           API_ERROR_CODES.VALIDATION_ERROR,
-          'Category, name, catalogue number, and unit are required.',
+          'Category, name, and unit are required.',
           400,
         );
       }
@@ -836,13 +836,6 @@ export function createInventoryService(supabase: SupabaseClient) {
       }
       if (input.catalogNumber !== undefined) {
         const catalogNumber = input.catalogNumber.trim();
-        if (!catalogNumber) {
-          throw new AppError(
-            API_ERROR_CODES.VALIDATION_ERROR,
-            'Catalogue number is required.',
-            400,
-          );
-        }
         if (catalogNumber.length > 128) {
           throw new AppError(
             API_ERROR_CODES.VALIDATION_ERROR,

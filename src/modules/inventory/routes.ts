@@ -68,7 +68,7 @@ const catalogCreateBody = Type.Object({
   categoryId: Type.String({ minLength: 1 }),
   name: Type.String({ minLength: 1 }),
   brandName: Type.Optional(Type.String({ maxLength: 128 })),
-  catalogNumber: Type.String({ minLength: 1, maxLength: 128 }),
+  catalogNumber: Type.Optional(Type.String({ maxLength: 128 })),
   unit: Type.String({ minLength: 1 }),
   defaultQtyChips: Type.Optional(Type.Array(Type.Number(), { maxItems: 15 })),
   alertMode: Type.Optional(alertMode),
@@ -389,7 +389,7 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
             categoryId: string;
             name: string;
             brandName?: string;
-            catalogNumber: string;
+            catalogNumber?: string;
             unit: string;
             defaultQtyChips?: number[];
             alertMode?: 'reorder' | 'velocity' | 'both';

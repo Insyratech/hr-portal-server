@@ -36,9 +36,9 @@ export type InventoryCatalogItem = {
   categoryCode: string;
   categoryName: string;
   name: string;
-  /** Manufacturer / brand (searchable; optional on legacy rows). */
+  /** Manufacturer / brand (optional; searchable when set). */
   brandName: string;
-  /** Supplier / internal catalogue number (shown with name in dropdowns). */
+  /** Supplier / internal catalogue number (optional; shown with name when set). */
   catalogNumber: string;
   unit: string;
   defaultQtyChips: number[];
