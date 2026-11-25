@@ -514,6 +514,13 @@ export function createInventoryPrepService(supabase: SupabaseClient) {
         session.notes ||
         `Lab prep · session ${session.id.slice(0, 8)}`;
 
+      const { data: insideLab } = await supabase
+        .from('inventory_central_qrs')
+        .select('id')
+        .eq('kind', 'inside_lab')
+        .eq('status', 'active')
+        .maybeSingle();
+
       const { data: insertedLot, error: lotError } = await supabase
         .from('inventory_lots')
         .insert({
@@ -521,6 +528,7 @@ export function createInventoryPrepService(supabase: SupabaseClient) {
           qr_token: qrToken,
           catalog_item_id: session.catalogItemId,
           location_id: session.locationId,
+          ...(insideLab?.id ? { central_qr_id: insideLab.id } : {}),
           supplier_name: 'Lab prep',
           supplier_type: 'internal',
           purchase_date: purchaseDate,

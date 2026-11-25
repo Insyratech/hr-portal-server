@@ -74,6 +74,7 @@ export const PERMISSIONS = {
   INVENTORY_PREP_MANAGE: 'inventory.prep.manage',
   INVENTORY_PLASTIC_MANAGE: 'inventory.plastic.manage',
   INVENTORY_PLASTIC_ADJUST: 'inventory.plastic.adjust',
+  INVENTORY_LAB_MANAGE: 'inventory.lab.manage',
   INVENTORY_ALERTS_VIEW: 'inventory.alerts.view',
   INVENTORY_REPORTS_VIEW: 'inventory.reports.view',
 } as const;

@@ -109,6 +109,66 @@ export type InventoryLotOrigin = 'purchase' | 'prep';
 export type InventoryMovementType = 'receive' | 'issue' | 'adjust';
 export type InventoryPrepStatus = 'open' | 'completed' | 'cancelled';
 
+export type InventoryLabActivity = {
+  id: string;
+  name: string;
+  description: string;
+  sortOrder: number;
+  status: InventoryStatus;
+  recipeCount: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type InventoryLabRecipeComponent = {
+  id: string;
+  recipeId: string;
+  name: string;
+  quantityValue: number | null;
+  quantityUnit: string;
+  notes: string;
+  sortOrder: number;
+  catalogItemId: string | null;
+  catalogItemName: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type InventoryLabRecipe = {
+  id: string;
+  activityId: string;
+  activityName: string;
+  name: string;
+  finalVolumeValue: number | null;
+  finalVolumeUnit: string;
+  notes: string;
+  sortOrder: number;
+  status: InventoryStatus;
+  components: InventoryLabRecipeComponent[];
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type InventoryCentralQrKind = 'stock_room' | 'stationery' | 'inside_lab';
+
+export type InventoryCentralQr = {
+  id: string;
+  kind: InventoryCentralQrKind;
+  name: string;
+  qrToken: string;
+  status: InventoryStatus;
+  notes: string;
+  scanPath: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type InventoryCentralQrPrint = {
+  central: InventoryCentralQr;
+  scanUrl: string;
+  labelTitle: string;
+};
+
 export type InventoryLot = {
   id: string;
   lotCode: string;
@@ -121,6 +181,10 @@ export type InventoryLot = {
   locationId: string;
   locationCode: string;
   locationName: string;
+  /** Room QR this lot is attached to for usage. */
+  centralQrId: string | null;
+  centralQrKind: InventoryCentralQrKind | null;
+  centralQrName: string;
   supplierName: string;
   supplierType: InventorySupplierType;
   purchaseDate: string;
@@ -198,6 +262,37 @@ export type InventoryPublicScanCard = {
   madeLabel: 'Mfg' | 'Prepared';
   status: InventoryLotStatus;
   employees: InventoryEmployeeOption[];
+  /** Bottle QRs no longer issue stock — use the room QR instead. */
+  issueDisabled?: boolean;
+  issueDisabledMessage?: string;
+};
+
+export type InventoryPublicCentralLotItem = {
+  id: string;
+  lotCode: string;
+  itemName: string;
+  categoryName: string;
+  catalogNumber: string;
+  remainingQty: number;
+  unit: string;
+  qtyChips: number[];
+  expiryDate: string | null;
+};
+
+export type InventoryPublicCentralCard = {
+  kind: 'central';
+  centralKind: 'stock_room' | 'stationery';
+  name: string;
+  lots: InventoryPublicCentralLotItem[];
+  plasticItems: InventoryPublicStationItem[];
+  employees: InventoryEmployeeOption[];
+};
+
+export type InventoryPublicCentralLabCard = {
+  kind: 'central_lab';
+  centralKind: 'inside_lab';
+  name: string;
+  message: string;
 };
 
 export type InventoryPublicIssueResult = {
@@ -280,6 +375,10 @@ export type InventoryPlasticStock = {
   locationId: string;
   locationCode: string;
   locationName: string;
+  /** Room QR this box stock is attached to for usage. */
+  centralQrId: string | null;
+  centralQrKind: InventoryCentralQrKind | null;
+  centralQrName: string;
   manufacturer: string;
   sizeLabel: string;
   attributes: Record<string, string>;
@@ -338,7 +437,11 @@ export type InventoryPublicStationCard = {
 
 export type InventoryPublicLotScanCard = InventoryPublicScanCard & { kind: 'lot' };
 
-export type InventoryPublicScanPayload = InventoryPublicLotScanCard | InventoryPublicStationCard;
+export type InventoryPublicScanPayload =
+  | InventoryPublicLotScanCard
+  | InventoryPublicStationCard
+  | InventoryPublicCentralCard
+  | InventoryPublicCentralLabCard;
 
 export type InventoryPublicPlasticIssueResult = {
   stockCode: string;

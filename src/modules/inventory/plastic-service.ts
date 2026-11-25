@@ -5,7 +5,9 @@ import { AppError } from '../../shared/errors/app-error';
 import type { RequestUser } from '../../shared/types/request-user';
 import { writeAuditLog } from '../audit/write-audit-log';
 import { canAdjustPlastic, canManagePlastic, type RequestMeta } from './access';
+import { createInventoryCentralQrsService } from './central-qrs-service';
 import type {
+  InventoryCentralQrKind,
   InventoryEmployeeOption,
   InventoryPlasticMovement,
   InventoryPlasticStock,
@@ -44,6 +46,7 @@ type PlasticStockRow = {
   stock_code: string;
   catalog_item_id: string;
   location_id: string;
+  central_qr_id?: string | null;
   manufacturer: string;
   size_label: string;
   attributes: unknown;
@@ -83,6 +86,10 @@ type PlasticStockRow = {
   inventory_locations?:
     | { code: string; name: string }
     | { code: string; name: string }[]
+    | null;
+  inventory_central_qrs?:
+    | { id: string; kind: InventoryCentralQrKind; name: string }
+    | { id: string; kind: InventoryCentralQrKind; name: string }[]
     | null;
 };
 
@@ -281,6 +288,7 @@ function mapPlasticStock(row: PlasticStockRow): InventoryPlasticStock {
   const catalog = one(row.inventory_catalog_items);
   const category = one(catalog?.inventory_categories ?? null);
   const location = one(row.inventory_locations);
+  const central = one(row.inventory_central_qrs ?? null);
   return {
     id: row.id,
     stockCode: row.stock_code,
@@ -292,6 +300,9 @@ function mapPlasticStock(row: PlasticStockRow): InventoryPlasticStock {
     locationId: row.location_id,
     locationCode: location?.code ?? '',
     locationName: location?.name ?? '',
+    centralQrId: row.central_qr_id ?? central?.id ?? null,
+    centralQrKind: central?.kind ?? null,
+    centralQrName: central?.name ?? '',
     manufacturer: row.manufacturer,
     sizeLabel: row.size_label,
     attributes: parseAttributes(row.attributes),
@@ -333,7 +344,7 @@ function mapPlasticMovement(row: PlasticMovementRow): InventoryPlasticMovement {
 
 const STATION_SELECT = '*, inventory_locations(code, name)';
 const PLASTIC_SELECT =
-  '*, inventory_catalog_items(id, name, category_id, inventory_categories(id, code, name)), inventory_locations(code, name)';
+  '*, inventory_catalog_items(id, name, category_id, inventory_categories(id, code, name)), inventory_locations(code, name), inventory_central_qrs(id, kind, name)';
 
 async function loadActiveEmployees(supabase: SupabaseClient): Promise<InventoryEmployeeOption[]> {
   const { data: employees, error } = await supabase
@@ -582,6 +593,7 @@ export function createInventoryPlasticService(supabase: SupabaseClient) {
       input: {
         catalogItemId: string;
         locationId: string;
+        centralQrId: string;
         manufacturer?: string;
         sizeLabel?: string;
         attributes?: Record<string, string>;
@@ -606,6 +618,8 @@ export function createInventoryPlasticService(supabase: SupabaseClient) {
       if (!input.purchaseDate) {
         throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Purchase date is required.', 400);
       }
+
+      const central = await createInventoryCentralQrsService(supabase).requireActiveId(input.centralQrId);
 
       const { data: catalog, error: catalogError } = await supabase
         .from('inventory_catalog_items')
@@ -658,12 +672,13 @@ export function createInventoryPlasticService(supabase: SupabaseClient) {
         throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Total cost must be zero or positive.', 400);
       }
 
-      // Add to an existing active matching SKU line when present (same item/location/mfr/size).
+      // Add to an existing active matching SKU line when present (same item/location/room/mfr/size).
       const { data: existing } = await supabase
         .from('inventory_plastic_stock')
         .select(PLASTIC_SELECT)
         .eq('catalog_item_id', input.catalogItemId)
         .eq('location_id', input.locationId)
+        .eq('central_qr_id', central.id)
         .eq('manufacturer', manufacturer)
         .eq('size_label', sizeLabel)
         .eq('status', 'active')
@@ -723,6 +738,7 @@ export function createInventoryPlasticService(supabase: SupabaseClient) {
           stock_code: stockCode,
           catalog_item_id: input.catalogItemId,
           location_id: input.locationId,
+          central_qr_id: central.id,
           manufacturer,
           size_label: sizeLabel,
           attributes,
@@ -949,16 +965,37 @@ export function createInventoryPlasticService(supabase: SupabaseClient) {
         throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Select a plastic item.', 400);
       }
 
-      const { data: stationRow, error: stationError } = await supabase
-        .from('inventory_stations')
-        .select('id, location_id, status, qr_token')
-        .eq('qr_token', qrToken)
-        .single();
-      if (stationError || !stationRow) {
-        throw new AppError(API_ERROR_CODES.NOT_FOUND, 'Unknown or invalid station QR.', 404);
-      }
-      if (stationRow.status !== 'active') {
-        throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'This station QR is inactive.', 400);
+      const central = await createInventoryCentralQrsService(supabase).getByToken(qrToken);
+      let stationId: string | null = null;
+      let locationGateId: string | null = null;
+      let centralGateId: string | null = null;
+
+      if (central) {
+        if (central.status !== 'active') {
+          throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'This room QR is inactive.', 400);
+        }
+        if (central.kind === 'inside_lab') {
+          throw new AppError(
+            API_ERROR_CODES.VALIDATION_ERROR,
+            'Inside lab work logging is not available on this scan yet.',
+            400,
+          );
+        }
+        centralGateId = central.id;
+      } else {
+        const { data: stationRow, error: stationError } = await supabase
+          .from('inventory_stations')
+          .select('id, location_id, status, qr_token')
+          .eq('qr_token', qrToken)
+          .single();
+        if (stationError || !stationRow) {
+          throw new AppError(API_ERROR_CODES.NOT_FOUND, 'Unknown or invalid room / station QR.', 404);
+        }
+        if (stationRow.status !== 'active') {
+          throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'This station QR is inactive.', 400);
+        }
+        stationId = stationRow.id;
+        locationGateId = stationRow.location_id;
       }
 
       const { data: stockRow, error: stockError } = await supabase
@@ -970,7 +1007,15 @@ export function createInventoryPlasticService(supabase: SupabaseClient) {
         throw new AppError(API_ERROR_CODES.NOT_FOUND, 'Plastic stock not found.', 404);
       }
       const stock = mapPlasticStock(stockRow as PlasticStockRow);
-      if (stock.locationId !== stationRow.location_id) {
+      if (centralGateId) {
+        if (stock.centralQrId !== centralGateId) {
+          throw new AppError(
+            API_ERROR_CODES.VALIDATION_ERROR,
+            'That item is not stocked under this room QR.',
+            400,
+          );
+        }
+      } else if (locationGateId && stock.locationId !== locationGateId) {
         throw new AppError(
           API_ERROR_CODES.VALIDATION_ERROR,
           'That item is not stocked at this station location.',
@@ -993,13 +1038,17 @@ export function createInventoryPlasticService(supabase: SupabaseClient) {
         throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Select an active employee.', 400);
       }
 
+      const noteText =
+        (input.notes ?? '').trim() ||
+        (central ? `Room QR issue (${central.name})` : 'Station issue');
+
       const { data: rpcRows, error: rpcError } = await supabase.rpc('inventory_issue_plastic_boxes', {
         p_plastic_stock_id: stock.id,
         p_boxes: boxes,
         p_employee_id: input.employeeId,
-        p_notes: (input.notes ?? '').trim() || 'Station issue',
+        p_notes: noteText,
         p_created_by: null,
-        p_station_id: stationRow.id,
+        p_station_id: stationId,
       });
       if (rpcError) {
         throw parseIssueRpcError(rpcError.message);
@@ -1019,13 +1068,14 @@ export function createInventoryPlasticService(supabase: SupabaseClient) {
         entityId: stock.id,
         newValues: {
           stockCode: stock.stockCode,
-          stationId: stationRow.id,
+          stationId,
+          centralQrId: centralGateId,
           employeeId: input.employeeId,
           employeeName: employee.full_name,
           boxes,
           boxesOnHand,
           unit,
-          notes: (input.notes ?? '').trim() || 'Station issue',
+          notes: noteText,
         },
         ipAddress: meta.ipAddress,
         userAgent: meta.userAgent,

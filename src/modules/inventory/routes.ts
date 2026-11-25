@@ -7,6 +7,8 @@ import { ok } from '../../shared/http/ok';
 import { portalPublicBase } from '../../shared/portal-public-url';
 import { requirePermission } from '../../plugins/permissions';
 import { createInventoryAlertsService } from './alerts-service';
+import { createInventoryCentralQrsService } from './central-qrs-service';
+import { createInventoryLabRecipesService } from './lab-recipes-service';
 import { createInventoryLotsService } from './lots-service';
 import { createInventoryPlasticService } from './plastic-service';
 import { createInventoryPrepService } from './prep-service';
@@ -109,6 +111,7 @@ const authorizationBody = Type.Object({
 const lotReceiveBody = Type.Object({
   catalogItemId: Type.String({ minLength: 1 }),
   locationId: Type.String({ minLength: 1 }),
+  centralQrId: Type.String({ minLength: 1 }),
   supplierName: Type.Optional(Type.String()),
   supplierType: Type.Optional(Type.Union([Type.Literal('external'), Type.Literal('internal')])),
   purchaseDate: Type.String({ minLength: 1 }),
@@ -129,6 +132,8 @@ const lotAdjustBody = Type.Object({
 const publicIssueBody = Type.Object({
   employeeId: Type.String({ minLength: 1 }),
   qty: Type.Number({ exclusiveMinimum: 0 }),
+  /** Required when issuing from a central room QR. */
+  lotId: Type.Optional(Type.String({ minLength: 1 })),
   notes: Type.Optional(Type.String()),
 });
 
@@ -168,6 +173,7 @@ const stationPatchBody = Type.Object({
 const plasticReceiveBody = Type.Object({
   catalogItemId: Type.String({ minLength: 1 }),
   locationId: Type.String({ minLength: 1 }),
+  centralQrId: Type.String({ minLength: 1 }),
   manufacturer: Type.Optional(Type.String()),
   sizeLabel: Type.String({ minLength: 1 }),
   attributes: Type.Optional(Type.Record(Type.String(), Type.String())),
@@ -209,6 +215,7 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
   const lots = () => createInventoryLotsService(app.supabase!);
   const prep = () => createInventoryPrepService(app.supabase!);
   const plastic = () => createInventoryPlasticService(app.supabase!);
+  const centralQrs = () => createInventoryCentralQrsService(app.supabase!);
   const alerts = () => createInventoryAlertsService(app.supabase!);
   const reports = () => createInventoryReportsService(app.supabase!);
 
@@ -511,6 +518,7 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
           request.body as {
             catalogItemId: string;
             locationId: string;
+            centralQrId: string;
             supplierName?: string;
             supplierType?: 'external' | 'internal';
             purchaseDate: string;
@@ -518,6 +526,7 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
             unit?: string;
             totalCost?: number;
             expiryDate?: string | null;
+            openedOn?: string | null;
             qtyChips?: number[];
             notes?: string;
           },
@@ -700,6 +709,33 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
   );
 
   app.get(
+    '/api/v1/inventory/central-qrs',
+    {
+      preHandler: [
+        requirePermission(PERMISSIONS.INVENTORY_PLASTIC_MANAGE, PERMISSIONS.INVENTORY_LOTS_MANAGE),
+      ],
+    },
+    async (request) => {
+      requireDb(app, request);
+      return ok(await centralQrs().list(request.user!));
+    },
+  );
+
+  app.get(
+    '/api/v1/inventory/central-qrs/:id/print',
+    {
+      preHandler: [
+        requirePermission(PERMISSIONS.INVENTORY_PLASTIC_MANAGE, PERMISSIONS.INVENTORY_LOTS_MANAGE),
+      ],
+    },
+    async (request) => {
+      requireDb(app, request);
+      const { id } = request.params as { id: string };
+      return ok(await centralQrs().getPrint(request.user!, id, portalPublicBase()));
+    },
+  );
+
+  app.get(
     '/api/v1/inventory/stations',
     {
       preHandler: [
@@ -811,6 +847,7 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
           request.body as {
             catalogItemId: string;
             locationId: string;
+            centralQrId: string;
             manufacturer?: string;
             sizeLabel: string;
             attributes?: Record<string, string>;
@@ -950,11 +987,14 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
     },
   );
 
-  // Public kiosk — no JWT. Any active employee may submit usage after picking their name.
-  // Token may be a measured lot or a plastic station.
+  // Public kiosk — no JWT. Prefer central room QRs; legacy station / bottle tokens still resolve.
   app.get('/api/v1/inventory/public/scan/:token', async (request) => {
     requireDbOnly(app);
     const { token } = request.params as { token: string };
+    const centralCard = await centralQrs().getPublicCard(token);
+    if (centralCard) {
+      return ok(centralCard);
+    }
     try {
       return ok(await lots().getPublicScanCard(token));
     } catch (lotError) {
@@ -978,7 +1018,7 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
       return ok(
         await lots().publicIssue(
           token,
-          request.body as { employeeId: string; qty: number; notes?: string },
+          request.body as { employeeId: string; qty: number; lotId?: string; notes?: string },
           metaOf(request),
         ),
       );

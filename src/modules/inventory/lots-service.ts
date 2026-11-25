@@ -5,7 +5,9 @@ import { AppError } from '../../shared/errors/app-error';
 import type { RequestUser } from '../../shared/types/request-user';
 import { writeAuditLog } from '../audit/write-audit-log';
 import { canAdjustLots, canManageLots, type RequestMeta } from './access';
+import { createInventoryCentralQrsService } from './central-qrs-service';
 import type {
+  InventoryCentralQrKind,
   InventoryEmployeeOption,
   InventoryLot,
   InventoryLotExpense,
@@ -27,6 +29,7 @@ type LotRow = {
   qr_token: string;
   catalog_item_id: string;
   location_id: string;
+  central_qr_id?: string | null;
   supplier_name: string;
   supplier_type: InventorySupplierType;
   purchase_date: string;
@@ -65,6 +68,10 @@ type LotRow = {
   inventory_locations?:
     | { code: string; name: string }
     | { code: string; name: string }[]
+    | null;
+  inventory_central_qrs?:
+    | { id: string; kind: InventoryCentralQrKind; name: string }
+    | { id: string; kind: InventoryCentralQrKind; name: string }[]
     | null;
 };
 
@@ -136,6 +143,7 @@ function mapLot(row: LotRow): InventoryLot {
   const catalog = one(row.inventory_catalog_items);
   const category = one(catalog?.inventory_categories ?? null);
   const location = one(row.inventory_locations);
+  const central = one(row.inventory_central_qrs ?? null);
   const origin: InventoryLotOrigin = row.origin === 'prep' ? 'prep' : 'purchase';
   const countsTowardPurchaseExpense =
     row.counts_toward_purchase_expense === undefined || row.counts_toward_purchase_expense === null
@@ -153,6 +161,9 @@ function mapLot(row: LotRow): InventoryLot {
     locationId: row.location_id,
     locationCode: location?.code ?? '',
     locationName: location?.name ?? '',
+    centralQrId: row.central_qr_id ?? central?.id ?? null,
+    centralQrKind: central?.kind ?? null,
+    centralQrName: central?.name ?? '',
     supplierName: row.supplier_name,
     supplierType: row.supplier_type,
     purchaseDate: row.purchase_date,
@@ -223,7 +234,10 @@ function mapMovement(row: MovementRow): InventoryMovement {
 }
 
 const LOT_SELECT =
-  '*, inventory_catalog_items(id, name, catalog_number, category_id, inventory_categories(id, code, name)), inventory_locations(code, name)';
+  '*, inventory_catalog_items(id, name, catalog_number, category_id, inventory_categories(id, code, name)), inventory_locations(code, name), inventory_central_qrs(id, kind, name)';
+
+const BOTTLE_QR_RETIRED_MESSAGE =
+  'Bottle QRs no longer record usage. Scan the Stock room, Stationery, or Inside lab room QR instead.';
 
 function newQrToken(): string {
   return randomBytes(24).toString('base64url');
@@ -296,6 +310,7 @@ export function createInventoryLotsService(supabase: SupabaseClient) {
       input: {
         catalogItemId: string;
         locationId: string;
+        centralQrId: string;
         supplierName?: string;
         supplierType?: InventorySupplierType;
         purchaseDate: string;
@@ -320,6 +335,8 @@ export function createInventoryLotsService(supabase: SupabaseClient) {
       if (!input.purchaseDate) {
         throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Purchase date is required.', 400);
       }
+
+      const central = await createInventoryCentralQrsService(supabase).requireActiveId(input.centralQrId);
 
       const { data: catalog, error: catalogError } = await supabase
         .from('inventory_catalog_items')
@@ -378,6 +395,7 @@ export function createInventoryLotsService(supabase: SupabaseClient) {
         qr_token: qrToken,
         catalog_item_id: input.catalogItemId,
         location_id: input.locationId,
+        central_qr_id: central.id,
         supplier_name:
           (input.supplierName ?? '').trim() ||
           (isReagent && supplierType === 'internal' ? 'Internal' : ''),
@@ -624,12 +642,14 @@ export function createInventoryLotsService(supabase: SupabaseClient) {
         madeLabel: lot.origin === 'prep' ? 'Prepared' : 'Mfg',
         status: lot.status,
         employees: options,
+        issueDisabled: true,
+        issueDisabledMessage: BOTTLE_QR_RETIRED_MESSAGE,
       };
     },
 
     async publicIssue(
       token: string,
-      input: { employeeId: string; qty: number; notes?: string },
+      input: { employeeId: string; qty: number; notes?: string; lotId?: string },
       meta: RequestMeta = {},
     ): Promise<InventoryPublicIssueResult> {
       const qrToken = token.trim();
@@ -641,74 +661,144 @@ export function createInventoryLotsService(supabase: SupabaseClient) {
         throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Select an employee.', 400);
       }
 
-      const { data: lotRow, error: lotError } = await supabase
-        .from('inventory_lots')
-        .select('id, lot_code, remaining_qty, unit, status, qr_token')
-        .eq('qr_token', qrToken)
-        .single();
-      if (lotError || !lotRow) {
-        throw new AppError(API_ERROR_CODES.NOT_FOUND, 'Unknown or invalid QR code.', 404);
-      }
-      if (lotRow.status === 'void') {
-        throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'This lot is void.', 400);
-      }
-      if (lotRow.status === 'depleted' || asNumber(lotRow.remaining_qty) <= 0) {
-        throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'This lot has no remaining stock.', 400);
-      }
+      const central = await createInventoryCentralQrsService(supabase).getByToken(qrToken);
+      if (central) {
+        if (central.status !== 'active') {
+          throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'This room QR is inactive.', 400);
+        }
+        if (central.kind === 'stationery') {
+          throw new AppError(
+            API_ERROR_CODES.VALIDATION_ERROR,
+            'Use the box take-out form on the Stationery QR for stationery stock.',
+            400,
+          );
+        }
+        if (central.kind === 'inside_lab') {
+          throw new AppError(
+            API_ERROR_CODES.VALIDATION_ERROR,
+            'Inside lab work logging is not available on this scan yet.',
+            400,
+          );
+        }
+        const lotId = (input.lotId ?? '').trim();
+        if (!lotId) {
+          throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Select a lot to take out.', 400);
+        }
 
-      const { data: employee, error: employeeError } = await supabase
-        .from('employees')
-        .select('id, full_name, status, deleted_at')
-        .eq('id', input.employeeId)
-        .single();
-      if (employeeError || !employee || employee.deleted_at || employee.status !== 'active') {
-        throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Select an active employee.', 400);
-      }
-
-      const { data: rpcRows, error: rpcError } = await supabase.rpc('inventory_issue_lot', {
-        p_lot_id: lotRow.id,
-        p_qty: qty,
-        p_employee_id: input.employeeId,
-        p_notes: (input.notes ?? '').trim() || 'Kiosk issue',
-        p_created_by: null,
-        p_prep_session_id: null,
-      });
-      if (rpcError) {
-        throw parseIssueRpcError(rpcError.message);
-      }
-      const rpc = Array.isArray(rpcRows) ? rpcRows[0] : rpcRows;
-      if (!rpc) {
-        throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Issue did not return a result.', 500);
-      }
-
-      const remainingQty = asNumber(rpc.remaining_qty);
-      const unit = String(rpc.unit ?? lotRow.unit);
-
-      await writeAuditLog(supabase, {
-        actorId: null,
-        action: 'inventory_lot.kiosk_issue',
-        entityType: 'inventory_lot',
-        entityId: String(lotRow.id),
-        newValues: {
-          lotCode: lotRow.lot_code,
+        const { data: lotRow, error: lotError } = await supabase
+          .from('inventory_lots')
+          .select('id, lot_code, remaining_qty, unit, status, central_qr_id')
+          .eq('id', lotId)
+          .single();
+        if (lotError || !lotRow) {
+          throw new AppError(API_ERROR_CODES.NOT_FOUND, 'Lot not found.', 404);
+        }
+        if (lotRow.central_qr_id !== central.id) {
+          throw new AppError(
+            API_ERROR_CODES.VALIDATION_ERROR,
+            'That lot is not stocked under this room QR.',
+            400,
+          );
+        }
+        return issueLotById(supabase, {
+          lotRow,
           employeeId: input.employeeId,
-          employeeName: employee.full_name,
           qty,
-          remainingQty,
-          unit,
-          notes: (input.notes ?? '').trim() || 'Kiosk issue',
-        },
-        ipAddress: meta.ipAddress,
-        userAgent: meta.userAgent,
-      });
+          notes: input.notes,
+          meta,
+          via: 'room_qr',
+          roomName: central.name,
+        });
+      }
 
-      return {
-        lotCode: lotRow.lot_code,
-        qtyIssued: qty,
-        remainingQty,
-        unit,
-        employeeName: employee.full_name,
-      };
+      throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, BOTTLE_QR_RETIRED_MESSAGE, 400);
     },
+  };
+}
+
+async function issueLotById(
+  supabase: SupabaseClient,
+  args: {
+    lotRow: {
+      id: string;
+      lot_code: string;
+      remaining_qty: number | string;
+      unit: string;
+      status: string;
+    };
+    employeeId: string;
+    qty: number;
+    notes?: string;
+    meta: RequestMeta;
+    via: string;
+    roomName?: string;
+  },
+): Promise<InventoryPublicIssueResult> {
+  const { lotRow, employeeId, qty, notes, meta, via, roomName } = args;
+  if (lotRow.status === 'void') {
+    throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'This lot is void.', 400);
+  }
+  if (lotRow.status === 'depleted' || asNumber(lotRow.remaining_qty) <= 0) {
+    throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'This lot has no remaining stock.', 400);
+  }
+
+  const { data: employee, error: employeeError } = await supabase
+    .from('employees')
+    .select('id, full_name, status, deleted_at')
+    .eq('id', employeeId)
+    .single();
+  if (employeeError || !employee || employee.deleted_at || employee.status !== 'active') {
+    throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Select an active employee.', 400);
+  }
+
+  const noteText =
+    (notes ?? '').trim() ||
+    (roomName ? `Room QR issue (${roomName})` : 'Kiosk issue');
+
+  const { data: rpcRows, error: rpcError } = await supabase.rpc('inventory_issue_lot', {
+    p_lot_id: lotRow.id,
+    p_qty: qty,
+    p_employee_id: employeeId,
+    p_notes: noteText,
+    p_created_by: null,
+    p_prep_session_id: null,
+  });
+  if (rpcError) {
+    throw parseIssueRpcError(rpcError.message);
+  }
+  const rpc = Array.isArray(rpcRows) ? rpcRows[0] : rpcRows;
+  if (!rpc) {
+    throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Issue did not return a result.', 500);
+  }
+
+  const remainingQty = asNumber(rpc.remaining_qty);
+  const unit = String(rpc.unit ?? lotRow.unit);
+
+  await writeAuditLog(supabase, {
+    actorId: null,
+    action: 'inventory_lot.kiosk_issue',
+    entityType: 'inventory_lot',
+    entityId: String(lotRow.id),
+    newValues: {
+      lotCode: lotRow.lot_code,
+      employeeId,
+      employeeName: employee.full_name,
+      qty,
+      remainingQty,
+      unit,
+      notes: noteText,
+      via,
+      roomName: roomName ?? null,
+    },
+    ipAddress: meta.ipAddress,
+    userAgent: meta.userAgent,
+  });
+
+  return {
+    lotCode: lotRow.lot_code,
+    qtyIssued: qty,
+    remainingQty,
+    unit,
+    employeeName: employee.full_name,
   };
 }
