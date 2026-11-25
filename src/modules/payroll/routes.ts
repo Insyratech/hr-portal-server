@@ -6,6 +6,7 @@ import { AppError } from '../../shared/errors/app-error';
 import { ok } from '../../shared/http/ok';
 import { requireAuth, requirePermission } from '../../plugins/permissions';
 import { requireSupabase } from '../leave/support';
+import { createPayrollPlaygroundService, type PlaygroundPreviewInput } from './playground';
 import { createPayrollService, type PayrollAdjustment } from './service';
 
 const compensationAdjustment = Type.Object({
@@ -108,4 +109,46 @@ export async function registerPayrollRoutes(app: FastifyInstance): Promise<void>
     const { id } = request.params as { id: string };
     return ok(await createPayrollService(requireSupabase(app.supabase)).getSlip(request.user, id));
   });
+
+  /** Sandip-only ephemeral new-regime payslip playground — no DB writes. */
+  app.get('/api/v1/payroll/playground/seed', { preHandler: [requireAuth()] }, async (request) => {
+    if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
+    return ok(await createPayrollPlaygroundService(requireSupabase(app.supabase)).seed(request.user));
+  });
+
+  app.post(
+    '/api/v1/payroll/playground/preview',
+    {
+      preHandler: [requireAuth()],
+      schema: {
+        body: Type.Object({
+          period: Type.String({ pattern: '^\\d{4}-\\d{2}$' }),
+          calendarDays: Type.Optional(Type.Number({ minimum: 1, maximum: 31 })),
+          workingDays: Type.Number({ minimum: 0 }),
+          lopDays: Type.Number({ minimum: 0 }),
+          basic: Type.Number(),
+          da: Type.Number(),
+          hra: Type.Number(),
+          fuel: Type.Number(),
+          incentives: Type.Number(),
+          other: Type.Number(),
+          professionalTax: Type.Number(),
+          employeeWelfare: Type.Number(),
+          otherDeductions: Type.Number(),
+          tdsOverride: Type.Optional(Type.Union([Type.Number(), Type.Null()])),
+          otherIncomeAnnual: Type.Optional(Type.Number({ minimum: 0 })),
+          relief89: Type.Optional(Type.Number({ minimum: 0 })),
+        }),
+      },
+    },
+    async (request) => {
+      if (!request.user) throw new AppError(API_ERROR_CODES.UNAUTHORIZED, 'Authentication is required.', 401);
+      return ok(
+        await createPayrollPlaygroundService(requireSupabase(app.supabase)).preview(
+          request.user,
+          request.body as PlaygroundPreviewInput,
+        ),
+      );
+    },
+  );
 }
