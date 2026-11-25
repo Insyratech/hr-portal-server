@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { API_ERROR_CODES } from '../../shared/constants/error-codes';
 import { AppError } from '../../shared/errors/app-error';
@@ -8,8 +9,22 @@ import type {
   InventoryLabActivity,
   InventoryLabRecipe,
   InventoryLabRecipeComponent,
+  InventoryLabUsageComponentLine,
+  InventoryLabUsageResult,
   InventoryStatus,
 } from './types';
+
+function newQrToken(): string {
+  return randomBytes(24).toString('base64url');
+}
+
+function newLotCode(now = new Date()): string {
+  const y = now.getUTCFullYear().toString().slice(-2);
+  const m = String(now.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(now.getUTCDate()).padStart(2, '0');
+  const rand = randomBytes(3).toString('hex').toUpperCase();
+  return `LOT-${y}${m}${d}-${rand}`;
+}
 
 type ActivityRow = {
   id: string;
@@ -30,9 +45,12 @@ type RecipeRow = {
   notes: string;
   sort_order: number;
   status: InventoryStatus;
+  creates_output_lot?: boolean | null;
+  output_catalog_item_id?: string | null;
   created_at: string;
   updated_at: string;
   inventory_lab_activities?: { name: string } | { name: string }[] | null;
+  inventory_catalog_items?: { name: string } | { name: string }[] | null;
 };
 
 type ComponentRow = {
@@ -77,7 +95,11 @@ function mapComponent(row: ComponentRow): InventoryLabRecipeComponent {
   };
 }
 
-function mapRecipe(row: RecipeRow, components: InventoryLabRecipeComponent[] = []): InventoryLabRecipe {
+function mapRecipe(
+  row: RecipeRow,
+  components: InventoryLabRecipeComponent[] = [],
+  outputCatalogItemName = '',
+): InventoryLabRecipe {
   const activity = one(row.inventory_lab_activities ?? null);
   return {
     id: row.id,
@@ -89,6 +111,9 @@ function mapRecipe(row: RecipeRow, components: InventoryLabRecipeComponent[] = [
     notes: row.notes,
     sortOrder: row.sort_order,
     status: row.status,
+    createsOutputLot: Boolean(row.creates_output_lot),
+    outputCatalogItemId: row.output_catalog_item_id ?? null,
+    outputCatalogItemName,
     components,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -112,6 +137,16 @@ export function createInventoryLabRecipesService(supabase: SupabaseClient) {
     return ((data ?? []) as ComponentRow[]).map(mapComponent);
   }
 
+  async function resolveOutputCatalogName(catalogItemId: string | null | undefined): Promise<string> {
+    if (!catalogItemId) return '';
+    const { data } = await supabase
+      .from('inventory_catalog_items')
+      .select('name')
+      .eq('id', catalogItemId)
+      .maybeSingle();
+    return (data?.name as string | undefined) ?? '';
+  }
+
   async function loadRecipe(id: string): Promise<InventoryLabRecipe> {
     const { data, error } = await supabase
       .from('inventory_lab_recipes')
@@ -121,8 +156,10 @@ export function createInventoryLabRecipesService(supabase: SupabaseClient) {
     if (error || !data) {
       throw new AppError(API_ERROR_CODES.NOT_FOUND, 'Recipe not found.', 404);
     }
+    const row = data as RecipeRow;
     const components = await loadComponents(id);
-    return mapRecipe(data as RecipeRow, components);
+    const outputName = await resolveOutputCatalogName(row.output_catalog_item_id);
+    return mapRecipe(row, components, outputName);
   }
 
   return {
@@ -277,7 +314,13 @@ export function createInventoryLabRecipesService(supabase: SupabaseClient) {
       const recipes = (data ?? []) as RecipeRow[];
       const result: InventoryLabRecipe[] = [];
       for (const row of recipes) {
-        result.push(mapRecipe(row, await loadComponents(row.id)));
+        result.push(
+          mapRecipe(
+            row,
+            await loadComponents(row.id),
+            await resolveOutputCatalogName(row.output_catalog_item_id),
+          ),
+        );
       }
       return result;
     },
@@ -326,7 +369,13 @@ export function createInventoryLabRecipesService(supabase: SupabaseClient) {
       const recipes = (data ?? []) as RecipeRow[];
       const result: InventoryLabRecipe[] = [];
       for (const row of recipes) {
-        result.push(mapRecipe(row, await loadComponents(row.id)));
+        result.push(
+          mapRecipe(
+            row,
+            await loadComponents(row.id),
+            await resolveOutputCatalogName(row.output_catalog_item_id),
+          ),
+        );
       }
       return result;
     },
@@ -348,6 +397,8 @@ export function createInventoryLabRecipesService(supabase: SupabaseClient) {
         finalVolumeUnit?: string;
         notes?: string;
         sortOrder?: number;
+        createsOutputLot?: boolean;
+        outputCatalogItemId?: string | null;
         components?: Array<{
           name: string;
           quantityValue?: number | null;
@@ -388,6 +439,8 @@ export function createInventoryLabRecipesService(supabase: SupabaseClient) {
           notes: (input.notes ?? '').trim(),
           sort_order: Number.isFinite(input.sortOrder) ? Math.trunc(input.sortOrder!) : 100,
           status: 'active',
+          creates_output_lot: Boolean(input.createsOutputLot),
+          output_catalog_item_id: input.outputCatalogItemId || null,
         })
         .select(RECIPE_SELECT)
         .single();
@@ -454,6 +507,8 @@ export function createInventoryLabRecipesService(supabase: SupabaseClient) {
         notes?: string;
         sortOrder?: number;
         status?: InventoryStatus;
+        createsOutputLot?: boolean;
+        outputCatalogItemId?: string | null;
         components?: Array<{
           id?: string;
           name: string;
@@ -487,6 +542,10 @@ export function createInventoryLabRecipesService(supabase: SupabaseClient) {
       if (input.notes !== undefined) patch.notes = input.notes.trim();
       if (input.sortOrder !== undefined) patch.sort_order = Math.trunc(input.sortOrder);
       if (input.status !== undefined) patch.status = input.status;
+      if (input.createsOutputLot !== undefined) patch.creates_output_lot = Boolean(input.createsOutputLot);
+      if (input.outputCatalogItemId !== undefined) {
+        patch.output_catalog_item_id = input.outputCatalogItemId || null;
+      }
 
       if (Object.keys(patch).length) {
         const { error } = await supabase.from('inventory_lab_recipes').update(patch).eq('id', id);
@@ -573,6 +632,304 @@ export function createInventoryLabRecipesService(supabase: SupabaseClient) {
         ...meta,
       });
       return { id };
+    },
+
+    async submitPublicUsage(
+      centralQrToken: string,
+      input: {
+        employeeId: string;
+        activityId: string;
+        recipeId: string;
+        notes?: string;
+        components: Array<{
+          name: string;
+          quantityValue?: number | null;
+          quantityUnit?: string;
+          notes?: string;
+          catalogItemId?: string | null;
+        }>;
+        outputQty?: number | null;
+      },
+      meta: RequestMeta = {},
+    ): Promise<InventoryLabUsageResult> {
+      const token = centralQrToken.trim();
+      if (!token) {
+        throw new AppError(API_ERROR_CODES.NOT_FOUND, 'Unknown room QR.', 404);
+      }
+      const { data: centralRow, error: centralError } = await supabase
+        .from('inventory_central_qrs')
+        .select('id, kind, name, status, qr_token')
+        .eq('qr_token', token)
+        .single();
+      if (centralError || !centralRow) {
+        throw new AppError(API_ERROR_CODES.NOT_FOUND, 'Unknown room QR.', 404);
+      }
+      if (centralRow.status !== 'active' || centralRow.kind !== 'inside_lab') {
+        throw new AppError(
+          API_ERROR_CODES.VALIDATION_ERROR,
+          'Lab work logging is only available on the Inside lab QR.',
+          400,
+        );
+      }
+
+      if (!input.employeeId || !input.activityId || !input.recipeId) {
+        throw new AppError(
+          API_ERROR_CODES.VALIDATION_ERROR,
+          'Employee, work type, and recipe are required.',
+          400,
+        );
+      }
+
+      const { data: employee, error: employeeError } = await supabase
+        .from('employees')
+        .select('id, full_name, employee_code, status, deleted_at')
+        .eq('id', input.employeeId)
+        .single();
+      if (employeeError || !employee || employee.deleted_at || employee.status !== 'active') {
+        throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Select an active employee.', 400);
+      }
+
+      const { data: activity, error: activityError } = await supabase
+        .from('inventory_lab_activities')
+        .select('*')
+        .eq('id', input.activityId)
+        .single();
+      if (activityError || !activity || activity.status !== 'active') {
+        throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Select an active work type.', 400);
+      }
+
+      const recipe = await loadRecipe(input.recipeId);
+      if (recipe.status !== 'active' || recipe.activityId !== input.activityId) {
+        throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Select a recipe under that work type.', 400);
+      }
+
+      const lines = input.components ?? [];
+      if (!lines.length) {
+        throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Add at least one component line.', 400);
+      }
+
+      const usageLines: InventoryLabUsageComponentLine[] = [];
+      for (const line of lines) {
+        const name = line.name.trim();
+        if (!name) continue;
+        const qty =
+          line.quantityValue === undefined || line.quantityValue === null
+            ? null
+            : Number(line.quantityValue);
+        if (qty !== null && (!Number.isFinite(qty) || qty < 0)) {
+          throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, `Invalid quantity for ${name}.`, 400);
+        }
+
+        let lotId: string | null = null;
+        let qtyDeducted: number | null = null;
+        const catalogItemId = line.catalogItemId || null;
+
+        if (catalogItemId && qty !== null && qty > 0) {
+          const { data: lotRows, error: lotError } = await supabase
+            .from('inventory_lots')
+            .select('id, remaining_qty, unit, status, lot_code')
+            .eq('central_qr_id', centralRow.id)
+            .eq('catalog_item_id', catalogItemId)
+            .eq('status', 'active')
+            .gt('remaining_qty', 0)
+            .order('created_at', { ascending: true });
+          if (lotError) {
+            throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to find stock for deduction.', 500);
+          }
+          const lots = (lotRows ?? []) as Array<{
+            id: string;
+            remaining_qty: number | string;
+            unit: string;
+            lot_code: string;
+          }>;
+          let remainingToIssue = qty;
+          for (const lot of lots) {
+            if (remainingToIssue <= 0) break;
+            const available = Number(lot.remaining_qty);
+            const take = Math.min(available, remainingToIssue);
+            if (take <= 0) continue;
+            const { error: rpcError } = await supabase.rpc('inventory_issue_lot', {
+              p_lot_id: lot.id,
+              p_qty: take,
+              p_employee_id: input.employeeId,
+              p_notes: `Lab usage · ${activity.name} · ${recipe.name}`,
+              p_created_by: null,
+              p_prep_session_id: null,
+            });
+            if (rpcError) {
+              throw new AppError(
+                API_ERROR_CODES.VALIDATION_ERROR,
+                rpcError.message || `Could not deduct ${name} from ${lot.lot_code}.`,
+                400,
+              );
+            }
+            if (!lotId) lotId = lot.id;
+            remainingToIssue = Math.round((remainingToIssue - take) * 10000) / 10000;
+          }
+          if (remainingToIssue > 0) {
+            throw new AppError(
+              API_ERROR_CODES.VALIDATION_ERROR,
+              `Not enough stock for ${name} under Inside lab (need ${qty}, short ${remainingToIssue}).`,
+              400,
+            );
+          }
+          qtyDeducted = qty;
+        }
+
+        usageLines.push({
+          name,
+          quantityValue: qty,
+          quantityUnit: (line.quantityUnit ?? '').trim(),
+          notes: (line.notes ?? '').trim(),
+          catalogItemId,
+          lotId,
+          qtyDeducted,
+        });
+      }
+
+      if (!usageLines.length) {
+        throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Add at least one named component.', 400);
+      }
+
+      let outputLotId: string | null = null;
+      let outputLotCode: string | null = null;
+      if (recipe.createsOutputLot) {
+        if (!recipe.outputCatalogItemId) {
+          throw new AppError(
+            API_ERROR_CODES.VALIDATION_ERROR,
+            'This recipe creates an output lot but has no output catalog item. Ask Inventory Manager to set one.',
+            400,
+          );
+        }
+        const outputQty =
+          input.outputQty !== undefined && input.outputQty !== null
+            ? Number(input.outputQty)
+            : recipe.finalVolumeValue;
+        if (outputQty === null || !Number.isFinite(outputQty) || outputQty <= 0) {
+          throw new AppError(
+            API_ERROR_CODES.VALIDATION_ERROR,
+            'Output quantity is required when creating a reagent lot.',
+            400,
+          );
+        }
+
+        const { data: catalog, error: catalogError } = await supabase
+          .from('inventory_catalog_items')
+          .select('id, unit, default_qty_chips, status')
+          .eq('id', recipe.outputCatalogItemId)
+          .single();
+        if (catalogError || !catalog || catalog.status !== 'active') {
+          throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Output catalog item is invalid.', 400);
+        }
+
+        const { data: location } = await supabase
+          .from('inventory_locations')
+          .select('id')
+          .eq('status', 'active')
+          .order('name')
+          .limit(1)
+          .maybeSingle();
+        if (!location) {
+          throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'No active location to store the output lot.', 400);
+        }
+
+        const lotCode = newLotCode();
+        const chips = Array.isArray(catalog.default_qty_chips) ? catalog.default_qty_chips : [];
+        const { data: insertedLot, error: lotInsertError } = await supabase
+          .from('inventory_lots')
+          .insert({
+            lot_code: lotCode,
+            qr_token: newQrToken(),
+            catalog_item_id: recipe.outputCatalogItemId,
+            location_id: location.id,
+            central_qr_id: centralRow.id,
+            supplier_name: 'Lab prep',
+            supplier_type: 'internal',
+            purchase_date: new Date().toISOString().slice(0, 10),
+            received_qty: outputQty,
+            remaining_qty: outputQty,
+            unit: (recipe.finalVolumeUnit || catalog.unit || 'mL').trim(),
+            total_cost: 0,
+            component_cost_total: 0,
+            origin: 'prep',
+            counts_toward_purchase_expense: false,
+            qty_chips: chips,
+            notes: `Inside lab · ${recipe.name} · ${employee.full_name}`,
+            received_by: input.employeeId,
+            status: 'active',
+          })
+          .select('id, lot_code')
+          .single();
+        if (lotInsertError || !insertedLot) {
+          throw new AppError(
+            API_ERROR_CODES.INTERNAL_ERROR,
+            lotInsertError?.message ?? 'Failed to create output reagent lot.',
+            500,
+          );
+        }
+        await supabase.from('inventory_movements').insert({
+          lot_id: insertedLot.id,
+          movement_type: 'receive',
+          qty: outputQty,
+          qty_before: 0,
+          qty_after: outputQty,
+          unit: (recipe.finalVolumeUnit || catalog.unit || 'mL').trim(),
+          employee_id: input.employeeId,
+          notes: `Lab recipe output · ${recipe.name}`,
+          created_by: null,
+        });
+        outputLotId = insertedLot.id;
+        outputLotCode = insertedLot.lot_code;
+      }
+
+      const { data: submission, error: submissionError } = await supabase
+        .from('inventory_lab_usage_submissions')
+        .insert({
+          central_qr_id: centralRow.id,
+          activity_id: activity.id,
+          recipe_id: recipe.id,
+          employee_id: input.employeeId,
+          recipe_name: recipe.name,
+          activity_name: activity.name,
+          components_snapshot: usageLines,
+          output_lot_id: outputLotId,
+          notes: (input.notes ?? '').trim(),
+        })
+        .select('id')
+        .single();
+      if (submissionError || !submission) {
+        throw new AppError(
+          API_ERROR_CODES.INTERNAL_ERROR,
+          submissionError?.message ?? 'Usage deducted but submission log failed.',
+          500,
+        );
+      }
+
+      await writeAuditLog(supabase, {
+        actorId: null,
+        action: 'inventory_lab.usage_submit',
+        entityType: 'inventory_lab_usage_submission',
+        entityId: submission.id,
+        newValues: {
+          activity: activity.name,
+          recipe: recipe.name,
+          employeeId: input.employeeId,
+          outputLotCode,
+          componentCount: usageLines.length,
+        },
+        ipAddress: meta.ipAddress,
+        userAgent: meta.userAgent,
+      });
+
+      return {
+        id: submission.id,
+        activityName: activity.name,
+        recipeName: recipe.name,
+        employeeName: employee.full_name,
+        employeeCode: employee.employee_code,
+        outputLotCode,
+        components: usageLines,
+      };
     },
   };
 }

@@ -55,10 +55,47 @@ create table if not exists public.inventory_lab_recipes (
   sort_order integer not null default 100,
   status text not null default 'active'
     check (status in ('active', 'inactive')),
+  /** When true, submit creates a new measured lot from the recipe (reagent prep). */
+  creates_output_lot boolean not null default false,
+  output_catalog_item_id uuid references public.inventory_catalog_items (id) on delete set null,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   constraint inventory_lab_recipes_activity_name_unique unique (activity_id, name)
 );
+
+create table if not exists public.inventory_lab_usage_submissions (
+  id uuid primary key default gen_random_uuid(),
+  central_qr_id uuid not null references public.inventory_central_qrs (id) on delete restrict,
+  activity_id uuid not null references public.inventory_lab_activities (id) on delete restrict,
+  recipe_id uuid references public.inventory_lab_recipes (id) on delete set null,
+  employee_id uuid not null references public.employees (id) on delete restrict,
+  recipe_name text not null default '',
+  activity_name text not null default '',
+  components_snapshot jsonb not null default '[]'::jsonb,
+  output_lot_id uuid references public.inventory_lots (id) on delete set null,
+  notes text not null default '',
+  created_at timestamptz not null default now(),
+  constraint inventory_lab_usage_components_is_array
+    check (jsonb_typeof(components_snapshot) = 'array')
+);
+
+create index if not exists inventory_lab_usage_submissions_created_idx
+  on public.inventory_lab_usage_submissions (created_at desc);
+create index if not exists inventory_lab_usage_submissions_employee_idx
+  on public.inventory_lab_usage_submissions (employee_id, created_at desc);
+
+alter table public.inventory_lab_usage_submissions enable row level security;
+drop policy if exists inventory_lab_usage_submissions_all on public.inventory_lab_usage_submissions;
+create policy inventory_lab_usage_submissions_all on public.inventory_lab_usage_submissions
+  for all to authenticated
+  using (
+    public.authorize('inventory.lab.manage')
+    or public.authorize('inventory.lots.manage')
+  )
+  with check (
+    public.authorize('inventory.lab.manage')
+    or public.authorize('inventory.lots.manage')
+  );
 
 create index if not exists inventory_lab_recipes_activity_idx
   on public.inventory_lab_recipes (activity_id, status, sort_order, name);

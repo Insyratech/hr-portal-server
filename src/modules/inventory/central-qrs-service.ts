@@ -3,6 +3,7 @@ import { API_ERROR_CODES } from '../../shared/constants/error-codes';
 import { AppError } from '../../shared/errors/app-error';
 import type { RequestUser } from '../../shared/types/request-user';
 import { canManageLots, canManagePlastic } from './access';
+import { createInventoryLabRecipesService } from './lab-recipes-service';
 import type {
   InventoryCentralQr,
   InventoryCentralQrKind,
@@ -187,12 +188,15 @@ export function createInventoryCentralQrsService(supabase: SupabaseClient) {
       }
 
       if (central.kind === 'inside_lab') {
+        const lab = createInventoryLabRecipesService(supabase);
+        const activities = await lab.listPublicActivities();
         return {
           kind: 'central_lab',
           name: central.name,
           centralKind: 'inside_lab',
-          message:
-            'This Inside lab QR is ready. Lab work logging (DNA extraction, PCR, gel prep, reagent recipes) will use this scan next.',
+          message: 'Choose your work type and recipe, adjust components if needed, then submit.',
+          activities,
+          employees: await loadActiveEmployees(supabase),
         };
       }
 

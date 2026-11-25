@@ -216,8 +216,17 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
   const prep = () => createInventoryPrepService(app.supabase!);
   const plastic = () => createInventoryPlasticService(app.supabase!);
   const centralQrs = () => createInventoryCentralQrsService(app.supabase!);
+  const lab = () => createInventoryLabRecipesService(app.supabase!);
   const alerts = () => createInventoryAlertsService(app.supabase!);
   const reports = () => createInventoryReportsService(app.supabase!);
+
+  const labManagePerms = [
+    requirePermission(
+      PERMISSIONS.INVENTORY_LAB_MANAGE,
+      PERMISSIONS.INVENTORY_LOTS_MANAGE,
+      PERMISSIONS.INVENTORY_PREP_MANAGE,
+    ),
+  ];
 
   app.get(
     '/api/v1/inventory/overview',
@@ -708,6 +717,192 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
     },
   );
 
+  app.get('/api/v1/inventory/lab/activities', { preHandler: labManagePerms }, async (request) => {
+    requireDb(app, request);
+    return ok(await lab().listActivities(request.user!));
+  });
+
+  app.post(
+    '/api/v1/inventory/lab/activities',
+    {
+      preHandler: labManagePerms,
+      schema: {
+        body: Type.Object({
+          name: Type.String({ minLength: 1 }),
+          description: Type.Optional(Type.String()),
+          sortOrder: Type.Optional(Type.Integer()),
+        }),
+      },
+    },
+    async (request) => {
+      requireDb(app, request);
+      return ok(
+        await lab().createActivity(
+          request.user!,
+          request.body as { name: string; description?: string; sortOrder?: number },
+          metaOf(request),
+        ),
+      );
+    },
+  );
+
+  app.patch(
+    '/api/v1/inventory/lab/activities/:id',
+    {
+      preHandler: labManagePerms,
+      schema: {
+        body: Type.Object({
+          name: Type.Optional(Type.String({ minLength: 1 })),
+          description: Type.Optional(Type.String()),
+          sortOrder: Type.Optional(Type.Integer()),
+          status: Type.Optional(status),
+        }),
+      },
+    },
+    async (request) => {
+      requireDb(app, request);
+      const { id } = request.params as { id: string };
+      return ok(
+        await lab().updateActivity(
+          request.user!,
+          id,
+          request.body as {
+            name?: string;
+            description?: string;
+            sortOrder?: number;
+            status?: 'active' | 'inactive';
+          },
+          metaOf(request),
+        ),
+      );
+    },
+  );
+
+  app.get('/api/v1/inventory/lab/recipes', { preHandler: labManagePerms }, async (request) => {
+    requireDb(app, request);
+    const query = request.query as { activityId?: string };
+    return ok(await lab().listRecipes(request.user!, query.activityId));
+  });
+
+  app.get('/api/v1/inventory/lab/recipes/:id', { preHandler: labManagePerms }, async (request) => {
+    requireDb(app, request);
+    const { id } = request.params as { id: string };
+    return ok(await lab().getRecipe(request.user!, id));
+  });
+
+  const recipeComponentBody = Type.Object({
+    id: Type.Optional(Type.String()),
+    name: Type.String({ minLength: 1 }),
+    quantityValue: Type.Optional(Type.Union([Type.Number(), Type.Null()])),
+    quantityUnit: Type.Optional(Type.String()),
+    notes: Type.Optional(Type.String()),
+    sortOrder: Type.Optional(Type.Integer()),
+    catalogItemId: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  });
+
+  app.post(
+    '/api/v1/inventory/lab/recipes',
+    {
+      preHandler: labManagePerms,
+      schema: {
+        body: Type.Object({
+          activityId: Type.String({ minLength: 1 }),
+          name: Type.String({ minLength: 1 }),
+          finalVolumeValue: Type.Optional(Type.Union([Type.Number(), Type.Null()])),
+          finalVolumeUnit: Type.Optional(Type.String()),
+          notes: Type.Optional(Type.String()),
+          sortOrder: Type.Optional(Type.Integer()),
+          createsOutputLot: Type.Optional(Type.Boolean()),
+          outputCatalogItemId: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+          components: Type.Optional(Type.Array(recipeComponentBody, { maxItems: 40 })),
+        }),
+      },
+    },
+    async (request) => {
+      requireDb(app, request);
+      return ok(
+        await lab().createRecipe(
+          request.user!,
+          request.body as {
+            activityId: string;
+            name: string;
+            finalVolumeValue?: number | null;
+            finalVolumeUnit?: string;
+            notes?: string;
+            sortOrder?: number;
+            createsOutputLot?: boolean;
+            outputCatalogItemId?: string | null;
+            components?: Array<{
+              name: string;
+              quantityValue?: number | null;
+              quantityUnit?: string;
+              notes?: string;
+              sortOrder?: number;
+              catalogItemId?: string | null;
+            }>;
+          },
+          metaOf(request),
+        ),
+      );
+    },
+  );
+
+  app.patch(
+    '/api/v1/inventory/lab/recipes/:id',
+    {
+      preHandler: labManagePerms,
+      schema: {
+        body: Type.Object({
+          name: Type.Optional(Type.String({ minLength: 1 })),
+          finalVolumeValue: Type.Optional(Type.Union([Type.Number(), Type.Null()])),
+          finalVolumeUnit: Type.Optional(Type.String()),
+          notes: Type.Optional(Type.String()),
+          sortOrder: Type.Optional(Type.Integer()),
+          status: Type.Optional(status),
+          createsOutputLot: Type.Optional(Type.Boolean()),
+          outputCatalogItemId: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+          components: Type.Optional(Type.Array(recipeComponentBody, { maxItems: 40 })),
+        }),
+      },
+    },
+    async (request) => {
+      requireDb(app, request);
+      const { id } = request.params as { id: string };
+      return ok(
+        await lab().updateRecipe(
+          request.user!,
+          id,
+          request.body as {
+            name?: string;
+            finalVolumeValue?: number | null;
+            finalVolumeUnit?: string;
+            notes?: string;
+            sortOrder?: number;
+            status?: 'active' | 'inactive';
+            createsOutputLot?: boolean;
+            outputCatalogItemId?: string | null;
+            components?: Array<{
+              id?: string;
+              name: string;
+              quantityValue?: number | null;
+              quantityUnit?: string;
+              notes?: string;
+              sortOrder?: number;
+              catalogItemId?: string | null;
+            }>;
+          },
+          metaOf(request),
+        ),
+      );
+    },
+  );
+
+  app.delete('/api/v1/inventory/lab/recipes/:id', { preHandler: labManagePerms }, async (request) => {
+    requireDb(app, request);
+    const { id } = request.params as { id: string };
+    return ok(await lab().deleteRecipe(request.user!, id, metaOf(request)));
+  });
+
   app.get(
     '/api/v1/inventory/central-qrs',
     {
@@ -1019,6 +1214,67 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
         await lots().publicIssue(
           token,
           request.body as { employeeId: string; qty: number; lotId?: string; notes?: string },
+          metaOf(request),
+        ),
+      );
+    },
+  );
+
+  app.get('/api/v1/inventory/public/lab/activities/:activityId/recipes', async (request) => {
+    requireDbOnly(app);
+    const { activityId } = request.params as { activityId: string };
+    return ok(await lab().listPublicRecipes(activityId));
+  });
+
+  app.get('/api/v1/inventory/public/lab/recipes/:id', async (request) => {
+    requireDbOnly(app);
+    const { id } = request.params as { id: string };
+    return ok(await lab().getPublicRecipe(id));
+  });
+
+  app.post(
+    '/api/v1/inventory/public/scan/:token/lab-usage',
+    {
+      schema: {
+        body: Type.Object({
+          employeeId: Type.String({ minLength: 1 }),
+          activityId: Type.String({ minLength: 1 }),
+          recipeId: Type.String({ minLength: 1 }),
+          notes: Type.Optional(Type.String()),
+          outputQty: Type.Optional(Type.Union([Type.Number(), Type.Null()])),
+          components: Type.Array(
+            Type.Object({
+              name: Type.String({ minLength: 1 }),
+              quantityValue: Type.Optional(Type.Union([Type.Number(), Type.Null()])),
+              quantityUnit: Type.Optional(Type.String()),
+              notes: Type.Optional(Type.String()),
+              catalogItemId: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+            }),
+            { minItems: 1, maxItems: 40 },
+          ),
+        }),
+      },
+    },
+    async (request) => {
+      requireDbOnly(app);
+      const { token } = request.params as { token: string };
+      return ok(
+        await lab().submitPublicUsage(
+          token,
+          request.body as {
+            employeeId: string;
+            activityId: string;
+            recipeId: string;
+            notes?: string;
+            outputQty?: number | null;
+            components: Array<{
+              name: string;
+              quantityValue?: number | null;
+              quantityUnit?: string;
+              notes?: string;
+              catalogItemId?: string | null;
+            }>;
+          },
           metaOf(request),
         ),
       );

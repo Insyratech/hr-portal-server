@@ -144,9 +144,32 @@ export type InventoryLabRecipe = {
   notes: string;
   sortOrder: number;
   status: InventoryStatus;
+  createsOutputLot: boolean;
+  outputCatalogItemId: string | null;
+  outputCatalogItemName: string;
   components: InventoryLabRecipeComponent[];
   createdAt: string;
   updatedAt: string;
+};
+
+export type InventoryLabUsageComponentLine = {
+  name: string;
+  quantityValue: number | null;
+  quantityUnit: string;
+  notes: string;
+  catalogItemId: string | null;
+  lotId: string | null;
+  qtyDeducted: number | null;
+};
+
+export type InventoryLabUsageResult = {
+  id: string;
+  activityName: string;
+  recipeName: string;
+  employeeName: string;
+  employeeCode: string;
+  outputLotCode: string | null;
+  components: InventoryLabUsageComponentLine[];
 };
 
 export type InventoryCentralQrKind = 'stock_room' | 'stationery' | 'inside_lab';
@@ -293,6 +316,8 @@ export type InventoryPublicCentralLabCard = {
   centralKind: 'inside_lab';
   name: string;
   message: string;
+  activities: InventoryLabActivity[];
+  employees: InventoryEmployeeOption[];
 };
 
 export type InventoryPublicIssueResult = {
