@@ -235,7 +235,11 @@ function catalogConflictMessage(error: { code?: string; message?: string; detail
   if (haystack.includes('catalog_number')) {
     return 'A catalog item with this catalogue number already exists.';
   }
-  if (haystack.includes('name_unique') || haystack.includes('(category_id, name)')) {
+  if (
+    haystack.includes('name_unique') ||
+    haystack.includes('category_name_ci_unique') ||
+    haystack.includes('(category_id, name)')
+  ) {
     return 'A catalog item with this name already exists in the category.';
   }
   return 'This catalog item already exists.';
@@ -246,21 +250,22 @@ async function assertNoDuplicateCatalog(
   input: { categoryId: string; name: string; catalogNumber: string; excludeId?: string },
 ): Promise<void> {
   const name = input.name.trim();
+  const nameKey = name.toLowerCase();
   const catalogNumber = input.catalogNumber.trim();
   const catalogNumberKey = catalogNumber.toLowerCase();
 
-  let nameQuery = supabase
+  const { data: nameRows, error: nameError } = await supabase
     .from('inventory_catalog_items')
-    .select('id')
+    .select('id, name')
     .eq('category_id', input.categoryId)
-    .eq('name', name)
-    .limit(1);
-  if (input.excludeId) nameQuery = nameQuery.neq('id', input.excludeId);
-  const { data: nameRows, error: nameError } = await nameQuery;
+    .limit(5000);
   if (nameError) {
     throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to check catalog duplicates.', 500);
   }
-  if ((nameRows ?? []).length > 0) {
+  const nameClash = ((nameRows ?? []) as { id: string; name: string }[]).find(
+    (row) => row.id !== input.excludeId && row.name.trim().toLowerCase() === nameKey,
+  );
+  if (nameClash) {
     throw new AppError(
       API_ERROR_CODES.CONFLICT,
       'A catalog item with this name already exists in the category.',
@@ -278,12 +283,12 @@ async function assertNoDuplicateCatalog(
   if (numberError) {
     throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to check catalogue numbers.', 500);
   }
-  const clash = ((numberRows ?? []) as { id: string; catalog_number: string | null }[]).find(
+  const numberClash = ((numberRows ?? []) as { id: string; catalog_number: string | null }[]).find(
     (row) =>
       row.id !== input.excludeId &&
       (row.catalog_number ?? '').trim().toLowerCase() === catalogNumberKey,
   );
-  if (clash) {
+  if (numberClash) {
     throw new AppError(
       API_ERROR_CODES.CONFLICT,
       'A catalog item with this catalogue number already exists.',

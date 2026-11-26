@@ -14,6 +14,7 @@ import { createInventoryPlasticService } from './plastic-service';
 import { createInventoryPrepService } from './prep-service';
 import { createInventoryReportsService } from './reports-service';
 import { createInventoryService } from './service';
+import { createInventoryStorageService } from './storage-service';
 
 function metaOf(request: { ip: string; headers: { 'user-agent'?: string } }) {
   return { ipAddress: request.ip, userAgent: request.headers['user-agent'] ?? null };
@@ -137,6 +138,17 @@ const publicIssueBody = Type.Object({
   notes: Type.Optional(Type.String()),
 });
 
+const publicTransferBody = Type.Object({
+  employeeId: Type.String({ minLength: 1 }),
+  lotId: Type.String({ minLength: 1 }),
+  notes: Type.Optional(Type.String()),
+});
+
+const lotTransferBody = Type.Object({
+  notes: Type.Optional(Type.String()),
+  employeeId: Type.Optional(Type.String({ minLength: 1 })),
+});
+
 const prepCreateBody = Type.Object({
   catalogItemId: Type.String({ minLength: 1 }),
   locationId: Type.String({ minLength: 1 }),
@@ -217,6 +229,7 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
   const plastic = () => createInventoryPlasticService(app.supabase!);
   const centralQrs = () => createInventoryCentralQrsService(app.supabase!);
   const lab = () => createInventoryLabRecipesService(app.supabase!);
+  const storage = () => createInventoryStorageService(app.supabase!);
   const alerts = () => createInventoryAlertsService(app.supabase!);
   const reports = () => createInventoryReportsService(app.supabase!);
 
@@ -602,6 +615,43 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
           metaOf(request),
         ),
       );
+    },
+  );
+
+  app.post(
+    '/api/v1/inventory/lots/:id/transfer-inside-lab',
+    {
+      preHandler: [requirePermission(PERMISSIONS.INVENTORY_LOTS_MANAGE)],
+      schema: { body: lotTransferBody },
+    },
+    async (request) => {
+      requireDb(app, request);
+      const { id } = request.params as { id: string };
+      return ok(
+        await lots().transferLotToInsideLab(
+          request.user!,
+          id,
+          request.body as { notes?: string; employeeId?: string },
+          metaOf(request),
+        ),
+      );
+    },
+  );
+
+  app.get(
+    '/api/v1/inventory/storage/:kind',
+    {
+      preHandler: [
+        requirePermission(PERMISSIONS.INVENTORY_LOTS_MANAGE, PERMISSIONS.INVENTORY_PLASTIC_MANAGE),
+      ],
+    },
+    async (request) => {
+      requireDb(app, request);
+      const { kind } = request.params as { kind: string };
+      if (kind !== 'stock_room' && kind !== 'inside_lab' && kind !== 'stationery') {
+        throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Unknown storage area.', 400);
+      }
+      return ok(await storage().getArea(request.user!, kind));
     },
   );
 
@@ -1214,6 +1264,22 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
         await lots().publicIssue(
           token,
           request.body as { employeeId: string; qty: number; lotId?: string; notes?: string },
+          metaOf(request),
+        ),
+      );
+    },
+  );
+
+  app.post(
+    '/api/v1/inventory/public/scan/:token/transfer-inside-lab',
+    { schema: { body: publicTransferBody } },
+    async (request) => {
+      requireDbOnly(app);
+      const { token } = request.params as { token: string };
+      return ok(
+        await lots().publicTransferToInsideLab(
+          token,
+          request.body as { employeeId: string; lotId: string; notes?: string },
           metaOf(request),
         ),
       );

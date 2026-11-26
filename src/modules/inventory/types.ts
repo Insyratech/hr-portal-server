@@ -106,7 +106,65 @@ export type InventoryAdminOverview = {
 export type InventorySupplierType = 'external' | 'internal';
 export type InventoryLotStatus = 'active' | 'depleted' | 'void';
 export type InventoryLotOrigin = 'purchase' | 'prep';
-export type InventoryMovementType = 'receive' | 'issue' | 'adjust';
+export type InventoryMovementType = 'receive' | 'issue' | 'adjust' | 'transfer';
+
+export type InventoryStorageKind = InventoryCentralQrKind;
+
+export type InventoryStorageLotRow = {
+  id: string;
+  lotCode: string;
+  catalogItemName: string;
+  categoryName: string;
+  catalogNumber: string;
+  remainingQty: number;
+  receivedQty: number;
+  unit: string;
+  status: InventoryLotStatus;
+  locationName: string;
+  purchaseDate: string;
+  expiryDate: string | null;
+  canTransferToInsideLab: boolean;
+};
+
+export type InventoryStoragePlasticRow = {
+  id: string;
+  stockCode: string;
+  catalogItemName: string;
+  categoryName: string;
+  manufacturer: string;
+  sizeLabel: string;
+  boxesOnHand: number;
+  boxesReceived: number;
+  unit: string;
+  locationName: string;
+};
+
+export type InventoryStorageMovementRow = {
+  id: string;
+  movementType: string;
+  source: 'lot' | 'plastic';
+  label: string;
+  qty: number;
+  unit: string;
+  notes: string;
+  employeeName: string;
+  createdAt: string;
+};
+
+export type InventoryStorageArea = {
+  kind: InventoryStorageKind;
+  name: string;
+  description: string;
+  lots: InventoryStorageLotRow[];
+  plastic: InventoryStoragePlasticRow[];
+  recentMovements: InventoryStorageMovementRow[];
+};
+
+export type InventoryLotTransferResult = {
+  lot: InventoryLot;
+  fromArea: string;
+  toArea: string;
+};
 export type InventoryPrepStatus = 'open' | 'completed' | 'cancelled';
 
 export type InventoryLabActivity = {
@@ -325,6 +383,16 @@ export type InventoryPublicIssueResult = {
   qtyIssued: number;
   remainingQty: number;
   unit: string;
+  employeeName: string;
+};
+
+export type InventoryPublicTransferResult = {
+  lotCode: string;
+  itemName: string;
+  remainingQty: number;
+  unit: string;
+  fromArea: string;
+  toArea: string;
   employeeName: string;
 };
 
