@@ -10,6 +10,7 @@ import type {
   InventoryLabRecipe,
   InventoryLabRecipeComponent,
   InventoryLabUsageComponentLine,
+  InventoryLabUsageMode,
   InventoryLabUsageResult,
   InventoryStatus,
 } from './types';
@@ -32,9 +33,28 @@ type ActivityRow = {
   description: string;
   sort_order: number;
   status: InventoryStatus;
+  usage_mode?: InventoryLabUsageMode | null;
   created_at: string;
   updated_at: string;
 };
+
+function mapUsageMode(value: string | null | undefined): InventoryLabUsageMode {
+  return value === 'recipe' ? 'recipe' : 'method';
+}
+
+function mapActivity(row: ActivityRow, recipeCount = 0): InventoryLabActivity {
+  return {
+    id: row.id,
+    name: row.name,
+    description: row.description,
+    sortOrder: row.sort_order,
+    status: row.status,
+    usageMode: mapUsageMode(row.usage_mode),
+    recipeCount,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
 
 type RecipeRow = {
   id: string;
@@ -194,21 +214,17 @@ export function createInventoryLabRecipesService(supabase: SupabaseClient) {
           counts.set(row.activity_id, (counts.get(row.activity_id) ?? 0) + 1);
         }
       }
-      return activities.map((row) => ({
-        id: row.id,
-        name: row.name,
-        description: row.description,
-        sortOrder: row.sort_order,
-        status: row.status,
-        recipeCount: counts.get(row.id) ?? 0,
-        createdAt: row.created_at,
-        updatedAt: row.updated_at,
-      }));
+      return activities.map((row) => mapActivity(row, counts.get(row.id) ?? 0));
     },
 
     async createActivity(
       actor: RequestUser,
-      input: { name: string; description?: string; sortOrder?: number },
+      input: {
+        name: string;
+        description?: string;
+        sortOrder?: number;
+        usageMode?: InventoryLabUsageMode;
+      },
       meta: RequestMeta,
     ): Promise<InventoryLabActivity> {
       if (!canManageLab(actor)) {
@@ -218,6 +234,7 @@ export function createInventoryLabRecipesService(supabase: SupabaseClient) {
       if (!name) {
         throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Activity name is required.', 400);
       }
+      const usageMode = input.usageMode === 'recipe' ? 'recipe' : 'method';
       const { data, error } = await supabase
         .from('inventory_lab_activities')
         .insert({
@@ -225,6 +242,7 @@ export function createInventoryLabRecipesService(supabase: SupabaseClient) {
           description: (input.description ?? '').trim(),
           sort_order: Number.isFinite(input.sortOrder) ? Math.trunc(input.sortOrder!) : 100,
           status: 'active',
+          usage_mode: usageMode,
         })
         .select('*')
         .single();
@@ -240,25 +258,22 @@ export function createInventoryLabRecipesService(supabase: SupabaseClient) {
         action: 'inventory_lab_activity.create',
         entityType: 'inventory_lab_activity',
         entityId: row.id,
-        newValues: { name: row.name },
+        newValues: { name: row.name, usageMode },
         ...meta,
       });
-      return {
-        id: row.id,
-        name: row.name,
-        description: row.description,
-        sortOrder: row.sort_order,
-        status: row.status,
-        recipeCount: 0,
-        createdAt: row.created_at,
-        updatedAt: row.updated_at,
-      };
+      return mapActivity(row, 0);
     },
 
     async updateActivity(
       actor: RequestUser,
       id: string,
-      input: { name?: string; description?: string; sortOrder?: number; status?: InventoryStatus },
+      input: {
+        name?: string;
+        description?: string;
+        sortOrder?: number;
+        status?: InventoryStatus;
+        usageMode?: InventoryLabUsageMode;
+      },
       meta: RequestMeta,
     ): Promise<InventoryLabActivity> {
       if (!canManageLab(actor)) {
@@ -275,6 +290,9 @@ export function createInventoryLabRecipesService(supabase: SupabaseClient) {
       if (input.description !== undefined) patch.description = input.description.trim();
       if (input.sortOrder !== undefined) patch.sort_order = Math.trunc(input.sortOrder);
       if (input.status !== undefined) patch.status = input.status;
+      if (input.usageMode !== undefined) {
+        patch.usage_mode = input.usageMode === 'recipe' ? 'recipe' : 'method';
+      }
       if (!Object.keys(patch).length) {
         throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Nothing to update.', 400);
       }
@@ -348,16 +366,7 @@ export function createInventoryLabRecipesService(supabase: SupabaseClient) {
       if (error) {
         throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to list lab activities.', 500);
       }
-      return ((data ?? []) as ActivityRow[]).map((row) => ({
-        id: row.id,
-        name: row.name,
-        description: row.description,
-        sortOrder: row.sort_order,
-        status: row.status,
-        recipeCount: 0,
-        createdAt: row.created_at,
-        updatedAt: row.updated_at,
-      }));
+      return ((data ?? []) as ActivityRow[]).map((row) => mapActivity(row, 0));
     },
 
     async listPublicRecipes(activityId: string): Promise<InventoryLabRecipe[]> {
@@ -673,7 +682,7 @@ export function createInventoryLabRecipesService(supabase: SupabaseClient) {
         activityId: string;
         recipeId: string;
         notes?: string;
-        components: Array<{
+        components?: Array<{
           name: string;
           quantityValue?: number | null;
           quantityUnit?: string;
@@ -681,6 +690,8 @@ export function createInventoryLabRecipesService(supabase: SupabaseClient) {
           catalogItemId?: string | null;
         }>;
         outputQty?: number | null;
+        /** How many reactions/extractions (Nx). Applies to method work types. */
+        quantityMultiplier?: number | null;
       },
       meta: RequestMeta = {},
     ): Promise<InventoryLabUsageResult> {
@@ -707,7 +718,7 @@ export function createInventoryLabRecipesService(supabase: SupabaseClient) {
       if (!input.employeeId || !input.activityId || !input.recipeId) {
         throw new AppError(
           API_ERROR_CODES.VALIDATION_ERROR,
-          'Employee, work type, and recipe are required.',
+          'Employee, work type, and method/recipe are required.',
           400,
         );
       }
@@ -729,15 +740,62 @@ export function createInventoryLabRecipesService(supabase: SupabaseClient) {
       if (activityError || !activity || activity.status !== 'active') {
         throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Select an active work type.', 400);
       }
+      const usageMode = mapUsageMode((activity as ActivityRow).usage_mode);
 
       const recipe = await loadRecipe(input.recipeId);
       if (recipe.status !== 'active' || recipe.activityId !== input.activityId) {
-        throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Select a recipe under that work type.', 400);
+        throw new AppError(
+          API_ERROR_CODES.VALIDATION_ERROR,
+          usageMode === 'method'
+            ? 'Select a method under that work type.'
+            : 'Select a recipe under that work type.',
+          400,
+        );
       }
 
-      const lines = input.components ?? [];
+      let quantityMultiplier = 1;
+      if (usageMode === 'method') {
+        const raw =
+          input.quantityMultiplier === undefined || input.quantityMultiplier === null
+            ? 1
+            : Number(input.quantityMultiplier);
+        if (!Number.isFinite(raw) || raw <= 0) {
+          throw new AppError(
+            API_ERROR_CODES.VALIDATION_ERROR,
+            'How many must be a positive number (e.g. 1 or 2).',
+            400,
+          );
+        }
+        quantityMultiplier = Math.round(raw * 10000) / 10000;
+      }
+
+      const itemLabel = usageMode === 'method' ? 'method' : 'recipe';
+      let lines = input.components ?? [];
+      if (usageMode === 'method') {
+        // Scale from the saved method composition so Nx is authoritative.
+        lines = recipe.components.map((component) => {
+          const base =
+            component.quantityValue === null || component.quantityValue === undefined
+              ? null
+              : Number(component.quantityValue);
+          return {
+            name: component.name,
+            quantityValue:
+              base === null || !Number.isFinite(base)
+                ? null
+                : Math.round(base * quantityMultiplier * 10000) / 10000,
+            quantityUnit: component.quantityUnit,
+            notes: component.notes,
+            catalogItemId: component.catalogItemId,
+          };
+        });
+      }
       if (!lines.length) {
-        throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Add at least one component line.', 400);
+        throw new AppError(
+          API_ERROR_CODES.VALIDATION_ERROR,
+          `Add at least one component line on this ${itemLabel}.`,
+          400,
+        );
       }
 
       const usageLines: InventoryLabUsageComponentLine[] = [];
@@ -784,7 +842,10 @@ export function createInventoryLabRecipesService(supabase: SupabaseClient) {
               p_lot_id: lot.id,
               p_qty: take,
               p_employee_id: input.employeeId,
-              p_notes: `Lab usage · ${activity.name} · ${recipe.name}`,
+              p_notes:
+                usageMode === 'method'
+                  ? `Lab usage · ${activity.name} · ${recipe.name} · ${quantityMultiplier}X`
+                  : `Lab usage · ${activity.name} · ${recipe.name}`,
               p_created_by: null,
               p_prep_session_id: null,
             });
@@ -825,7 +886,7 @@ export function createInventoryLabRecipesService(supabase: SupabaseClient) {
 
       let outputLotId: string | null = null;
       let outputLotCode: string | null = null;
-      if (recipe.createsOutputLot) {
+      if (usageMode === 'recipe' && recipe.createsOutputLot) {
         if (!recipe.outputCatalogItemId) {
           throw new AppError(
             API_ERROR_CODES.VALIDATION_ERROR,
@@ -925,7 +986,10 @@ export function createInventoryLabRecipesService(supabase: SupabaseClient) {
           activity_name: activity.name,
           components_snapshot: usageLines,
           output_lot_id: outputLotId,
-          notes: (input.notes ?? '').trim(),
+          quantity_multiplier: quantityMultiplier,
+          notes:
+            (input.notes ?? '').trim() ||
+            (usageMode === 'method' ? `${quantityMultiplier}X` : ''),
         })
         .select('id')
         .single();

@@ -782,6 +782,8 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
     return ok(await lab().listActivities(request.user!));
   });
 
+  const usageModeSchema = Type.Union([Type.Literal('method'), Type.Literal('recipe')]);
+
   app.post(
     '/api/v1/inventory/lab/activities',
     {
@@ -791,6 +793,7 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
           name: Type.String({ minLength: 1 }),
           description: Type.Optional(Type.String()),
           sortOrder: Type.Optional(Type.Integer()),
+          usageMode: Type.Optional(usageModeSchema),
         }),
       },
     },
@@ -799,7 +802,12 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
       return ok(
         await lab().createActivity(
           request.user!,
-          request.body as { name: string; description?: string; sortOrder?: number },
+          request.body as {
+            name: string;
+            description?: string;
+            sortOrder?: number;
+            usageMode?: 'method' | 'recipe';
+          },
           metaOf(request),
         ),
       );
@@ -816,6 +824,7 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
           description: Type.Optional(Type.String()),
           sortOrder: Type.Optional(Type.Integer()),
           status: Type.Optional(status),
+          usageMode: Type.Optional(usageModeSchema),
         }),
       },
     },
@@ -831,6 +840,7 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
             description?: string;
             sortOrder?: number;
             status?: 'active' | 'inactive';
+            usageMode?: 'method' | 'recipe';
           },
           metaOf(request),
         ),
@@ -1470,15 +1480,18 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
           recipeId: Type.String({ minLength: 1 }),
           notes: Type.Optional(Type.String()),
           outputQty: Type.Optional(Type.Union([Type.Number(), Type.Null()])),
-          components: Type.Array(
-            Type.Object({
-              name: Type.String({ minLength: 1 }),
-              quantityValue: Type.Optional(Type.Union([Type.Number(), Type.Null()])),
-              quantityUnit: Type.Optional(Type.String()),
-              notes: Type.Optional(Type.String()),
-              catalogItemId: Type.Optional(Type.Union([Type.String(), Type.Null()])),
-            }),
-            { minItems: 1, maxItems: 40 },
+          quantityMultiplier: Type.Optional(Type.Union([Type.Number(), Type.Null()])),
+          components: Type.Optional(
+            Type.Array(
+              Type.Object({
+                name: Type.String({ minLength: 1 }),
+                quantityValue: Type.Optional(Type.Union([Type.Number(), Type.Null()])),
+                quantityUnit: Type.Optional(Type.String()),
+                notes: Type.Optional(Type.String()),
+                catalogItemId: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+              }),
+              { maxItems: 40 },
+            ),
           ),
         }),
       },
@@ -1495,7 +1508,8 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
             recipeId: string;
             notes?: string;
             outputQty?: number | null;
-            components: Array<{
+            quantityMultiplier?: number | null;
+            components?: Array<{
               name: string;
               quantityValue?: number | null;
               quantityUnit?: string;
