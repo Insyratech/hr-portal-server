@@ -772,19 +772,36 @@ export function createInventoryLabRecipesService(supabase: SupabaseClient) {
       const itemLabel = usageMode === 'method' ? 'method' : 'recipe';
       let lines = input.components ?? [];
       if (usageMode === 'method') {
-        // Scale from the saved method composition so Nx is authoritative.
-        lines = recipe.components.map((component) => {
+        const overrides = input.components ?? [];
+        // Staff may edit per-run volumes on the scan form. Prefer those values as submitted
+        // (already scaled for Nx in the UI). Fall back to method composition × Nx.
+        // Catalog links always come from the saved method definition.
+        lines = recipe.components.map((component, index) => {
+          const override =
+            overrides.find(
+              (row) => row.name.trim().toLowerCase() === component.name.trim().toLowerCase(),
+            ) ?? overrides[index];
           const base =
             component.quantityValue === null || component.quantityValue === undefined
               ? null
               : Number(component.quantityValue);
+          const scaledDefault =
+            base === null || !Number.isFinite(base)
+              ? null
+              : Math.round(base * quantityMultiplier * 10000) / 10000;
+
+          let quantityValue = scaledDefault;
+          if (override && override.quantityValue !== undefined && override.quantityValue !== null) {
+            const edited = Number(override.quantityValue);
+            if (Number.isFinite(edited)) {
+              quantityValue = Math.round(edited * 10000) / 10000;
+            }
+          }
+
           return {
             name: component.name,
-            quantityValue:
-              base === null || !Number.isFinite(base)
-                ? null
-                : Math.round(base * quantityMultiplier * 10000) / 10000,
-            quantityUnit: component.quantityUnit,
+            quantityValue,
+            quantityUnit: (override?.quantityUnit ?? component.quantityUnit ?? '').trim(),
             notes: component.notes,
             catalogItemId: component.catalogItemId,
           };
