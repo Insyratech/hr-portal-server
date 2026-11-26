@@ -5,8 +5,12 @@ import { AppError } from '../../shared/errors/app-error';
 import type { RequestUser } from '../../shared/types/request-user';
 import { writeAuditLog } from '../audit/write-audit-log';
 import { canManageLab, type RequestMeta } from './access';
+import { buildGelLines, formatGelRunLabel, type GelComponentKey } from './gel-chart';
 import type {
   InventoryLabActivity,
+  InventoryLabGelChart,
+  InventoryLabGelComponentKey,
+  InventoryLabGelComponentLink,
   InventoryLabRecipe,
   InventoryLabRecipeComponent,
   InventoryLabUsageComponentLine,
@@ -39,7 +43,47 @@ type ActivityRow = {
 };
 
 function mapUsageMode(value: string | null | undefined): InventoryLabUsageMode {
-  return value === 'recipe' ? 'recipe' : 'method';
+  if (value === 'recipe') return 'recipe';
+  if (value === 'gel') return 'gel';
+  return 'method';
+}
+
+function normalizeUsageMode(value: InventoryLabUsageMode | undefined): InventoryLabUsageMode {
+  if (value === 'recipe') return 'recipe';
+  if (value === 'gel') return 'gel';
+  return 'method';
+}
+
+function asFiniteNumber(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+type GelComponentRow = {
+  id: string;
+  activity_id: string;
+  component_key: string;
+  name: string;
+  catalog_item_id: string | null;
+  sort_order: number;
+  inventory_catalog_items?: { name: string } | { name: string }[] | null;
+};
+
+function mapGelComponent(row: GelComponentRow): InventoryLabGelComponentLink {
+  const catalog = Array.isArray(row.inventory_catalog_items)
+    ? row.inventory_catalog_items[0]
+    : row.inventory_catalog_items;
+  const key = row.component_key as InventoryLabGelComponentKey;
+  return {
+    id: row.id,
+    activityId: row.activity_id,
+    componentKey: key === 'agarose' || key === 'buffer' || key === 'stain' ? key : 'stain',
+    name: row.name,
+    catalogItemId: row.catalog_item_id,
+    catalogItemName: catalog?.name ?? '',
+    sortOrder: row.sort_order,
+  };
 }
 
 function mapActivity(row: ActivityRow, recipeCount = 0): InventoryLabActivity {
@@ -234,7 +278,7 @@ export function createInventoryLabRecipesService(supabase: SupabaseClient) {
       if (!name) {
         throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Activity name is required.', 400);
       }
-      const usageMode = input.usageMode === 'recipe' ? 'recipe' : 'method';
+      const usageMode = normalizeUsageMode(input.usageMode);
       const { data, error } = await supabase
         .from('inventory_lab_activities')
         .insert({
@@ -253,6 +297,20 @@ export function createInventoryLabRecipesService(supabase: SupabaseClient) {
         throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, error?.message ?? 'Failed to create activity.', 500);
       }
       const row = data as ActivityRow;
+      if (usageMode === 'gel') {
+        const { error: gelSeedError } = await supabase.from('inventory_lab_gel_components').insert([
+          { activity_id: row.id, component_key: 'agarose', name: 'Agarose', sort_order: 10 },
+          { activity_id: row.id, component_key: 'buffer', name: '1X TAE Buffer', sort_order: 20 },
+          { activity_id: row.id, component_key: 'stain', name: 'EtBr', sort_order: 30 },
+        ]);
+        if (gelSeedError) {
+          throw new AppError(
+            API_ERROR_CODES.INTERNAL_ERROR,
+            gelSeedError.message ?? 'Work type created but gel component rows failed.',
+            500,
+          );
+        }
+      }
       await writeAuditLog(supabase, {
         actorId: actor.employeeId,
         action: 'inventory_lab_activity.create',
@@ -291,7 +349,7 @@ export function createInventoryLabRecipesService(supabase: SupabaseClient) {
       if (input.sortOrder !== undefined) patch.sort_order = Math.trunc(input.sortOrder);
       if (input.status !== undefined) patch.status = input.status;
       if (input.usageMode !== undefined) {
-        patch.usage_mode = input.usageMode === 'recipe' ? 'recipe' : 'method';
+        patch.usage_mode = normalizeUsageMode(input.usageMode);
       }
       if (!Object.keys(patch).length) {
         throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Nothing to update.', 400);
@@ -675,12 +733,127 @@ export function createInventoryLabRecipesService(supabase: SupabaseClient) {
       return { id };
     },
 
+    async getGelChart(activityId: string): Promise<InventoryLabGelChart> {
+      const { data: activity, error: activityError } = await supabase
+        .from('inventory_lab_activities')
+        .select('id, usage_mode, status')
+        .eq('id', activityId)
+        .single();
+      if (activityError || !activity) {
+        throw new AppError(API_ERROR_CODES.NOT_FOUND, 'Work type not found.', 404);
+      }
+      if (mapUsageMode((activity as { usage_mode?: string }).usage_mode) !== 'gel') {
+        throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'This work type is not gel chart mode.', 400);
+      }
+
+      const [{ data: percentRows }, { data: volumeRows }, { data: etbrRows }, { data: componentRows, error: componentError }] =
+        await Promise.all([
+          supabase.from('inventory_lab_gel_percentages').select('percent').order('percent'),
+          supabase.from('inventory_lab_gel_volumes').select('volume_ml').order('volume_ml'),
+          supabase.from('inventory_lab_gel_etbr_by_volume').select('volume_ml, etbr_ul'),
+          supabase
+            .from('inventory_lab_gel_components')
+            .select('*, inventory_catalog_items(name)')
+            .eq('activity_id', activityId)
+            .order('sort_order'),
+        ]);
+      if (componentError) {
+        throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load gel components.', 500);
+      }
+
+      const etbrUlByVolumeMl: Record<string, number> = {};
+      for (const row of (etbrRows ?? []) as Array<{ volume_ml: number | string; etbr_ul: number | string }>) {
+        const volume = asFiniteNumber(row.volume_ml);
+        const etbr = asFiniteNumber(row.etbr_ul);
+        if (volume !== null && etbr !== null) etbrUlByVolumeMl[String(volume)] = etbr;
+      }
+
+      return {
+        activityId,
+        percentages: ((percentRows ?? []) as Array<{ percent: number | string }>)
+          .map((row) => asFiniteNumber(row.percent))
+          .filter((value): value is number => value !== null),
+        volumesMl: ((volumeRows ?? []) as Array<{ volume_ml: number | string }>)
+          .map((row) => asFiniteNumber(row.volume_ml))
+          .filter((value): value is number => value !== null),
+        etbrUlByVolumeMl,
+        components: ((componentRows ?? []) as GelComponentRow[]).map(mapGelComponent),
+      };
+    },
+
+    async getManagedGelChart(actor: RequestUser, activityId: string): Promise<InventoryLabGelChart> {
+      if (!canManageLab(actor)) {
+        throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot manage lab recipes.', 403);
+      }
+      return this.getGelChart(activityId);
+    },
+
+    async updateGelComponentLinks(
+      actor: RequestUser,
+      activityId: string,
+      input: {
+        components: Array<{
+          componentKey: InventoryLabGelComponentKey;
+          name?: string;
+          catalogItemId?: string | null;
+        }>;
+      },
+      meta: RequestMeta,
+    ): Promise<InventoryLabGelChart> {
+      if (!canManageLab(actor)) {
+        throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot manage lab recipes.', 403);
+      }
+      const chart = await this.getGelChart(activityId);
+      for (const patch of input.components ?? []) {
+        const key = patch.componentKey;
+        if (key !== 'agarose' && key !== 'buffer' && key !== 'stain') {
+          throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Unknown gel component key.', 400);
+        }
+        const existing = chart.components.find((row) => row.componentKey === key);
+        if (!existing) {
+          throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, `Missing gel component row for ${key}.`, 400);
+        }
+        const update: Record<string, unknown> = {};
+        if (patch.name !== undefined) {
+          const name = patch.name.trim();
+          if (!name) throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Component name is required.', 400);
+          update.name = name;
+        }
+        if (patch.catalogItemId !== undefined) {
+          update.catalog_item_id = patch.catalogItemId || null;
+        }
+        if (!Object.keys(update).length) continue;
+        const { error } = await supabase
+          .from('inventory_lab_gel_components')
+          .update(update)
+          .eq('id', existing.id);
+        if (error) {
+          throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, error.message ?? 'Failed to update gel link.', 500);
+        }
+      }
+      const next = await this.getGelChart(activityId);
+      await writeAuditLog(supabase, {
+        actorId: actor.employeeId,
+        action: 'inventory_lab_gel_links.update',
+        entityType: 'inventory_lab_activity',
+        entityId: activityId,
+        newValues: {
+          components: next.components.map((row) => ({
+            key: row.componentKey,
+            catalogItemId: row.catalogItemId,
+          })),
+        },
+        ...meta,
+      });
+      return next;
+    },
+
     async submitPublicUsage(
       centralQrToken: string,
       input: {
         employeeId: string;
         activityId: string;
-        recipeId: string;
+        recipeId?: string | null;
         notes?: string;
         components?: Array<{
           name: string;
@@ -692,6 +865,10 @@ export function createInventoryLabRecipesService(supabase: SupabaseClient) {
         outputQty?: number | null;
         /** How many reactions/extractions (Nx). Applies to method work types. */
         quantityMultiplier?: number | null;
+        /** Agarose % w/v for gel chart runs. */
+        gelPercent?: number | null;
+        /** Target gel volume (mL) for gel chart runs. */
+        gelVolumeMl?: number | null;
       },
       meta: RequestMeta = {},
     ): Promise<InventoryLabUsageResult> {
@@ -715,10 +892,10 @@ export function createInventoryLabRecipesService(supabase: SupabaseClient) {
         );
       }
 
-      if (!input.employeeId || !input.activityId || !input.recipeId) {
+      if (!input.employeeId || !input.activityId) {
         throw new AppError(
           API_ERROR_CODES.VALIDATION_ERROR,
-          'Employee, work type, and method/recipe are required.',
+          'Employee and work type are required.',
           400,
         );
       }
@@ -742,71 +919,144 @@ export function createInventoryLabRecipesService(supabase: SupabaseClient) {
       }
       const usageMode = mapUsageMode((activity as ActivityRow).usage_mode);
 
-      const recipe = await loadRecipe(input.recipeId);
-      if (recipe.status !== 'active' || recipe.activityId !== input.activityId) {
-        throw new AppError(
-          API_ERROR_CODES.VALIDATION_ERROR,
-          usageMode === 'method'
-            ? 'Select a method under that work type.'
-            : 'Select a recipe under that work type.',
-          400,
-        );
-      }
-
+      let recipe: InventoryLabRecipe | null = null;
+      let runLabel = '';
+      let gelPercent: number | null = null;
+      let gelVolumeMl: number | null = null;
       let quantityMultiplier = 1;
-      if (usageMode === 'method') {
-        const raw =
-          input.quantityMultiplier === undefined || input.quantityMultiplier === null
-            ? 1
-            : Number(input.quantityMultiplier);
-        if (!Number.isFinite(raw) || raw <= 0) {
+      let lines: Array<{
+        name: string;
+        quantityValue?: number | null;
+        quantityUnit?: string;
+        notes?: string;
+        catalogItemId?: string | null;
+      }> = input.components ?? [];
+
+      if (usageMode === 'gel') {
+        const percent = asFiniteNumber(input.gelPercent);
+        const volumeMl = asFiniteNumber(input.gelVolumeMl);
+        if (percent === null || volumeMl === null) {
           throw new AppError(
             API_ERROR_CODES.VALIDATION_ERROR,
-            'How many must be a positive number (e.g. 1 or 2).',
+            'Choose agarose percentage and gel volume.',
             400,
           );
         }
-        quantityMultiplier = Math.round(raw * 10000) / 10000;
-      }
+        const chart = await this.getGelChart(activity.id);
+        if (!chart.percentages.some((value) => value === percent)) {
+          throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Unsupported agarose percentage.', 400);
+        }
+        if (!chart.volumesMl.some((value) => value === volumeMl)) {
+          throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Unsupported gel volume.', 400);
+        }
+        const etbrUl = chart.etbrUlByVolumeMl[String(volumeMl)];
+        if (etbrUl === undefined) {
+          throw new AppError(
+            API_ERROR_CODES.VALIDATION_ERROR,
+            'EtBr amount is not configured for that volume.',
+            400,
+          );
+        }
 
-      const itemLabel = usageMode === 'method' ? 'method' : 'recipe';
-      let lines = input.components ?? [];
-      if (usageMode === 'method') {
+        const names: Partial<Record<GelComponentKey, string>> = {};
+        const catalogByKey = new Map<GelComponentKey, string | null>();
+        for (const component of chart.components) {
+          names[component.componentKey] = component.name;
+          catalogByKey.set(component.componentKey, component.catalogItemId);
+        }
+        const computed = buildGelLines({ percent, volumeMl, etbrUl, names });
         const overrides = input.components ?? [];
-        // Staff may edit per-run volumes on the scan form. Prefer those values as submitted
-        // (already scaled for Nx in the UI). Fall back to method composition × Nx.
-        // Catalog links always come from the saved method definition.
-        lines = recipe.components.map((component, index) => {
+        lines = computed.map((line, index) => {
           const override =
-            overrides.find(
-              (row) => row.name.trim().toLowerCase() === component.name.trim().toLowerCase(),
-            ) ?? overrides[index];
-          const base =
-            component.quantityValue === null || component.quantityValue === undefined
-              ? null
-              : Number(component.quantityValue);
-          const scaledDefault =
-            base === null || !Number.isFinite(base)
-              ? null
-              : Math.round(base * quantityMultiplier * 10000) / 10000;
-
-          let quantityValue = scaledDefault;
+            overrides.find((row) => row.name.trim().toLowerCase() === line.name.trim().toLowerCase()) ??
+            overrides[index];
+          let quantityValue = line.quantityValue;
           if (override && override.quantityValue !== undefined && override.quantityValue !== null) {
             const edited = Number(override.quantityValue);
-            if (Number.isFinite(edited)) {
-              quantityValue = Math.round(edited * 10000) / 10000;
-            }
+            if (Number.isFinite(edited)) quantityValue = Math.round(edited * 10000) / 10000;
           }
-
           return {
-            name: component.name,
+            name: line.name,
             quantityValue,
-            quantityUnit: (override?.quantityUnit ?? component.quantityUnit ?? '').trim(),
-            notes: component.notes,
-            catalogItemId: component.catalogItemId,
+            quantityUnit: (override?.quantityUnit ?? line.quantityUnit).trim(),
+            notes: '',
+            catalogItemId: catalogByKey.get(line.componentKey) ?? null,
           };
         });
+        gelPercent = percent;
+        gelVolumeMl = volumeMl;
+        runLabel = formatGelRunLabel(percent, volumeMl);
+      } else {
+        if (!input.recipeId) {
+          throw new AppError(
+            API_ERROR_CODES.VALIDATION_ERROR,
+            usageMode === 'method'
+              ? 'Employee, work type, and method are required.'
+              : 'Employee, work type, and recipe are required.',
+            400,
+          );
+        }
+        recipe = await loadRecipe(input.recipeId);
+        if (recipe.status !== 'active' || recipe.activityId !== input.activityId) {
+          throw new AppError(
+            API_ERROR_CODES.VALIDATION_ERROR,
+            usageMode === 'method'
+              ? 'Select a method under that work type.'
+              : 'Select a recipe under that work type.',
+            400,
+          );
+        }
+        runLabel = recipe.name;
+
+        if (usageMode === 'method') {
+          const raw =
+            input.quantityMultiplier === undefined || input.quantityMultiplier === null
+              ? 1
+              : Number(input.quantityMultiplier);
+          if (!Number.isFinite(raw) || raw <= 0) {
+            throw new AppError(
+              API_ERROR_CODES.VALIDATION_ERROR,
+              'How many must be a positive number (e.g. 1 or 2).',
+              400,
+            );
+          }
+          quantityMultiplier = Math.round(raw * 10000) / 10000;
+          const overrides = input.components ?? [];
+          lines = recipe.components.map((component, index) => {
+            const override =
+              overrides.find(
+                (row) => row.name.trim().toLowerCase() === component.name.trim().toLowerCase(),
+              ) ?? overrides[index];
+            const base =
+              component.quantityValue === null || component.quantityValue === undefined
+                ? null
+                : Number(component.quantityValue);
+            const scaledDefault =
+              base === null || !Number.isFinite(base)
+                ? null
+                : Math.round(base * quantityMultiplier * 10000) / 10000;
+
+            let quantityValue = scaledDefault;
+            if (override && override.quantityValue !== undefined && override.quantityValue !== null) {
+              const edited = Number(override.quantityValue);
+              if (Number.isFinite(edited)) {
+                quantityValue = Math.round(edited * 10000) / 10000;
+              }
+            }
+
+            return {
+              name: component.name,
+              quantityValue,
+              quantityUnit: (override?.quantityUnit ?? component.quantityUnit ?? '').trim(),
+              notes: component.notes,
+              catalogItemId: component.catalogItemId,
+            };
+          });
+        }
       }
+
+      const itemLabel =
+        usageMode === 'method' ? 'method' : usageMode === 'gel' ? 'gel run' : 'recipe';
       if (!lines.length) {
         throw new AppError(
           API_ERROR_CODES.VALIDATION_ERROR,
@@ -861,8 +1111,8 @@ export function createInventoryLabRecipesService(supabase: SupabaseClient) {
               p_employee_id: input.employeeId,
               p_notes:
                 usageMode === 'method'
-                  ? `Lab usage · ${activity.name} · ${recipe.name} · ${quantityMultiplier}X`
-                  : `Lab usage · ${activity.name} · ${recipe.name}`,
+                  ? `Lab usage · ${activity.name} · ${runLabel} · ${quantityMultiplier}X`
+                  : `Lab usage · ${activity.name} · ${runLabel}`,
               p_created_by: null,
               p_prep_session_id: null,
             });
@@ -903,7 +1153,7 @@ export function createInventoryLabRecipesService(supabase: SupabaseClient) {
 
       let outputLotId: string | null = null;
       let outputLotCode: string | null = null;
-      if (usageMode === 'recipe' && recipe.createsOutputLot) {
+      if (usageMode === 'recipe' && recipe?.createsOutputLot) {
         if (!recipe.outputCatalogItemId) {
           throw new AppError(
             API_ERROR_CODES.VALIDATION_ERROR,
@@ -997,16 +1247,22 @@ export function createInventoryLabRecipesService(supabase: SupabaseClient) {
         .insert({
           central_qr_id: centralRow.id,
           activity_id: activity.id,
-          recipe_id: recipe.id,
+          recipe_id: recipe?.id ?? null,
           employee_id: input.employeeId,
-          recipe_name: recipe.name,
+          recipe_name: runLabel,
           activity_name: activity.name,
           components_snapshot: usageLines,
           output_lot_id: outputLotId,
           quantity_multiplier: quantityMultiplier,
+          gel_percent: gelPercent,
+          gel_volume_ml: gelVolumeMl,
           notes:
             (input.notes ?? '').trim() ||
-            (usageMode === 'method' ? `${quantityMultiplier}X` : ''),
+            (usageMode === 'method'
+              ? `${quantityMultiplier}X`
+              : usageMode === 'gel'
+                ? runLabel
+                : ''),
         })
         .select('id')
         .single();
@@ -1025,7 +1281,9 @@ export function createInventoryLabRecipesService(supabase: SupabaseClient) {
         entityId: submission.id,
         newValues: {
           activity: activity.name,
-          recipe: recipe.name,
+          recipe: runLabel,
+          gelPercent,
+          gelVolumeMl,
           employeeId: input.employeeId,
           outputLotCode,
           componentCount: usageLines.length,
@@ -1037,7 +1295,7 @@ export function createInventoryLabRecipesService(supabase: SupabaseClient) {
       return {
         id: submission.id,
         activityName: activity.name,
-        recipeName: recipe.name,
+        recipeName: runLabel,
         employeeName: employee.full_name,
         employeeCode: employee.employee_code,
         outputLotCode,

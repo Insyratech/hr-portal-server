@@ -782,7 +782,11 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
     return ok(await lab().listActivities(request.user!));
   });
 
-  const usageModeSchema = Type.Union([Type.Literal('method'), Type.Literal('recipe')]);
+  const usageModeSchema = Type.Union([
+    Type.Literal('method'),
+    Type.Literal('recipe'),
+    Type.Literal('gel'),
+  ]);
 
   app.post(
     '/api/v1/inventory/lab/activities',
@@ -806,7 +810,7 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
             name: string;
             description?: string;
             sortOrder?: number;
-            usageMode?: 'method' | 'recipe';
+            usageMode?: 'method' | 'recipe' | 'gel';
           },
           metaOf(request),
         ),
@@ -840,7 +844,58 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
             description?: string;
             sortOrder?: number;
             status?: 'active' | 'inactive';
-            usageMode?: 'method' | 'recipe';
+            usageMode?: 'method' | 'recipe' | 'gel';
+          },
+          metaOf(request),
+        ),
+      );
+    },
+  );
+
+  app.get(
+    '/api/v1/inventory/lab/activities/:activityId/gel',
+    { preHandler: labManagePerms },
+    async (request) => {
+      requireDb(app, request);
+      const { activityId } = request.params as { activityId: string };
+      return ok(await lab().getManagedGelChart(request.user!, activityId));
+    },
+  );
+
+  app.put(
+    '/api/v1/inventory/lab/activities/:activityId/gel/components',
+    {
+      preHandler: labManagePerms,
+      schema: {
+        body: Type.Object({
+          components: Type.Array(
+            Type.Object({
+              componentKey: Type.Union([
+                Type.Literal('agarose'),
+                Type.Literal('buffer'),
+                Type.Literal('stain'),
+              ]),
+              name: Type.Optional(Type.String()),
+              catalogItemId: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+            }),
+            { minItems: 1, maxItems: 3 },
+          ),
+        }),
+      },
+    },
+    async (request) => {
+      requireDb(app, request);
+      const { activityId } = request.params as { activityId: string };
+      return ok(
+        await lab().updateGelComponentLinks(
+          request.user!,
+          activityId,
+          request.body as {
+            components: Array<{
+              componentKey: 'agarose' | 'buffer' | 'stain';
+              name?: string;
+              catalogItemId?: string | null;
+            }>;
           },
           metaOf(request),
         ),
@@ -1458,6 +1513,12 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
     return ok(await lab().listPublicRecipes(activityId));
   });
 
+  app.get('/api/v1/inventory/public/lab/activities/:activityId/gel', async (request) => {
+    requireDbOnly(app);
+    const { activityId } = request.params as { activityId: string };
+    return ok(await lab().getGelChart(activityId));
+  });
+
   app.get('/api/v1/inventory/public/lab/recipes/:id', async (request) => {
     requireDbOnly(app);
     const { id } = request.params as { id: string };
@@ -1477,10 +1538,12 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
         body: Type.Object({
           employeeId: Type.String({ minLength: 1 }),
           activityId: Type.String({ minLength: 1 }),
-          recipeId: Type.String({ minLength: 1 }),
+          recipeId: Type.Optional(Type.Union([Type.String({ minLength: 1 }), Type.Null()])),
           notes: Type.Optional(Type.String()),
           outputQty: Type.Optional(Type.Union([Type.Number(), Type.Null()])),
           quantityMultiplier: Type.Optional(Type.Union([Type.Number(), Type.Null()])),
+          gelPercent: Type.Optional(Type.Union([Type.Number(), Type.Null()])),
+          gelVolumeMl: Type.Optional(Type.Union([Type.Number(), Type.Null()])),
           components: Type.Optional(
             Type.Array(
               Type.Object({
@@ -1505,10 +1568,12 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
           request.body as {
             employeeId: string;
             activityId: string;
-            recipeId: string;
+            recipeId?: string | null;
             notes?: string;
             outputQty?: number | null;
             quantityMultiplier?: number | null;
+            gelPercent?: number | null;
+            gelVolumeMl?: number | null;
             components?: Array<{
               name: string;
               quantityValue?: number | null;
