@@ -15,6 +15,7 @@ import { createInventoryPrepService } from './prep-service';
 import { createInventoryReportsService } from './reports-service';
 import { createInventoryService } from './service';
 import { createInventoryStorageService } from './storage-service';
+import { createInventorySopsService } from './sops-service';
 
 function metaOf(request: { ip: string; headers: { 'user-agent'?: string } }) {
   return { ipAddress: request.ip, userAgent: request.headers['user-agent'] ?? null };
@@ -230,6 +231,7 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
   const centralQrs = () => createInventoryCentralQrsService(app.supabase!);
   const lab = () => createInventoryLabRecipesService(app.supabase!);
   const storage = () => createInventoryStorageService(app.supabase!);
+  const sops = () => createInventorySopsService(app.supabase!);
   const alerts = () => createInventoryAlertsService(app.supabase!);
   const reports = () => createInventoryReportsService(app.supabase!);
 
@@ -238,6 +240,14 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
       PERMISSIONS.INVENTORY_LAB_MANAGE,
       PERMISSIONS.INVENTORY_LOTS_MANAGE,
       PERMISSIONS.INVENTORY_PREP_MANAGE,
+    ),
+  ];
+
+  const sopManagePerms = [
+    requirePermission(
+      PERMISSIONS.INVENTORY_SOPS_MANAGE,
+      PERMISSIONS.INVENTORY_LAB_MANAGE,
+      PERMISSIONS.INVENTORY_LOTS_MANAGE,
     ),
   ];
 
@@ -864,6 +874,7 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
           sortOrder: Type.Optional(Type.Integer()),
           createsOutputLot: Type.Optional(Type.Boolean()),
           outputCatalogItemId: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+          sopFileId: Type.Optional(Type.Union([Type.String(), Type.Null()])),
           components: Type.Optional(Type.Array(recipeComponentBody, { maxItems: 40 })),
         }),
       },
@@ -882,6 +893,7 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
             sortOrder?: number;
             createsOutputLot?: boolean;
             outputCatalogItemId?: string | null;
+            sopFileId?: string | null;
             components?: Array<{
               name: string;
               quantityValue?: number | null;
@@ -911,6 +923,7 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
           status: Type.Optional(status),
           createsOutputLot: Type.Optional(Type.Boolean()),
           outputCatalogItemId: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+          sopFileId: Type.Optional(Type.Union([Type.String(), Type.Null()])),
           components: Type.Optional(Type.Array(recipeComponentBody, { maxItems: 40 })),
         }),
       },
@@ -931,6 +944,7 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
             status?: 'active' | 'inactive';
             createsOutputLot?: boolean;
             outputCatalogItemId?: string | null;
+            sopFileId?: string | null;
             components?: Array<{
               id?: string;
               name: string;
@@ -951,6 +965,148 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
     requireDb(app, request);
     const { id } = request.params as { id: string };
     return ok(await lab().deleteRecipe(request.user!, id, metaOf(request)));
+  });
+
+  app.get('/api/v1/inventory/sops/folders', { preHandler: sopManagePerms }, async (request) => {
+    requireDb(app, request);
+    const query = request.query as { parentId?: string };
+    const parentId = query.parentId === undefined ? undefined : query.parentId || null;
+    return ok(await sops().listFolders(request.user!, parentId));
+  });
+
+  app.post(
+    '/api/v1/inventory/sops/folders',
+    {
+      preHandler: sopManagePerms,
+      schema: {
+        body: Type.Object({
+          name: Type.String({ minLength: 1 }),
+          parentId: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+          sortOrder: Type.Optional(Type.Integer()),
+        }),
+      },
+    },
+    async (request) => {
+      requireDb(app, request);
+      return ok(
+        await sops().createFolder(
+          request.user!,
+          request.body as { name: string; parentId?: string | null; sortOrder?: number },
+          metaOf(request),
+        ),
+      );
+    },
+  );
+
+  app.patch(
+    '/api/v1/inventory/sops/folders/:id',
+    {
+      preHandler: sopManagePerms,
+      schema: {
+        body: Type.Object({
+          name: Type.Optional(Type.String({ minLength: 1 })),
+          sortOrder: Type.Optional(Type.Integer()),
+          status: Type.Optional(status),
+          parentId: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+        }),
+      },
+    },
+    async (request) => {
+      requireDb(app, request);
+      const { id } = request.params as { id: string };
+      return ok(
+        await sops().updateFolder(
+          request.user!,
+          id,
+          request.body as {
+            name?: string;
+            sortOrder?: number;
+            status?: 'active' | 'inactive';
+            parentId?: string | null;
+          },
+          metaOf(request),
+        ),
+      );
+    },
+  );
+
+  app.delete('/api/v1/inventory/sops/folders/:id', { preHandler: sopManagePerms }, async (request) => {
+    requireDb(app, request);
+    const { id } = request.params as { id: string };
+    return ok(await sops().deleteFolder(request.user!, id, metaOf(request)));
+  });
+
+  app.get('/api/v1/inventory/sops/files', { preHandler: sopManagePerms }, async (request) => {
+    requireDb(app, request);
+    const query = request.query as { folderId?: string };
+    if (query.folderId) {
+      return ok(await sops().listFiles(request.user!, query.folderId));
+    }
+    return ok(await sops().listAllFiles(request.user!));
+  });
+
+  app.post(
+    '/api/v1/inventory/sops/folders/:id/files',
+    {
+      preHandler: sopManagePerms,
+      bodyLimit: 20_000_000,
+      schema: {
+        body: Type.Object({
+          title: Type.Optional(Type.String()),
+          fileName: Type.String({ minLength: 1 }),
+          contentBase64: Type.String({ minLength: 8 }),
+        }),
+      },
+    },
+    async (request) => {
+      requireDb(app, request);
+      const { id } = request.params as { id: string };
+      return ok(
+        await sops().uploadFile(
+          request.user!,
+          id,
+          request.body as { title?: string; fileName: string; contentBase64: string },
+          metaOf(request),
+        ),
+      );
+    },
+  );
+
+  app.patch(
+    '/api/v1/inventory/sops/files/:id',
+    {
+      preHandler: sopManagePerms,
+      schema: {
+        body: Type.Object({
+          title: Type.Optional(Type.String({ minLength: 1 })),
+          folderId: Type.Optional(Type.String({ minLength: 1 })),
+        }),
+      },
+    },
+    async (request) => {
+      requireDb(app, request);
+      const { id } = request.params as { id: string };
+      return ok(
+        await sops().updateFile(
+          request.user!,
+          id,
+          request.body as { title?: string; folderId?: string },
+          metaOf(request),
+        ),
+      );
+    },
+  );
+
+  app.delete('/api/v1/inventory/sops/files/:id', { preHandler: sopManagePerms }, async (request) => {
+    requireDb(app, request);
+    const { id } = request.params as { id: string };
+    return ok(await sops().deleteFile(request.user!, id, metaOf(request)));
+  });
+
+  app.get('/api/v1/inventory/sops/files/:id/pdf', { preHandler: sopManagePerms }, async (request) => {
+    requireDb(app, request);
+    const { id } = request.params as { id: string };
+    return ok(await sops().getFilePdf(request.user!, id));
   });
 
   app.get(
@@ -1296,6 +1452,12 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
     requireDbOnly(app);
     const { id } = request.params as { id: string };
     return ok(await lab().getPublicRecipe(id));
+  });
+
+  app.get('/api/v1/inventory/public/scan/:token/lab-recipes/:recipeId/sop', async (request) => {
+    requireDbOnly(app);
+    const { token, recipeId } = request.params as { token: string; recipeId: string };
+    return ok(await sops().getPublicRecipeSop(token, recipeId));
   });
 
   app.post(

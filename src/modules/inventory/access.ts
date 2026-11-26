@@ -73,6 +73,18 @@ export function canManageLab(actor: RequestUser): boolean {
   );
 }
 
+export function canManageSops(actor: RequestUser): boolean {
+  return (
+    isInventoryDomainOwner(actor) &&
+    hasInventoryPerm(
+      actor,
+      PERMISSIONS.INVENTORY_SOPS_MANAGE,
+      PERMISSIONS.INVENTORY_LAB_MANAGE,
+      PERMISSIONS.INVENTORY_LOTS_MANAGE,
+    )
+  );
+}
+
 export function canAdjustPlastic(actor: RequestUser): boolean {
   return (
     isInventoryDomainOwner(actor) &&

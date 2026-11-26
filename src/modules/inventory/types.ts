@@ -205,9 +205,46 @@ export type InventoryLabRecipe = {
   createsOutputLot: boolean;
   outputCatalogItemId: string | null;
   outputCatalogItemName: string;
+  sopFileId: string | null;
+  sopTitle: string;
   components: InventoryLabRecipeComponent[];
   createdAt: string;
   updatedAt: string;
+};
+
+export type InventorySopFolder = {
+  id: string;
+  parentId: string | null;
+  name: string;
+  sortOrder: number;
+  status: InventoryStatus;
+  fileCount: number;
+  childCount: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type InventorySopFile = {
+  id: string;
+  folderId: string;
+  title: string;
+  originalFileName: string;
+  contentType: string;
+  originalSizeBytes: number;
+  compressedSizeBytes: number;
+  compression: 'zstd';
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type InventorySopFileContent = {
+  id: string;
+  title: string;
+  fileName: string;
+  contentType: string;
+  contentBase64: string;
+  originalSizeBytes: number;
+  compressedSizeBytes: number;
 };
 
 export type InventoryLabUsageComponentLine = {

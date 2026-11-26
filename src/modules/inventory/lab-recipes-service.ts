@@ -47,10 +47,12 @@ type RecipeRow = {
   status: InventoryStatus;
   creates_output_lot?: boolean | null;
   output_catalog_item_id?: string | null;
+  sop_file_id?: string | null;
   created_at: string;
   updated_at: string;
   inventory_lab_activities?: { name: string } | { name: string }[] | null;
   inventory_catalog_items?: { name: string } | { name: string }[] | null;
+  inventory_sop_files?: { title: string } | { title: string }[] | null;
 };
 
 type ComponentRow = {
@@ -101,6 +103,7 @@ function mapRecipe(
   outputCatalogItemName = '',
 ): InventoryLabRecipe {
   const activity = one(row.inventory_lab_activities ?? null);
+  const sop = one(row.inventory_sop_files ?? null);
   return {
     id: row.id,
     activityId: row.activity_id,
@@ -114,13 +117,15 @@ function mapRecipe(
     createsOutputLot: Boolean(row.creates_output_lot),
     outputCatalogItemId: row.output_catalog_item_id ?? null,
     outputCatalogItemName,
+    sopFileId: row.sop_file_id ?? null,
+    sopTitle: sop?.title ?? '',
     components,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
 }
 
-const RECIPE_SELECT = '*, inventory_lab_activities(name)';
+const RECIPE_SELECT = '*, inventory_lab_activities(name), inventory_sop_files(title)';
 const COMPONENT_SELECT = '*, inventory_catalog_items(name)';
 
 export function createInventoryLabRecipesService(supabase: SupabaseClient) {
@@ -399,6 +404,7 @@ export function createInventoryLabRecipesService(supabase: SupabaseClient) {
         sortOrder?: number;
         createsOutputLot?: boolean;
         outputCatalogItemId?: string | null;
+        sopFileId?: string | null;
         components?: Array<{
           name: string;
           quantityValue?: number | null;
@@ -425,6 +431,16 @@ export function createInventoryLabRecipesService(supabase: SupabaseClient) {
       if (activityError || !activity) {
         throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Unknown lab activity.', 400);
       }
+      if (input.sopFileId) {
+        const { data: sop, error: sopError } = await supabase
+          .from('inventory_sop_files')
+          .select('id')
+          .eq('id', input.sopFileId)
+          .maybeSingle();
+        if (sopError || !sop) {
+          throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Unknown SOP file.', 400);
+        }
+      }
 
       const { data: inserted, error } = await supabase
         .from('inventory_lab_recipes')
@@ -441,6 +457,7 @@ export function createInventoryLabRecipesService(supabase: SupabaseClient) {
           status: 'active',
           creates_output_lot: Boolean(input.createsOutputLot),
           output_catalog_item_id: input.outputCatalogItemId || null,
+          sop_file_id: input.sopFileId || null,
         })
         .select(RECIPE_SELECT)
         .single();
@@ -509,6 +526,7 @@ export function createInventoryLabRecipesService(supabase: SupabaseClient) {
         status?: InventoryStatus;
         createsOutputLot?: boolean;
         outputCatalogItemId?: string | null;
+        sopFileId?: string | null;
         components?: Array<{
           id?: string;
           name: string;
@@ -545,6 +563,20 @@ export function createInventoryLabRecipesService(supabase: SupabaseClient) {
       if (input.createsOutputLot !== undefined) patch.creates_output_lot = Boolean(input.createsOutputLot);
       if (input.outputCatalogItemId !== undefined) {
         patch.output_catalog_item_id = input.outputCatalogItemId || null;
+      }
+      if (input.sopFileId !== undefined) {
+        const sopFileId = input.sopFileId?.trim() || null;
+        if (sopFileId) {
+          const { data: sop, error: sopError } = await supabase
+            .from('inventory_sop_files')
+            .select('id')
+            .eq('id', sopFileId)
+            .maybeSingle();
+          if (sopError || !sop) {
+            throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Unknown SOP file.', 400);
+          }
+        }
+        patch.sop_file_id = sopFileId;
       }
 
       if (Object.keys(patch).length) {
