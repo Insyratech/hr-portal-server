@@ -132,7 +132,7 @@ const lotAdjustBody = Type.Object({
 const publicIssueBody = Type.Object({
   employeeId: Type.String({ minLength: 1 }),
   qty: Type.Number({ exclusiveMinimum: 0 }),
-  /** Required when issuing from a central room QR. */
+  /** Required when issuing from a central usage area. */
   lotId: Type.Optional(Type.String({ minLength: 1 })),
   notes: Type.Optional(Type.String()),
 });
@@ -1182,7 +1182,7 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
     },
   );
 
-  // Public kiosk — no JWT. Prefer central room QRs; legacy station / bottle tokens still resolve.
+  // Public kiosk — no JWT. Prefer central usage areas; legacy station / bottle tokens still resolve.
   app.get('/api/v1/inventory/public/scan/:token', async (request) => {
     requireDbOnly(app);
     const { token } = request.params as { token: string };

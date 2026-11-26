@@ -204,7 +204,7 @@ export type InventoryLot = {
   locationId: string;
   locationCode: string;
   locationName: string;
-  /** Room QR this lot is attached to for usage. */
+  /** Usage area this lot is attached to for usage. */
   centralQrId: string | null;
   centralQrKind: InventoryCentralQrKind | null;
   centralQrName: string;
@@ -285,7 +285,7 @@ export type InventoryPublicScanCard = {
   madeLabel: 'Mfg' | 'Prepared';
   status: InventoryLotStatus;
   employees: InventoryEmployeeOption[];
-  /** Bottle QRs no longer issue stock — use the room QR instead. */
+  /** Bottle QRs no longer issue stock — use the usage area instead. */
   issueDisabled?: boolean;
   issueDisabledMessage?: string;
 };
@@ -374,7 +374,7 @@ export type InventoryStation = {
   name: string;
   qrToken: string;
   status: InventoryStationStatus;
-  /** Box category printed on the room QR. Empty until migration 094 is applied. */
+  /** Box category printed on the usage area. Empty until migration 094 is applied. */
   categoryId: string | null;
   categoryName: string;
   notes: string;
@@ -400,7 +400,7 @@ export type InventoryPlasticStock = {
   locationId: string;
   locationCode: string;
   locationName: string;
-  /** Room QR this box stock is attached to for usage. */
+  /** Usage area this box stock is attached to for usage. */
   centralQrId: string | null;
   centralQrKind: InventoryCentralQrKind | null;
   centralQrName: string;

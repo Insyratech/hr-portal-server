@@ -654,7 +654,7 @@ export function createInventoryLabRecipesService(supabase: SupabaseClient) {
     ): Promise<InventoryLabUsageResult> {
       const token = centralQrToken.trim();
       if (!token) {
-        throw new AppError(API_ERROR_CODES.NOT_FOUND, 'Unknown room QR.', 404);
+        throw new AppError(API_ERROR_CODES.NOT_FOUND, 'Unknown usage area.', 404);
       }
       const { data: centralRow, error: centralError } = await supabase
         .from('inventory_central_qrs')
@@ -662,7 +662,7 @@ export function createInventoryLabRecipesService(supabase: SupabaseClient) {
         .eq('qr_token', token)
         .single();
       if (centralError || !centralRow) {
-        throw new AppError(API_ERROR_CODES.NOT_FOUND, 'Unknown room QR.', 404);
+        throw new AppError(API_ERROR_CODES.NOT_FOUND, 'Unknown usage area.', 404);
       }
       if (centralRow.status !== 'active' || centralRow.kind !== 'inside_lab') {
         throw new AppError(

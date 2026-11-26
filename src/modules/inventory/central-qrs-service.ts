@@ -97,21 +97,21 @@ export function createInventoryCentralQrsService(supabase: SupabaseClient) {
   return {
     async list(actor: RequestUser): Promise<InventoryCentralQr[]> {
       if (!canViewCentral(actor)) {
-        throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot view room QRs.', 403);
+        throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot view usage areas.', 403);
       }
       const { data, error } = await supabase
         .from('inventory_central_qrs')
         .select(CENTRAL_SELECT)
         .order('kind');
       if (error) {
-        throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to list room QRs.', 500);
+        throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to list usage areas.', 500);
       }
       return ((data ?? []) as CentralQrRow[]).map(mapCentral);
     },
 
     async get(actor: RequestUser, id: string): Promise<InventoryCentralQr> {
       if (!canViewCentral(actor)) {
-        throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot view room QRs.', 403);
+        throw new AppError(API_ERROR_CODES.FORBIDDEN, 'You cannot view usage areas.', 403);
       }
       const { data, error } = await supabase
         .from('inventory_central_qrs')
@@ -119,7 +119,7 @@ export function createInventoryCentralQrsService(supabase: SupabaseClient) {
         .eq('id', id)
         .single();
       if (error || !data) {
-        throw new AppError(API_ERROR_CODES.NOT_FOUND, 'Room QR not found.', 404);
+        throw new AppError(API_ERROR_CODES.NOT_FOUND, 'Usage area not found.', 404);
       }
       return mapCentral(data as CentralQrRow);
     },
@@ -131,7 +131,7 @@ export function createInventoryCentralQrsService(supabase: SupabaseClient) {
         .eq('kind', kind)
         .single();
       if (error || !data) {
-        throw new AppError(API_ERROR_CODES.NOT_FOUND, `Room QR "${kind}" is not configured.`, 404);
+        throw new AppError(API_ERROR_CODES.NOT_FOUND, `Usage area "${kind}" is not configured.`, 404);
       }
       return mapCentral(data as CentralQrRow);
     },
@@ -173,7 +173,7 @@ export function createInventoryCentralQrsService(supabase: SupabaseClient) {
       }
       const central = mapCentral(data as CentralQrRow);
       if (central.status !== 'active') {
-        throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'That room QR is inactive.', 400);
+        throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'That usage area is inactive.', 400);
       }
       return central;
     },
@@ -184,7 +184,7 @@ export function createInventoryCentralQrsService(supabase: SupabaseClient) {
       const central = await this.getByToken(token);
       if (!central) return null;
       if (central.status !== 'active') {
-        throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'This room QR is inactive.', 400);
+        throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'This usage area is inactive.', 400);
       }
 
       if (central.kind === 'inside_lab') {
@@ -259,7 +259,7 @@ export function createInventoryCentralQrsService(supabase: SupabaseClient) {
         .gt('boxes_on_hand', 0)
         .order('created_at', { ascending: false });
       if (plasticError) {
-        throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load box stock for room QR.', 500);
+        throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load box stock for usage area.', 500);
       }
       for (const row of (plasticRows ?? []) as Array<{
         id: string;

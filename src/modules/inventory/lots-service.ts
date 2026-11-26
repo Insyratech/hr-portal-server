@@ -237,7 +237,7 @@ const LOT_SELECT =
   '*, inventory_catalog_items(id, name, catalog_number, category_id, inventory_categories(id, code, name)), inventory_locations(code, name), inventory_central_qrs(id, kind, name)';
 
 const BOTTLE_QR_RETIRED_MESSAGE =
-  'Bottle QRs no longer record usage. Scan the Stock room, Stationery, or Inside lab room QR instead.';
+  'Bottle QRs no longer record usage. Scan the Stock room, Stationery, or Inside lab usage area instead.';
 
 function newQrToken(): string {
   return randomBytes(24).toString('base64url');
@@ -664,7 +664,7 @@ export function createInventoryLotsService(supabase: SupabaseClient) {
       const central = await createInventoryCentralQrsService(supabase).getByToken(qrToken);
       if (central) {
         if (central.status !== 'active') {
-          throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'This room QR is inactive.', 400);
+          throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'This usage area is inactive.', 400);
         }
         if (central.kind === 'stationery') {
           throw new AppError(
@@ -696,7 +696,7 @@ export function createInventoryLotsService(supabase: SupabaseClient) {
         if (lotRow.central_qr_id !== central.id) {
           throw new AppError(
             API_ERROR_CODES.VALIDATION_ERROR,
-            'That lot is not stocked under this room QR.',
+            'That lot is not stocked under this usage area.',
             400,
           );
         }
@@ -753,7 +753,7 @@ async function issueLotById(
 
   const noteText =
     (notes ?? '').trim() ||
-    (roomName ? `Room QR issue (${roomName})` : 'Kiosk issue');
+    (roomName ? `Usage area issue (${roomName})` : 'Kiosk issue');
 
   const { data: rpcRows, error: rpcError } = await supabase.rpc('inventory_issue_lot', {
     p_lot_id: lotRow.id,

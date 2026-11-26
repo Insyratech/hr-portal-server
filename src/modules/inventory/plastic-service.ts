@@ -972,7 +972,7 @@ export function createInventoryPlasticService(supabase: SupabaseClient) {
 
       if (central) {
         if (central.status !== 'active') {
-          throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'This room QR is inactive.', 400);
+          throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'This usage area is inactive.', 400);
         }
         if (central.kind === 'inside_lab') {
           throw new AppError(
@@ -1011,7 +1011,7 @@ export function createInventoryPlasticService(supabase: SupabaseClient) {
         if (stock.centralQrId !== centralGateId) {
           throw new AppError(
             API_ERROR_CODES.VALIDATION_ERROR,
-            'That item is not stocked under this room QR.',
+            'That item is not stocked under this usage area.',
             400,
           );
         }
@@ -1040,7 +1040,7 @@ export function createInventoryPlasticService(supabase: SupabaseClient) {
 
       const noteText =
         (input.notes ?? '').trim() ||
-        (central ? `Room QR issue (${central.name})` : 'Station issue');
+        (central ? `Usage area issue (${central.name})` : 'Station issue');
 
       const { data: rpcRows, error: rpcError } = await supabase.rpc('inventory_issue_plastic_boxes', {
         p_plastic_stock_id: stock.id,
