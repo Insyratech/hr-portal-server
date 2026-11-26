@@ -11,10 +11,10 @@ comment on column public.inventory_lab_activities.usage_mode is
 update public.inventory_lab_activities
 set usage_mode = 'method',
     description = case name
-      when 'DNA Extraction' then 'Choose a DNA extraction method, set how many (Nx), then submit. Component volumes scale with N.'
-      when 'PCR reaction' then 'Choose a PCR method, set how many reactions (Nx), then submit. Component volumes scale with N.'
-      when 'Gel preparation' then 'Choose a gel method, set how many (Nx), then submit. Component volumes scale with N.'
-      when 'DNA loading' then 'Choose a loading method, set how many (Nx), then submit. Component volumes scale with N.'
+      when 'DNA Extraction' then 'Choose a DNA extraction method, set how many (Nx), then submit.'
+      when 'PCR reaction' then 'Choose a PCR method, set how many reactions (Nx), then submit.'
+      when 'Gel preparation' then 'Choose a gel method, set how many (Nx), then submit.'
+      when 'DNA loading' then 'Choose a loading method, set how many (Nx), then submit.'
       else description
     end,
     updated_at = now()
