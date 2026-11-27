@@ -167,8 +167,8 @@ export type InventoryLotTransferResult = {
 };
 export type InventoryPrepStatus = 'open' | 'completed' | 'cancelled';
 
-/** method = DNA/PCR/Loading with Nx; recipe = reagent prep; gel = % + volume chart. */
-export type InventoryLabUsageMode = 'method' | 'recipe' | 'gel';
+/** method = DNA/Loading Nx; pcr = master mix + reactions; recipe = reagent prep; gel = % + volume chart. */
+export type InventoryLabUsageMode = 'method' | 'pcr' | 'recipe' | 'gel';
 
 export type InventoryLabGelComponentKey = 'agarose' | 'buffer' | 'stain';
 

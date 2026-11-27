@@ -38,6 +38,7 @@ function one<T>(value: T | T[] | null | undefined): T | null {
 function mapUsageMode(value: string | null | undefined): InventoryLabUsageMode {
   if (value === 'recipe') return 'recipe';
   if (value === 'gel') return 'gel';
+  if (value === 'pcr') return 'pcr';
   return 'method';
 }
 
@@ -428,13 +429,13 @@ export function createInventoryLogsService(supabase: SupabaseClient) {
               'Components',
               'Notes',
             ]
-          : section.usageMode === 'method'
+          : section.usageMode === 'method' || section.usageMode === 'pcr'
             ? [
                 'When (UTC)',
                 'Employee',
                 'Employee ID',
-                'Method',
-                'How many (Nx)',
+                section.usageMode === 'pcr' ? 'Master mix' : 'Method',
+                section.usageMode === 'pcr' ? 'Reactions (Nx)' : 'How many (Nx)',
                 'Components',
                 'Notes',
               ]
@@ -464,7 +465,7 @@ export function createInventoryLogsService(supabase: SupabaseClient) {
               row.notes,
             ];
           }
-          if (section.usageMode === 'method') {
+          if (section.usageMode === 'method' || section.usageMode === 'pcr') {
             return [
               row.createdAt,
               row.employeeName,

@@ -786,6 +786,7 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
 
   const usageModeSchema = Type.Union([
     Type.Literal('method'),
+    Type.Literal('pcr'),
     Type.Literal('recipe'),
     Type.Literal('gel'),
   ]);
@@ -812,7 +813,7 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
             name: string;
             description?: string;
             sortOrder?: number;
-            usageMode?: 'method' | 'recipe' | 'gel';
+            usageMode?: 'method' | 'pcr' | 'recipe' | 'gel';
           },
           metaOf(request),
         ),
@@ -846,7 +847,7 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
             description?: string;
             sortOrder?: number;
             status?: 'active' | 'inactive';
-            usageMode?: 'method' | 'recipe' | 'gel';
+            usageMode?: 'method' | 'pcr' | 'recipe' | 'gel';
           },
           metaOf(request),
         ),

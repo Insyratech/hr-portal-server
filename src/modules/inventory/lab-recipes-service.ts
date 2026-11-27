@@ -45,13 +45,27 @@ type ActivityRow = {
 function mapUsageMode(value: string | null | undefined): InventoryLabUsageMode {
   if (value === 'recipe') return 'recipe';
   if (value === 'gel') return 'gel';
+  if (value === 'pcr') return 'pcr';
   return 'method';
 }
 
 function normalizeUsageMode(value: InventoryLabUsageMode | undefined): InventoryLabUsageMode {
   if (value === 'recipe') return 'recipe';
   if (value === 'gel') return 'gel';
+  if (value === 'pcr') return 'pcr';
   return 'method';
+}
+
+/** DNA/Loading methods and PCR master mixes both scale component volumes by Nx. */
+function scalesWithNx(mode: InventoryLabUsageMode): boolean {
+  return mode === 'method' || mode === 'pcr';
+}
+
+function nxItemLabel(mode: InventoryLabUsageMode): string {
+  if (mode === 'pcr') return 'master mix';
+  if (mode === 'gel') return 'gel run';
+  if (mode === 'method') return 'method';
+  return 'recipe';
 }
 
 function asFiniteNumber(value: unknown): number | null {
@@ -863,7 +877,7 @@ export function createInventoryLabRecipesService(supabase: SupabaseClient) {
           catalogItemId?: string | null;
         }>;
         outputQty?: number | null;
-        /** How many reactions/extractions (Nx). Applies to method work types. */
+        /** How many reactions/extractions (Nx). Applies to method and pcr work types. */
         quantityMultiplier?: number | null;
         /** Agarose % w/v for gel chart runs. */
         gelPercent?: number | null;
@@ -990,9 +1004,11 @@ export function createInventoryLabRecipesService(supabase: SupabaseClient) {
         if (!input.recipeId) {
           throw new AppError(
             API_ERROR_CODES.VALIDATION_ERROR,
-            usageMode === 'method'
-              ? 'Employee, work type, and method are required.'
-              : 'Employee, work type, and recipe are required.',
+            usageMode === 'pcr'
+              ? 'Employee, work type, and master mix are required.'
+              : usageMode === 'method'
+                ? 'Employee, work type, and method are required.'
+                : 'Employee, work type, and recipe are required.',
             400,
           );
         }
@@ -1000,15 +1016,17 @@ export function createInventoryLabRecipesService(supabase: SupabaseClient) {
         if (recipe.status !== 'active' || recipe.activityId !== input.activityId) {
           throw new AppError(
             API_ERROR_CODES.VALIDATION_ERROR,
-            usageMode === 'method'
-              ? 'Select a method under that work type.'
-              : 'Select a recipe under that work type.',
+            usageMode === 'pcr'
+              ? 'Select a master mix under that work type.'
+              : usageMode === 'method'
+                ? 'Select a method under that work type.'
+                : 'Select a recipe under that work type.',
             400,
           );
         }
         runLabel = recipe.name;
 
-        if (usageMode === 'method') {
+        if (scalesWithNx(usageMode)) {
           const raw =
             input.quantityMultiplier === undefined || input.quantityMultiplier === null
               ? 1
@@ -1016,7 +1034,9 @@ export function createInventoryLabRecipesService(supabase: SupabaseClient) {
           if (!Number.isFinite(raw) || raw <= 0) {
             throw new AppError(
               API_ERROR_CODES.VALIDATION_ERROR,
-              'How many must be a positive number (e.g. 1 or 2).',
+              usageMode === 'pcr'
+                ? 'Number of reactions must be a positive number (e.g. 1 or 2).'
+                : 'How many must be a positive number (e.g. 1 or 2).',
               400,
             );
           }
@@ -1055,8 +1075,7 @@ export function createInventoryLabRecipesService(supabase: SupabaseClient) {
         }
       }
 
-      const itemLabel =
-        usageMode === 'method' ? 'method' : usageMode === 'gel' ? 'gel run' : 'recipe';
+      const itemLabel = nxItemLabel(usageMode);
       if (!lines.length) {
         throw new AppError(
           API_ERROR_CODES.VALIDATION_ERROR,
@@ -1109,10 +1128,9 @@ export function createInventoryLabRecipesService(supabase: SupabaseClient) {
               p_lot_id: lot.id,
               p_qty: take,
               p_employee_id: input.employeeId,
-              p_notes:
-                usageMode === 'method'
-                  ? `Lab usage · ${activity.name} · ${runLabel} · ${quantityMultiplier}X`
-                  : `Lab usage · ${activity.name} · ${runLabel}`,
+              p_notes: scalesWithNx(usageMode)
+                ? `Lab usage · ${activity.name} · ${runLabel} · ${quantityMultiplier}X`
+                : `Lab usage · ${activity.name} · ${runLabel}`,
               p_created_by: null,
               p_prep_session_id: null,
             });
@@ -1258,7 +1276,7 @@ export function createInventoryLabRecipesService(supabase: SupabaseClient) {
           gel_volume_ml: gelVolumeMl,
           notes:
             (input.notes ?? '').trim() ||
-            (usageMode === 'method'
+            (scalesWithNx(usageMode)
               ? `${quantityMultiplier}X`
               : usageMode === 'gel'
                 ? runLabel
