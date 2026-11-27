@@ -12,6 +12,7 @@ import { createInventoryLabRecipesService } from './lab-recipes-service';
 import { createInventoryLotsService } from './lots-service';
 import { createInventoryPlasticService } from './plastic-service';
 import { createInventoryPrepService } from './prep-service';
+import { createInventoryLogsService } from './logs-service';
 import { createInventoryReportsService } from './reports-service';
 import { createInventoryService } from './service';
 import { createInventoryStorageService } from './storage-service';
@@ -234,6 +235,7 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
   const sops = () => createInventorySopsService(app.supabase!);
   const alerts = () => createInventoryAlertsService(app.supabase!);
   const reports = () => createInventoryReportsService(app.supabase!);
+  const logs = () => createInventoryLogsService(app.supabase!);
 
   const labManagePerms = [
     requirePermission(
@@ -1450,6 +1452,42 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
       requireDb(app, request);
       const query = request.query as { from?: string; to?: string };
       return ok(await reports().exportAuditCsv(request.user!, query));
+    },
+  );
+
+  app.get(
+    '/api/v1/inventory/logs',
+    {
+      preHandler: [
+        requirePermission(
+          PERMISSIONS.INVENTORY_REPORTS_VIEW,
+          PERMISSIONS.INVENTORY_OVERVIEW_VIEW,
+          PERMISSIONS.INVENTORY_LOTS_MANAGE,
+        ),
+      ],
+    },
+    async (request) => {
+      requireDb(app, request);
+      const query = request.query as { period?: string; from?: string; to?: string };
+      return ok(await logs().getLogs(request.user!, query));
+    },
+  );
+
+  app.get(
+    '/api/v1/inventory/logs/export',
+    {
+      preHandler: [
+        requirePermission(
+          PERMISSIONS.INVENTORY_REPORTS_VIEW,
+          PERMISSIONS.INVENTORY_OVERVIEW_VIEW,
+          PERMISSIONS.INVENTORY_LOTS_MANAGE,
+        ),
+      ],
+    },
+    async (request) => {
+      requireDb(app, request);
+      const query = request.query as { period?: string; from?: string; to?: string };
+      return ok(await logs().exportExcel(request.user!, query));
     },
   );
 
