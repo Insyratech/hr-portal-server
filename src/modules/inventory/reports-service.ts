@@ -538,7 +538,7 @@ export function createInventoryReportsService(supabase: SupabaseClient) {
       .from('inventory_movements')
       .select(
         `id, qty, unit, created_at, employee_id, lot_id,
-         employees(full_name),
+         employees!employee_id(full_name),
          inventory_lots(
            lot_code, catalog_item_id,
            inventory_catalog_items(id, name, inventory_categories(id, name))
@@ -548,7 +548,11 @@ export function createInventoryReportsService(supabase: SupabaseClient) {
       .gte('created_at', fromTs)
       .lte('created_at', toTs);
     if (lotIssueError) {
-      throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load lot usage.', 500);
+      throw new AppError(
+        API_ERROR_CODES.INTERNAL_ERROR,
+        lotIssueError.message ?? 'Failed to load lot usage.',
+        500,
+      );
     }
 
     for (const row of (lotIssues ?? []) as LotIssueRow[]) {
@@ -581,7 +585,7 @@ export function createInventoryReportsService(supabase: SupabaseClient) {
       .from('inventory_plastic_movements')
       .select(
         `id, boxes, unit, created_at, employee_id,
-         employees(full_name),
+         employees!employee_id(full_name),
          inventory_plastic_stock(
            stock_code, size_label, catalog_item_id,
            inventory_catalog_items(id, name, inventory_categories(id, name))
@@ -591,7 +595,11 @@ export function createInventoryReportsService(supabase: SupabaseClient) {
       .gte('created_at', fromTs)
       .lte('created_at', toTs);
     if (plasticIssueError) {
-      throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load plastic usage.', 500);
+      throw new AppError(
+        API_ERROR_CODES.INTERNAL_ERROR,
+        plasticIssueError.message ?? 'Failed to load plastic usage.',
+        500,
+      );
     }
 
     for (const row of (plasticIssues ?? []) as PlasticIssueRow[]) {
@@ -629,7 +637,7 @@ export function createInventoryReportsService(supabase: SupabaseClient) {
       .from('inventory_movements')
       .select(
         `id, lot_id, qty, unit, notes, created_at,
-         employees(full_name),
+         employees!employee_id(full_name),
          inventory_lots(lot_code, inventory_catalog_items(name))`,
       )
       .eq('movement_type', 'adjust')
@@ -637,7 +645,11 @@ export function createInventoryReportsService(supabase: SupabaseClient) {
       .lte('created_at', toTs)
       .order('created_at', { ascending: false });
     if (lotAdjustError) {
-      throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load lot adjustments.', 500);
+      throw new AppError(
+        API_ERROR_CODES.INTERNAL_ERROR,
+        lotAdjustError.message ?? 'Failed to load lot adjustments.',
+        500,
+      );
     }
 
     for (const row of (lotAdjusts ?? []) as LotAdjustRow[]) {
@@ -662,7 +674,7 @@ export function createInventoryReportsService(supabase: SupabaseClient) {
       .from('inventory_plastic_movements')
       .select(
         `id, plastic_stock_id, boxes, unit, notes, created_at,
-         employees(full_name),
+         employees!employee_id(full_name),
          inventory_plastic_stock(stock_code, size_label, inventory_catalog_items(name))`,
       )
       .eq('movement_type', 'adjust')
@@ -670,7 +682,11 @@ export function createInventoryReportsService(supabase: SupabaseClient) {
       .lte('created_at', toTs)
       .order('created_at', { ascending: false });
     if (plasticAdjustError) {
-      throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load plastic adjustments.', 500);
+      throw new AppError(
+        API_ERROR_CODES.INTERNAL_ERROR,
+        plasticAdjustError.message ?? 'Failed to load plastic adjustments.',
+        500,
+      );
     }
 
     for (const row of (plasticAdjusts ?? []) as PlasticAdjustRow[]) {

@@ -109,7 +109,7 @@ export function createInventoryLogsService(supabase: SupabaseClient) {
         .select(
           `
           id, created_at, boxes, boxes_after, notes, movement_type,
-          employees ( full_name, employee_code ),
+          employees!employee_id ( full_name, employee_code ),
           inventory_plastic_stock!inner (
             size_label, manufacturer, central_qr_id,
             inventory_catalog_items ( name ),
@@ -180,7 +180,7 @@ export function createInventoryLogsService(supabase: SupabaseClient) {
         .select(
           `
           id, created_at, qty, unit, notes, movement_type,
-          employees ( full_name, employee_code ),
+          employees!employee_id ( full_name, employee_code ),
           inventory_lots ( lot_code, inventory_catalog_items ( name ) )
         `,
         )
@@ -244,7 +244,7 @@ export function createInventoryLogsService(supabase: SupabaseClient) {
         `
         id, created_at, activity_id, activity_name, recipe_name, notes,
         quantity_multiplier, gel_percent, gel_volume_ml, components_snapshot,
-        employees ( full_name, employee_code ),
+        employees!employee_id ( full_name, employee_code ),
         output_lot:inventory_lots!output_lot_id ( lot_code ),
         inventory_lab_activities ( id, name, usage_mode )
       `,
