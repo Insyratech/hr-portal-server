@@ -6,6 +6,7 @@ import type { RequestUser } from '../../shared/types/request-user';
 import { writeAuditLog } from '../audit/write-audit-log';
 import { canManageLab, type RequestMeta } from './access';
 import { buildGelLines, formatGelRunLabel, type GelComponentKey } from './gel-chart';
+import { findPcrTestingType, PCR_TESTING_TYPES } from './pcr-testing-templates';
 import type {
   InventoryLabActivity,
   InventoryLabGelChart,
@@ -17,6 +18,7 @@ import type {
   InventoryLabUsageComponentLine,
   InventoryLabUsageMode,
   InventoryLabUsageResult,
+  InventoryPcrTestingType,
   InventoryPublicLabCatalogItem,
   InventoryStatus,
 } from './types';
@@ -810,6 +812,32 @@ export function createInventoryLabRecipesService(supabase: SupabaseClient) {
       return this.getGelChart(activityId);
     },
 
+    /** Public SOP testing-type templates for PCR reaction only. */
+    async listPublicPcrTestingTypes(activityId: string): Promise<InventoryPcrTestingType[]> {
+      const { data, error } = await supabase
+        .from('inventory_lab_activities')
+        .select('id, usage_mode, status')
+        .eq('id', activityId)
+        .single();
+      if (error || !data || data.status !== 'active') {
+        throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Unknown or inactive work type.', 400);
+      }
+      if (mapUsageMode(data.usage_mode) !== 'pcr') {
+        throw new AppError(
+          API_ERROR_CODES.VALIDATION_ERROR,
+          'Testing types are only available for PCR reaction.',
+          400,
+        );
+      }
+      return PCR_TESTING_TYPES.map((row) => ({
+        id: row.id,
+        name: row.name,
+        totalVolumeValue: row.totalVolumeValue,
+        totalVolumeUnit: row.totalVolumeUnit,
+        components: row.components.map((component) => ({ ...component })),
+      }));
+    },
+
     async updateGelComponentLinks(
       actor: RequestUser,
       activityId: string,
@@ -901,6 +929,8 @@ export function createInventoryLabRecipesService(supabase: SupabaseClient) {
           quantityValue?: number | null;
           quantityUnit?: string;
         }>;
+        /** PCR Testing checkbox: SOP testing-type id (optional). */
+        pcrTestingTypeId?: string | null;
       },
       meta: RequestMeta = {},
     ): Promise<InventoryLabUsageResult> {
@@ -1036,6 +1066,25 @@ export function createInventoryLabRecipesService(supabase: SupabaseClient) {
           );
         }
         runLabel = recipe.name;
+
+        const testingTypeId = (input.pcrTestingTypeId ?? '').trim();
+        if (testingTypeId) {
+          const testingType = findPcrTestingType(testingTypeId);
+          if (!testingType) {
+            throw new AppError(
+              API_ERROR_CODES.VALIDATION_ERROR,
+              'Unknown PCR testing type.',
+              400,
+            );
+          }
+          const existingNotes = (input.notes ?? '').trim();
+          const testingNote = `Testing: ${testingType.name}`;
+          input.notes = existingNotes
+            ? existingNotes.includes(testingNote)
+              ? existingNotes
+              : `${existingNotes} · ${testingNote}`
+            : testingNote;
+        }
 
         const rawNx =
           input.quantityMultiplier === undefined || input.quantityMultiplier === null

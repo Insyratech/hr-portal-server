@@ -108,7 +108,8 @@ export type InventoryLotStatus = 'active' | 'depleted' | 'void';
 export type InventoryLotOrigin = 'purchase' | 'prep';
 export type InventoryMovementType = 'receive' | 'issue' | 'adjust' | 'transfer';
 
-export type InventoryStorageKind = InventoryCentralQrKind;
+/** Shelf/area views that hold stock (excludes storage_guide lookup QR). */
+export type InventoryStorageKind = 'stock_room' | 'stationery' | 'inside_lab';
 
 export type InventoryStorageLotRow = {
   id: string;
@@ -307,7 +308,22 @@ export type InventoryLabManualUsageResult = InventoryLabUsageResult & {
   recipeId: string;
 };
 
-export type InventoryCentralQrKind = 'stock_room' | 'stationery' | 'inside_lab';
+/** SOP testing-type card for PCR (mixture template; MM stock is separate). */
+export type InventoryPcrTestingComponentTemplate = {
+  name: string;
+  quantityValue: number;
+  quantityUnit: string;
+};
+
+export type InventoryPcrTestingType = {
+  id: string;
+  name: string;
+  totalVolumeValue: number;
+  totalVolumeUnit: string;
+  components: InventoryPcrTestingComponentTemplate[];
+};
+
+export type InventoryCentralQrKind = 'stock_room' | 'stationery' | 'inside_lab' | 'storage_guide';
 
 export type InventoryCentralQr = {
   id: string;
@@ -453,6 +469,34 @@ export type InventoryPublicCentralLabCard = {
   message: string;
   activities: InventoryLabActivity[];
   employees: InventoryEmployeeOption[];
+};
+
+/** Put-away helper QR: search catalog → shelf locations with remaining qty. */
+export type InventoryPublicStorageGuideCard = {
+  kind: 'storage_guide';
+  centralKind: 'storage_guide';
+  name: string;
+  message: string;
+};
+
+export type InventoryStorageGuideLocationRow = {
+  locationId: string;
+  locationCode: string;
+  locationName: string;
+  locationType: string;
+  usageAreaName: string;
+  remainingQty: number;
+  unit: string;
+  stockKind: 'measured' | 'box';
+  containerCount: number;
+};
+
+export type InventoryStorageGuideLookup = {
+  catalogItemId: string;
+  catalogItemName: string;
+  catalogNumber: string;
+  categoryName: string;
+  locations: InventoryStorageGuideLocationRow[];
 };
 
 export type InventoryPublicIssueResult = {
@@ -611,7 +655,8 @@ export type InventoryPublicScanPayload =
   | InventoryPublicLotScanCard
   | InventoryPublicStationCard
   | InventoryPublicCentralCard
-  | InventoryPublicCentralLabCard;
+  | InventoryPublicCentralLabCard
+  | InventoryPublicStorageGuideCard;
 
 export type InventoryPublicPlasticIssueResult = {
   stockCode: string;

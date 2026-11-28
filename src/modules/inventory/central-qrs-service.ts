@@ -12,7 +12,11 @@ import type {
   InventoryPublicCentralCard,
   InventoryPublicCentralLabCard,
   InventoryPublicCentralLotItem,
+  InventoryPublicLabCatalogItem,
   InventoryPublicStationItem,
+  InventoryPublicStorageGuideCard,
+  InventoryStorageGuideLocationRow,
+  InventoryStorageGuideLookup,
 } from './types';
 
 type CentralQrRow = {
@@ -175,12 +179,200 @@ export function createInventoryCentralQrsService(supabase: SupabaseClient) {
       if (central.status !== 'active') {
         throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'That usage area is inactive.', 400);
       }
+      if (central.kind === 'storage_guide') {
+        throw new AppError(
+          API_ERROR_CODES.VALIDATION_ERROR,
+          '“Where to store” is a lookup QR only — choose Stock room, Stationery, or Inside lab for receive.',
+          400,
+        );
+      }
       return central;
+    },
+
+    async assertStorageGuideToken(token: string): Promise<InventoryCentralQr> {
+      const central = await this.getByToken(token);
+      if (!central) {
+        throw new AppError(API_ERROR_CODES.NOT_FOUND, 'Unknown usage area.', 404);
+      }
+      if (central.status !== 'active' || central.kind !== 'storage_guide') {
+        throw new AppError(
+          API_ERROR_CODES.VALIDATION_ERROR,
+          'Catalog location lookup is only available on the Where to store QR.',
+          400,
+        );
+      }
+      return central;
+    },
+
+    async listStorageGuideCatalog(token: string): Promise<InventoryPublicLabCatalogItem[]> {
+      await this.assertStorageGuideToken(token);
+      const { data, error } = await supabase
+        .from('inventory_catalog_items')
+        .select('id, name, brand_name, catalog_number, unit, status, inventory_categories(name)')
+        .eq('status', 'active')
+        .order('name');
+      if (error) {
+        throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to list catalog items.', 500);
+      }
+      return ((data ?? []) as Array<{
+        id: string;
+        name: string;
+        brand_name: string | null;
+        catalog_number: string | null;
+        unit: string;
+        inventory_categories?: { name: string } | { name: string }[] | null;
+      }>).map((row) => {
+        const category = one(row.inventory_categories);
+        return {
+          id: row.id,
+          name: row.name,
+          brandName: (row.brand_name ?? '').trim(),
+          catalogNumber: (row.catalog_number ?? '').trim(),
+          categoryName: category?.name ?? '',
+          unit: row.unit,
+        };
+      });
+    },
+
+    async lookupStorageGuideLocations(
+      token: string,
+      catalogItemId: string,
+    ): Promise<InventoryStorageGuideLookup> {
+      await this.assertStorageGuideToken(token);
+      const itemId = catalogItemId.trim();
+      if (!itemId) {
+        throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Select a catalog item.', 400);
+      }
+
+      const { data: catalog, error: catalogError } = await supabase
+        .from('inventory_catalog_items')
+        .select('id, name, catalog_number, unit, status, inventory_categories(name)')
+        .eq('id', itemId)
+        .single();
+      if (catalogError || !catalog || catalog.status !== 'active') {
+        throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Unknown or inactive catalog item.', 400);
+      }
+      const category = one(
+        (
+          catalog as {
+            inventory_categories?: { name: string } | { name: string }[] | null;
+          }
+        ).inventory_categories,
+      );
+
+      const locationMap = new Map<string, InventoryStorageGuideLocationRow>();
+
+      const mergeRow = (row: InventoryStorageGuideLocationRow) => {
+        const key = `${row.locationId}|${row.unit}|${row.stockKind}`;
+        const existing = locationMap.get(key);
+        if (!existing) {
+          locationMap.set(key, { ...row });
+          return;
+        }
+        existing.remainingQty =
+          Math.round((existing.remainingQty + row.remainingQty) * 10000) / 10000;
+        existing.containerCount += row.containerCount;
+      };
+
+      const [{ data: lotRows, error: lotError }, { data: plasticRows, error: plasticError }] =
+        await Promise.all([
+          supabase
+            .from('inventory_lots')
+            .select(
+              'remaining_qty, unit, inventory_locations(id, code, name, location_type), inventory_central_qrs(name)',
+            )
+            .eq('catalog_item_id', itemId)
+            .eq('status', 'active')
+            .gt('remaining_qty', 0),
+          supabase
+            .from('inventory_plastic_stock')
+            .select(
+              'boxes_on_hand, unit, inventory_locations(id, code, name, location_type), inventory_central_qrs(name)',
+            )
+            .eq('catalog_item_id', itemId)
+            .eq('status', 'active')
+            .gt('boxes_on_hand', 0),
+        ]);
+      if (lotError) {
+        throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load lot locations.', 500);
+      }
+      if (plasticError) {
+        throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load plastic locations.', 500);
+      }
+
+      for (const row of (lotRows ?? []) as Array<{
+        remaining_qty: number | string;
+        unit: string;
+        inventory_locations?:
+          | { id: string; code: string; name: string; location_type: string }
+          | { id: string; code: string; name: string; location_type: string }[]
+          | null;
+        inventory_central_qrs?: { name: string } | { name: string }[] | null;
+      }>) {
+        const location = one(row.inventory_locations);
+        if (!location) continue;
+        const area = one(row.inventory_central_qrs);
+        mergeRow({
+          locationId: location.id,
+          locationCode: location.code,
+          locationName: location.name,
+          locationType: location.location_type,
+          usageAreaName: area?.name ?? '',
+          remainingQty: asNumber(row.remaining_qty),
+          unit: row.unit,
+          stockKind: 'measured',
+          containerCount: 1,
+        });
+      }
+
+      for (const row of (plasticRows ?? []) as Array<{
+        boxes_on_hand: number | string;
+        unit: string;
+        inventory_locations?:
+          | { id: string; code: string; name: string; location_type: string }
+          | { id: string; code: string; name: string; location_type: string }[]
+          | null;
+        inventory_central_qrs?: { name: string } | { name: string }[] | null;
+      }>) {
+        const location = one(row.inventory_locations);
+        if (!location) continue;
+        const area = one(row.inventory_central_qrs);
+        mergeRow({
+          locationId: location.id,
+          locationCode: location.code,
+          locationName: location.name,
+          locationType: location.location_type,
+          usageAreaName: area?.name ?? '',
+          remainingQty: Math.trunc(asNumber(row.boxes_on_hand)),
+          unit: row.unit || 'box',
+          stockKind: 'box',
+          containerCount: 1,
+        });
+      }
+
+      const locations = [...locationMap.values()].sort((a, b) => {
+        const byName = a.locationName.localeCompare(b.locationName);
+        if (byName !== 0) return byName;
+        return a.stockKind.localeCompare(b.stockKind);
+      });
+
+      return {
+        catalogItemId: (catalog as { id: string }).id,
+        catalogItemName: (catalog as { name: string }).name,
+        catalogNumber: ((catalog as { catalog_number?: string | null }).catalog_number ?? '').trim(),
+        categoryName: category?.name ?? '',
+        locations,
+      };
     },
 
     async getPublicCard(
       token: string,
-    ): Promise<InventoryPublicCentralCard | InventoryPublicCentralLabCard | null> {
+    ): Promise<
+      | InventoryPublicCentralCard
+      | InventoryPublicCentralLabCard
+      | InventoryPublicStorageGuideCard
+      | null
+    > {
       const central = await this.getByToken(token);
       if (!central) return null;
       if (central.status !== 'active') {
@@ -197,6 +389,16 @@ export function createInventoryCentralQrsService(supabase: SupabaseClient) {
           message: 'Choose your work type and recipe, adjust components if needed, then submit.',
           activities,
           employees: await loadActiveEmployees(supabase),
+        };
+      }
+
+      if (central.kind === 'storage_guide') {
+        return {
+          kind: 'storage_guide',
+          name: central.name,
+          centralKind: 'storage_guide',
+          message:
+            'Search by name or catalogue number to see every shelf location where this material already has stock.',
         };
       }
 

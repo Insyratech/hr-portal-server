@@ -1552,6 +1552,21 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
     return ok(await lab().listPublicLabCatalog(token));
   });
 
+  app.get('/api/v1/inventory/public/scan/:token/storage-guide/catalog', async (request) => {
+    requireDbOnly(app);
+    const { token } = request.params as { token: string };
+    return ok(await centralQrs().listStorageGuideCatalog(token));
+  });
+
+  app.get('/api/v1/inventory/public/scan/:token/storage-guide/locations', async (request) => {
+    requireDbOnly(app);
+    const { token } = request.params as { token: string };
+    const query = request.query as { catalogItemId?: string };
+    return ok(
+      await centralQrs().lookupStorageGuideLocations(token, query.catalogItemId ?? ''),
+    );
+  });
+
   app.get('/api/v1/inventory/public/lab/activities/:activityId/recipes', async (request) => {
     requireDbOnly(app);
     const { activityId } = request.params as { activityId: string };
@@ -1562,6 +1577,12 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
     requireDbOnly(app);
     const { activityId } = request.params as { activityId: string };
     return ok(await lab().getGelChart(activityId));
+  });
+
+  app.get('/api/v1/inventory/public/lab/activities/:activityId/pcr-tests', async (request) => {
+    requireDbOnly(app);
+    const { activityId } = request.params as { activityId: string };
+    return ok(await lab().listPublicPcrTestingTypes(activityId));
   });
 
   app.get('/api/v1/inventory/public/lab/recipes/:id', async (request) => {
@@ -1591,6 +1612,7 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
           gelVolumeMl: Type.Optional(Type.Union([Type.Number(), Type.Null()])),
           masterMixVolumePerReaction: Type.Optional(Type.Union([Type.Number(), Type.Null()])),
           masterMixUnit: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+          pcrTestingTypeId: Type.Optional(Type.Union([Type.String(), Type.Null()])),
           mixtureComponents: Type.Optional(
             Type.Array(
               Type.Object({
@@ -1633,6 +1655,7 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
             gelVolumeMl?: number | null;
             masterMixVolumePerReaction?: number | null;
             masterMixUnit?: string | null;
+            pcrTestingTypeId?: string | null;
             mixtureComponents?: Array<{
               name: string;
               quantityValue?: number | null;
