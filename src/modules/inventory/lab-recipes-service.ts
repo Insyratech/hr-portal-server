@@ -11,13 +11,17 @@ import type {
   InventoryLabGelChart,
   InventoryLabGelComponentKey,
   InventoryLabGelComponentLink,
+  InventoryLabManualUsageResult,
   InventoryLabRecipe,
   InventoryLabRecipeComponent,
   InventoryLabUsageComponentLine,
   InventoryLabUsageMode,
   InventoryLabUsageResult,
+  InventoryPublicLabCatalogItem,
   InventoryStatus,
 } from './types';
+
+const MANUAL_PROTOCOL_UNITS = new Set(['mg', 'g', 'ul', 'ml', 'l']);
 
 function newQrToken(): string {
   return randomBytes(24).toString('base64url');
@@ -56,9 +60,13 @@ function normalizeUsageMode(value: InventoryLabUsageMode | undefined): Inventory
   return 'method';
 }
 
-/** DNA/Loading methods and PCR master mixes both scale component volumes by Nx. */
+/** DNA/Loading methods and PCR runs both record an Nx multiplier. */
 function scalesWithNx(mode: InventoryLabUsageMode): boolean {
   return mode === 'method' || mode === 'pcr';
+}
+
+function normalizeManualUnit(value: string): string {
+  return value.trim().toLowerCase();
 }
 
 function nxItemLabel(mode: InventoryLabUsageMode): string {
@@ -883,6 +891,16 @@ export function createInventoryLabRecipesService(supabase: SupabaseClient) {
         gelPercent?: number | null;
         /** Target gel volume (mL) for gel chart runs. */
         gelVolumeMl?: number | null;
+        /** PCR: master mix volume per 1X reaction (defaults to recipe/10). */
+        masterMixVolumePerReaction?: number | null;
+        /** PCR: unit for master mix volume (mg|g|ul|ml|l). */
+        masterMixUnit?: string | null;
+        /** PCR: free-text mixture rows (primer/NFW/template…). Logged only — no lot deduct. */
+        mixtureComponents?: Array<{
+          name: string;
+          quantityValue?: number | null;
+          quantityUnit?: string;
+        }>;
       },
       meta: RequestMeta = {},
     ): Promise<InventoryLabUsageResult> {
@@ -1000,15 +1018,12 @@ export function createInventoryLabRecipesService(supabase: SupabaseClient) {
         gelPercent = percent;
         gelVolumeMl = volumeMl;
         runLabel = formatGelRunLabel(percent, volumeMl);
-      } else {
+      } else if (usageMode === 'pcr') {
+        // Freeform PCR: pick master mix + Nx; only master mix deducts from lots.
         if (!input.recipeId) {
           throw new AppError(
             API_ERROR_CODES.VALIDATION_ERROR,
-            usageMode === 'pcr'
-              ? 'Employee, work type, and master mix are required.'
-              : usageMode === 'method'
-                ? 'Employee, work type, and method are required.'
-                : 'Employee, work type, and recipe are required.',
+            'Employee, work type, and master mix are required.',
             400,
           );
         }
@@ -1016,17 +1031,144 @@ export function createInventoryLabRecipesService(supabase: SupabaseClient) {
         if (recipe.status !== 'active' || recipe.activityId !== input.activityId) {
           throw new AppError(
             API_ERROR_CODES.VALIDATION_ERROR,
-            usageMode === 'pcr'
-              ? 'Select a master mix under that work type.'
-              : usageMode === 'method'
-                ? 'Select a method under that work type.'
-                : 'Select a recipe under that work type.',
+            'Select a master mix under PCR reaction.',
             400,
           );
         }
         runLabel = recipe.name;
 
-        if (scalesWithNx(usageMode)) {
+        const rawNx =
+          input.quantityMultiplier === undefined || input.quantityMultiplier === null
+            ? 1
+            : Number(input.quantityMultiplier);
+        if (!Number.isFinite(rawNx) || rawNx <= 0) {
+          throw new AppError(
+            API_ERROR_CODES.VALIDATION_ERROR,
+            'Number of reactions must be a positive number (e.g. 1 or 2).',
+            400,
+          );
+        }
+        quantityMultiplier = Math.round(rawNx * 10000) / 10000;
+
+        const recipeDefaultVol =
+          recipe.finalVolumeValue !== null && recipe.finalVolumeValue !== undefined
+            ? Number(recipe.finalVolumeValue)
+            : recipe.components[0]?.quantityValue !== null &&
+                recipe.components[0]?.quantityValue !== undefined
+              ? Number(recipe.components[0].quantityValue)
+              : 10;
+        const volumePerReactionRaw =
+          input.masterMixVolumePerReaction === undefined || input.masterMixVolumePerReaction === null
+            ? recipeDefaultVol
+            : Number(input.masterMixVolumePerReaction);
+        if (!Number.isFinite(volumePerReactionRaw) || volumePerReactionRaw <= 0) {
+          throw new AppError(
+            API_ERROR_CODES.VALIDATION_ERROR,
+            'Master mix volume per reaction must be a positive number.',
+            400,
+          );
+        }
+        const volumePerReaction = Math.round(volumePerReactionRaw * 10000) / 10000;
+        const unitRaw = normalizeManualUnit(
+          (
+            input.masterMixUnit ||
+            recipe.finalVolumeUnit ||
+            recipe.components[0]?.quantityUnit ||
+            'ul'
+          ).trim() || 'ul',
+        );
+        if (!MANUAL_PROTOCOL_UNITS.has(unitRaw)) {
+          throw new AppError(
+            API_ERROR_CODES.VALIDATION_ERROR,
+            'Master mix unit must be one of mg, g, ul, ml, l.',
+            400,
+          );
+        }
+        const masterCatalogId =
+          recipe.components.find((row) => row.catalogItemId)?.catalogItemId ??
+          recipe.components[0]?.catalogItemId ??
+          null;
+        const masterTotal =
+          Math.round(volumePerReaction * quantityMultiplier * 10000) / 10000;
+
+        lines = [
+          {
+            name: recipe.name,
+            quantityValue: masterTotal,
+            quantityUnit: unitRaw,
+            notes: `${volumePerReaction} ${unitRaw} × ${quantityMultiplier} reactions`,
+            catalogItemId: masterCatalogId,
+          },
+        ];
+
+        const mixture = input.mixtureComponents ?? [];
+        if (mixture.length > 40) {
+          throw new AppError(
+            API_ERROR_CODES.VALIDATION_ERROR,
+            'At most 40 mixture components are allowed.',
+            400,
+          );
+        }
+        for (const row of mixture) {
+          const name = (row.name ?? '').trim();
+          if (!name) continue;
+          const perReaction =
+            row.quantityValue === undefined || row.quantityValue === null
+              ? null
+              : Number(row.quantityValue);
+          if (perReaction !== null && (!Number.isFinite(perReaction) || perReaction < 0)) {
+            throw new AppError(
+              API_ERROR_CODES.VALIDATION_ERROR,
+              `Invalid volume for mixture component “${name}”.`,
+              400,
+            );
+          }
+          const mixUnit = normalizeManualUnit((row.quantityUnit ?? 'ul').trim() || 'ul');
+          if (!MANUAL_PROTOCOL_UNITS.has(mixUnit)) {
+            throw new AppError(
+              API_ERROR_CODES.VALIDATION_ERROR,
+              `Unit for “${name}” must be one of mg, g, ul, ml, l.`,
+              400,
+            );
+          }
+          const total =
+            perReaction === null
+              ? null
+              : Math.round(perReaction * quantityMultiplier * 10000) / 10000;
+          lines.push({
+            name,
+            quantityValue: total,
+            quantityUnit: mixUnit,
+            notes:
+              perReaction === null
+                ? 'Mixture component (no stock deduct)'
+                : `${perReaction} ${mixUnit} × ${quantityMultiplier} reactions (no stock deduct)`,
+            catalogItemId: null,
+          });
+        }
+      } else {
+        if (!input.recipeId) {
+          throw new AppError(
+            API_ERROR_CODES.VALIDATION_ERROR,
+            usageMode === 'method'
+              ? 'Employee, work type, and method are required.'
+              : 'Employee, work type, and recipe are required.',
+            400,
+          );
+        }
+        recipe = await loadRecipe(input.recipeId);
+        if (recipe.status !== 'active' || recipe.activityId !== input.activityId) {
+          throw new AppError(
+            API_ERROR_CODES.VALIDATION_ERROR,
+            usageMode === 'method'
+              ? 'Select a method under that work type.'
+              : 'Select a recipe under that work type.',
+            400,
+          );
+        }
+        runLabel = recipe.name;
+
+        if (usageMode === 'method') {
           const raw =
             input.quantityMultiplier === undefined || input.quantityMultiplier === null
               ? 1
@@ -1034,9 +1176,7 @@ export function createInventoryLabRecipesService(supabase: SupabaseClient) {
           if (!Number.isFinite(raw) || raw <= 0) {
             throw new AppError(
               API_ERROR_CODES.VALIDATION_ERROR,
-              usageMode === 'pcr'
-                ? 'Number of reactions must be a positive number (e.g. 1 or 2).'
-                : 'How many must be a positive number (e.g. 1 or 2).',
+              'How many must be a positive number (e.g. 1 or 2).',
               400,
             );
           }
@@ -1318,6 +1458,316 @@ export function createInventoryLabRecipesService(supabase: SupabaseClient) {
         employeeCode: employee.employee_code,
         outputLotCode,
         components: usageLines,
+      };
+    },
+
+    /** Active catalog items for Manual protocol component picker (Inside lab QR only). */
+    async listPublicLabCatalog(centralQrToken: string): Promise<InventoryPublicLabCatalogItem[]> {
+      const token = centralQrToken.trim();
+      if (!token) {
+        throw new AppError(API_ERROR_CODES.NOT_FOUND, 'Unknown usage area.', 404);
+      }
+      const { data: centralRow, error: centralError } = await supabase
+        .from('inventory_central_qrs')
+        .select('id, kind, status')
+        .eq('qr_token', token)
+        .single();
+      if (centralError || !centralRow) {
+        throw new AppError(API_ERROR_CODES.NOT_FOUND, 'Unknown usage area.', 404);
+      }
+      if (centralRow.status !== 'active' || centralRow.kind !== 'inside_lab') {
+        throw new AppError(
+          API_ERROR_CODES.VALIDATION_ERROR,
+          'Catalog picker is only available on the Inside lab QR.',
+          400,
+        );
+      }
+
+      const { data, error } = await supabase
+        .from('inventory_catalog_items')
+        .select('id, name, brand_name, catalog_number, unit, status, inventory_categories(name)')
+        .eq('status', 'active')
+        .order('name');
+      if (error) {
+        throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to list catalog items.', 500);
+      }
+
+      return ((data ?? []) as Array<{
+        id: string;
+        name: string;
+        brand_name: string | null;
+        catalog_number: string | null;
+        unit: string;
+        inventory_categories?: { name: string } | { name: string }[] | null;
+      }>).map((row) => {
+        const category = Array.isArray(row.inventory_categories)
+          ? row.inventory_categories[0]
+          : row.inventory_categories;
+        return {
+          id: row.id,
+          name: row.name,
+          brandName: (row.brand_name ?? '').trim(),
+          catalogNumber: (row.catalog_number ?? '').trim(),
+          categoryName: category?.name ?? '',
+          unit: row.unit,
+        };
+      });
+    },
+
+    /**
+     * R&D Manual protocol: create a new work type (method mode) + method from the
+     * freeform component list, then record this run (1X) with stock deduct.
+     */
+    async submitManualProtocol(
+      centralQrToken: string,
+      input: {
+        employeeId: string;
+        protocolName: string;
+        components: Array<{
+          catalogItemId: string;
+          quantityValue: number;
+          quantityUnit: string;
+        }>;
+        notes?: string;
+      },
+      meta: RequestMeta = {},
+    ): Promise<InventoryLabManualUsageResult> {
+      const protocolName = (input.protocolName ?? '').trim();
+      if (!protocolName) {
+        throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Protocol name is required.', 400);
+      }
+      if (protocolName.length > 120) {
+        throw new AppError(
+          API_ERROR_CODES.VALIDATION_ERROR,
+          'Protocol name must be at most 120 characters.',
+          400,
+        );
+      }
+
+      const rawComponents = input.components ?? [];
+      if (!rawComponents.length) {
+        throw new AppError(
+          API_ERROR_CODES.VALIDATION_ERROR,
+          'Add at least one component from the catalog.',
+          400,
+        );
+      }
+      if (rawComponents.length > 40) {
+        throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'At most 40 components are allowed.', 400);
+      }
+
+      const catalogIds = [...new Set(rawComponents.map((row) => row.catalogItemId.trim()).filter(Boolean))];
+      if (catalogIds.length !== rawComponents.length) {
+        throw new AppError(
+          API_ERROR_CODES.VALIDATION_ERROR,
+          'Each component must be chosen from the catalog.',
+          400,
+        );
+      }
+
+      const { data: catalogRows, error: catalogError } = await supabase
+        .from('inventory_catalog_items')
+        .select('id, name, unit, status')
+        .in('id', catalogIds);
+      if (catalogError) {
+        throw new AppError(API_ERROR_CODES.INTERNAL_ERROR, 'Failed to load catalog items.', 500);
+      }
+      const catalogById = new Map(
+        ((catalogRows ?? []) as Array<{ id: string; name: string; unit: string; status: string }>).map(
+          (row) => [row.id, row],
+        ),
+      );
+      if (catalogById.size !== catalogIds.length) {
+        throw new AppError(
+          API_ERROR_CODES.VALIDATION_ERROR,
+          'One or more components are not valid catalog items.',
+          400,
+        );
+      }
+      for (const row of catalogById.values()) {
+        if (row.status !== 'active') {
+          throw new AppError(
+            API_ERROR_CODES.VALIDATION_ERROR,
+            `Catalog item “${row.name}” is inactive.`,
+            400,
+          );
+        }
+      }
+
+      const componentLines: Array<{
+        name: string;
+        quantityValue: number;
+        quantityUnit: string;
+        catalogItemId: string;
+        sortOrder: number;
+      }> = [];
+      for (let index = 0; index < rawComponents.length; index += 1) {
+        const row = rawComponents[index]!;
+        const catalog = catalogById.get(row.catalogItemId.trim());
+        if (!catalog) {
+          throw new AppError(API_ERROR_CODES.VALIDATION_ERROR, 'Unknown catalog component.', 400);
+        }
+        const qty = Number(row.quantityValue);
+        if (!Number.isFinite(qty) || qty <= 0) {
+          throw new AppError(
+            API_ERROR_CODES.VALIDATION_ERROR,
+            `Volume for “${catalog.name}” must be a positive number.`,
+            400,
+          );
+        }
+        const unit = (row.quantityUnit ?? '').trim().toLowerCase();
+        if (!MANUAL_PROTOCOL_UNITS.has(unit)) {
+          throw new AppError(
+            API_ERROR_CODES.VALIDATION_ERROR,
+            `Unit for “${catalog.name}” must be one of mg, g, ul, ml, l.`,
+            400,
+          );
+        }
+        componentLines.push({
+          name: catalog.name,
+          quantityValue: Math.round(qty * 10000) / 10000,
+          quantityUnit: unit,
+          catalogItemId: catalog.id,
+          sortOrder: (index + 1) * 10,
+        });
+      }
+
+      const { data: existingActivity } = await supabase
+        .from('inventory_lab_activities')
+        .select('id')
+        .ilike('name', protocolName)
+        .maybeSingle();
+      if (existingActivity) {
+        throw new AppError(
+          API_ERROR_CODES.CONFLICT,
+          `A work type named “${protocolName}” already exists. Pick it from the list and run with Nx.`,
+          409,
+        );
+      }
+
+      const { data: sortRow } = await supabase
+        .from('inventory_lab_activities')
+        .select('sort_order')
+        .order('sort_order', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      const nextSort =
+        sortRow && Number.isFinite(Number((sortRow as { sort_order: number }).sort_order))
+          ? Math.trunc(Number((sortRow as { sort_order: number }).sort_order)) + 10
+          : 1000;
+
+      const { data: activityInserted, error: activityError } = await supabase
+        .from('inventory_lab_activities')
+        .insert({
+          name: protocolName,
+          description:
+            'R&D protocol saved from Manual. Choose this work type, set how many (Nx), then submit.',
+          sort_order: nextSort,
+          status: 'active',
+          usage_mode: 'method',
+        })
+        .select('id, name')
+        .single();
+      if (activityError || !activityInserted) {
+        if (activityError?.code === '23505') {
+          throw new AppError(
+            API_ERROR_CODES.CONFLICT,
+            `A work type named “${protocolName}” already exists. Pick it from the list and run with Nx.`,
+            409,
+          );
+        }
+        throw new AppError(
+          API_ERROR_CODES.INTERNAL_ERROR,
+          activityError?.message ?? 'Failed to create work type.',
+          500,
+        );
+      }
+
+      const activityId = (activityInserted as { id: string }).id;
+      const { data: recipeInserted, error: recipeError } = await supabase
+        .from('inventory_lab_recipes')
+        .insert({
+          activity_id: activityId,
+          name: protocolName,
+          final_volume_value: null,
+          final_volume_unit: '',
+          notes: 'Created from Inside lab Manual protocol.',
+          sort_order: 10,
+          status: 'active',
+          creates_output_lot: false,
+          output_catalog_item_id: null,
+          sop_file_id: null,
+        })
+        .select('id')
+        .single();
+      if (recipeError || !recipeInserted) {
+        await supabase.from('inventory_lab_activities').delete().eq('id', activityId);
+        throw new AppError(
+          API_ERROR_CODES.INTERNAL_ERROR,
+          recipeError?.message ?? 'Failed to create protocol method.',
+          500,
+        );
+      }
+
+      const recipeId = (recipeInserted as { id: string }).id;
+      const { error: componentError } = await supabase.from('inventory_lab_recipe_components').insert(
+        componentLines.map((line) => ({
+          recipe_id: recipeId,
+          name: line.name,
+          quantity_value: line.quantityValue,
+          quantity_unit: line.quantityUnit,
+          notes: 'Per 1X run',
+          sort_order: line.sortOrder,
+          catalog_item_id: line.catalogItemId,
+        })),
+      );
+      if (componentError) {
+        await supabase.from('inventory_lab_activities').delete().eq('id', activityId);
+        throw new AppError(
+          API_ERROR_CODES.INTERNAL_ERROR,
+          componentError.message ?? 'Failed to save protocol components.',
+          500,
+        );
+      }
+
+      await writeAuditLog(supabase, {
+        actorId: null,
+        action: 'inventory_lab.manual_protocol_create',
+        entityType: 'inventory_lab_activity',
+        entityId: activityId,
+        newValues: {
+          protocolName,
+          recipeId,
+          componentCount: componentLines.length,
+        },
+        ipAddress: meta.ipAddress,
+        userAgent: meta.userAgent,
+      });
+
+      // Keep the new work type even if this run's deduct fails — staff can retry via Nx.
+      const usage = await this.submitPublicUsage(
+        centralQrToken,
+        {
+          employeeId: input.employeeId,
+          activityId,
+          recipeId,
+          quantityMultiplier: 1,
+          notes: (input.notes ?? '').trim() || `Manual protocol · ${protocolName}`,
+          components: componentLines.map((line) => ({
+            name: line.name,
+            quantityValue: line.quantityValue,
+            quantityUnit: line.quantityUnit,
+            notes: 'Per 1X run',
+            catalogItemId: line.catalogItemId,
+          })),
+        },
+        meta,
+      );
+
+      return {
+        ...usage,
+        activityId,
+        recipeId,
       };
     },
   };

@@ -291,6 +291,22 @@ export type InventoryLabUsageResult = {
   components: InventoryLabUsageComponentLine[];
 };
 
+/** Catalog rows exposed on Inside lab Manual protocol form (no auth). */
+export type InventoryPublicLabCatalogItem = {
+  id: string;
+  name: string;
+  brandName: string;
+  catalogNumber: string;
+  categoryName: string;
+  unit: string;
+};
+
+/** First-time Manual protocol: creates a work type + method, then logs usage. */
+export type InventoryLabManualUsageResult = InventoryLabUsageResult & {
+  activityId: string;
+  recipeId: string;
+};
+
 export type InventoryCentralQrKind = 'stock_room' | 'stationery' | 'inside_lab';
 
 export type InventoryCentralQr = {

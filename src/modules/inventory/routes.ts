@@ -1546,6 +1546,12 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
     },
   );
 
+  app.get('/api/v1/inventory/public/scan/:token/lab-catalog', async (request) => {
+    requireDbOnly(app);
+    const { token } = request.params as { token: string };
+    return ok(await lab().listPublicLabCatalog(token));
+  });
+
   app.get('/api/v1/inventory/public/lab/activities/:activityId/recipes', async (request) => {
     requireDbOnly(app);
     const { activityId } = request.params as { activityId: string };
@@ -1583,6 +1589,18 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
           quantityMultiplier: Type.Optional(Type.Union([Type.Number(), Type.Null()])),
           gelPercent: Type.Optional(Type.Union([Type.Number(), Type.Null()])),
           gelVolumeMl: Type.Optional(Type.Union([Type.Number(), Type.Null()])),
+          masterMixVolumePerReaction: Type.Optional(Type.Union([Type.Number(), Type.Null()])),
+          masterMixUnit: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+          mixtureComponents: Type.Optional(
+            Type.Array(
+              Type.Object({
+                name: Type.String({ minLength: 1 }),
+                quantityValue: Type.Optional(Type.Union([Type.Number(), Type.Null()])),
+                quantityUnit: Type.Optional(Type.String()),
+              }),
+              { maxItems: 40 },
+            ),
+          ),
           components: Type.Optional(
             Type.Array(
               Type.Object({
@@ -1613,12 +1631,66 @@ export async function registerInventoryRoutes(app: FastifyInstance): Promise<voi
             quantityMultiplier?: number | null;
             gelPercent?: number | null;
             gelVolumeMl?: number | null;
+            masterMixVolumePerReaction?: number | null;
+            masterMixUnit?: string | null;
+            mixtureComponents?: Array<{
+              name: string;
+              quantityValue?: number | null;
+              quantityUnit?: string;
+            }>;
             components?: Array<{
               name: string;
               quantityValue?: number | null;
               quantityUnit?: string;
               notes?: string;
               catalogItemId?: string | null;
+            }>;
+          },
+          metaOf(request),
+        ),
+      );
+    },
+  );
+
+  app.post(
+    '/api/v1/inventory/public/scan/:token/lab-manual-usage',
+    {
+      schema: {
+        body: Type.Object({
+          employeeId: Type.String({ minLength: 1 }),
+          protocolName: Type.String({ minLength: 1, maxLength: 120 }),
+          notes: Type.Optional(Type.String()),
+          components: Type.Array(
+            Type.Object({
+              catalogItemId: Type.String({ minLength: 1 }),
+              quantityValue: Type.Number({ minimum: 0.0001 }),
+              quantityUnit: Type.Union([
+                Type.Literal('mg'),
+                Type.Literal('g'),
+                Type.Literal('ul'),
+                Type.Literal('ml'),
+                Type.Literal('l'),
+              ]),
+            }),
+            { minItems: 1, maxItems: 40 },
+          ),
+        }),
+      },
+    },
+    async (request) => {
+      requireDbOnly(app);
+      const { token } = request.params as { token: string };
+      return ok(
+        await lab().submitManualProtocol(
+          token,
+          request.body as {
+            employeeId: string;
+            protocolName: string;
+            notes?: string;
+            components: Array<{
+              catalogItemId: string;
+              quantityValue: number;
+              quantityUnit: 'mg' | 'g' | 'ul' | 'ml' | 'l';
             }>;
           },
           metaOf(request),
